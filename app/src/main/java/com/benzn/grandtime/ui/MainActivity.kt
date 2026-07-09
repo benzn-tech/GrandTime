@@ -12,5 +12,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme { Text("GrandTime") }
         }
+        // 占位启动(Task 9 验证用);Task 11 重写整个文件时替换为正式入口
+        startForegroundService(android.content.Intent(this, com.benzn.grandtime.service.CoreService::class.java))
     }
 }
