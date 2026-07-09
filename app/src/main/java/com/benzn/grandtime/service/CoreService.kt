@@ -65,6 +65,7 @@ class CoreService : LifecycleService() {
 
         // 先构造两个源(不 start),等下面所有收集协程都挂上订阅后再 start()——
         // MutableSharedFlow(replay=0) 会丢弃订阅前发出的事件,顺序反了会丢首个按键。
+        // 刻意偏离规格:F2sp 与 OnScreen 两个源始终同时运行(DeviceProfile 仅用于展示,不做二选一)——F2sp 在模拟器上需要 adb 广播驱动 E2E,而 OnScreen 虚拟键在真机上无害。
         val f2sp = F2spKeyEventSource(this, lifecycleScope)
         f2spSource = f2sp
         val onScreen = OnScreenKeyEventSource(lifecycleScope)
@@ -72,9 +73,13 @@ class CoreService : LifecycleService() {
         lifecycleScope.launch {
             AppState.screenKeyEvents.collect { (key, direction) -> onScreen.onScreenKey(key, direction) }
         }
+        // 拆成两个独立协程:collect 先挂上订阅,silentLogin() 单独启动——
+        // 避免未来 silentLogin() 若抛异常,导致同一协程内尚未执行到的 collect 永远不会挂上,AppState 停止镜像登录态。
+        lifecycleScope.launch {
+            auth.loginState.collect { AppState.loginState.value = it }
+        }
         lifecycleScope.launch {
             auth.silentLogin()
-            auth.loginState.collect { AppState.loginState.value = it }
         }
         lifecycleScope.launch {
             keyMapStore.overrides.collect { AppState.overrides.value = it }

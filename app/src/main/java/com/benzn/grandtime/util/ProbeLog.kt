@@ -17,6 +17,7 @@ class ProbeLog(private val dir: File, private val maxBytes: Long = 1_000_000L) {
     private fun rotate() {
         val old = File(dir, "probe.1.log")
         old.delete()
-        active.renameTo(old)
+        // rename 失败时兜底删除 active,保证增长有界(否则会静默不轮转、无限增长)。
+        if (!active.renameTo(old)) active.delete()
     }
 }
