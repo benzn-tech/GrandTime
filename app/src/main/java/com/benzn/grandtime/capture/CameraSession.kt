@@ -19,8 +19,8 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
- * CameraX 绑定管理。录像时尝试 Video+Image 双用例并绑(录像中拍照),
- * 设备拒绝则降级只绑 Video 并记 photoDuringVideoSupported=false(spec §2)。
+ * CameraX 绑定管理。480P 时 Video+Image 双用例并绑(录像中拍照可用);
+ * 720P/1080P 只绑 Video(本机双绑会被压到预览档,实测见 spec §2 v2)。
  * 所有方法须在主线程调用。
  */
 class CameraSession(
