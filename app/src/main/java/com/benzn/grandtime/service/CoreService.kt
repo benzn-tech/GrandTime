@@ -46,7 +46,7 @@ class CoreService : LifecycleService() {
         super.onCreate()
         createChannel()
         // 必须在 startForegroundService 后尽快前台化,先于任何 suspend 工作
-        startForeground(NOTIFICATION_ID, buildNotification("待命"))
+        startForeground(NOTIFICATION_ID, buildNotification("Standing by"))
         probeLog = ProbeLog(File(filesDir, "probe"))
     }
 
@@ -104,7 +104,7 @@ class CoreService : LifecycleService() {
     }
 
     private fun handleAction(action: KeyAction, press: KeyPress) {
-        val text = "[桩] ${actionLabel(action)}"
+        val text = "[stub] ${actionLabel(action)}"
         AppState.lastAction.value = text
         probe("${press.key.name} ${press.pressType.name} → ${action.name}")
         notifyStatus(text)
@@ -118,14 +118,14 @@ class CoreService : LifecycleService() {
     }
 
     private fun createChannel() {
-        val channel = NotificationChannel(CHANNEL_ID, "GrandTime 常驻", NotificationManager.IMPORTANCE_LOW)
+        val channel = NotificationChannel(CHANNEL_ID, "FieldSight service", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun buildNotification(text: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_grandtime)
-            .setContentTitle("GrandTime")
+            .setContentTitle("FieldSight")
             .setContentText(text)
             .setOngoing(true)
             .build()

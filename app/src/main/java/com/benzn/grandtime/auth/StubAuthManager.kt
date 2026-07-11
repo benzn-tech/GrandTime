@@ -10,7 +10,7 @@ class StubAuthManager : AuthManager {
     override val loginState: StateFlow<LoginState> = _loginState
 
     override suspend fun silentLogin(): Boolean {
-        _loginState.value = LoginState.LoggedIn("测试账号")
+        _loginState.value = LoginState.LoggedIn("Test account")
         return true
     }
 }
