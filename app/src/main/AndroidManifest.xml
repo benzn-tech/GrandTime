@@ -22,7 +22,8 @@
         </activity>
         <service
             android:name=".service.CoreService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="camera|microphone" />
         <receiver
             android:name=".boot.BootReceiver"
             android:exported="true">

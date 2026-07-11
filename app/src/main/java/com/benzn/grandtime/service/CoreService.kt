@@ -57,6 +57,17 @@ class CoreService : LifecycleService() {
         // 息屏/后台相机访问需要 overlay 窗口维持进程可见态,见 OverlayGuard 注释
         overlayGuard = OverlayGuard(this)
         overlayGuard.show()
+        // 开机自启路径:BOOT_COMPLETED 拉起的 FGS 在 Android 12+ 拿不到相机/麦克风
+        // while-in-use 权限(allowWhileInUsePermissionInFgs=false,UID capability 缺 C/M,
+        // CameraService 报 "Access has been restricted"/ERROR_CAMERA_DISABLED——真机场景 7
+        // 实测复现;Android 11 的 SAW 豁免在 12+ 已被移除)。但 AMS 在每次 startService
+        // 都会重新评估该标志,且"UID 有可见非 toast 窗口"(即上面的 OverlayGuard)可通过
+        // isUidForeground 豁免——标志只升不降。窗口要等首帧绘制后才在 WMS 中可见,
+        // 故延迟重踢两次(1s 快路径 + 4s 兜底),onStartCommand 幂等,重复无害。
+        val rekick = Runnable { startService(Intent(this, CoreService::class.java)) }
+        val handler = android.os.Handler(mainLooper)
+        handler.postDelayed(rekick, 1_000)
+        handler.postDelayed(rekick, 4_000)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
