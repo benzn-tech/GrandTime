@@ -11,8 +11,12 @@ import androidx.lifecycle.lifecycleScope
 import com.benzn.grandtime.R
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.auth.StubAuthManager
+import com.benzn.grandtime.capture.CaptureManager
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.ProbeEntry
+import com.benzn.grandtime.core.SettingsStore
+import com.benzn.grandtime.core.settingsDataStore
+import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.hardware.F2spKeyEventSource
 import com.benzn.grandtime.hardware.KeyPress
 import com.benzn.grandtime.hardware.OnScreenKeyEventSource
@@ -39,6 +43,7 @@ class CoreService : LifecycleService() {
 
     private var pipelineStarted = false
     private var f2spSource: F2spKeyEventSource? = null
+    private var captureManager: CaptureManager? = null
     private lateinit var probeLog: ProbeLog
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
@@ -85,6 +90,15 @@ class CoreService : LifecycleService() {
             keyMapStore.overrides.collect { AppState.overrides.value = it }
         }
 
+        captureManager = CaptureManager(
+            context = this,
+            scope = lifecycleScope,
+            settingsStore = SettingsStore(applicationContext.settingsDataStore),
+            dao = CaptureDb.get(applicationContext).captureRecords(),
+            notify = ::notifyStatus,
+            probe = ::probe,
+        )
+
         val dispatcher = KeyActionDispatcher({ AppState.overrides.value }, ::handleAction)
         lifecycleScope.launch {
             merge(f2sp.keyPresses, onScreen.keyPresses).collect { press ->
@@ -104,10 +118,18 @@ class CoreService : LifecycleService() {
     }
 
     private fun handleAction(action: KeyAction, press: KeyPress) {
-        val text = "[stub] ${actionLabel(action)}"
-        AppState.lastAction.value = text
         probe("${press.key.name} ${press.pressType.name} → ${action.name}")
-        notifyStatus(text)
+        val manager = captureManager
+        if (manager != null && action in manager.handledActions) {
+            manager.handle(action)
+        } else {
+            val text = when (action) {
+                KeyAction.ASK_AGENT -> "Ask agent coming soon"
+                else -> "[stub] ${actionLabel(action)}"
+            }
+            AppState.lastAction.value = text
+            notifyStatus(text)
+        }
     }
 
     private fun probe(text: String) {
@@ -137,6 +159,7 @@ class CoreService : LifecycleService() {
 
     override fun onDestroy() {
         AppState.serviceRunning.value = false
+        captureManager?.shutdown()
         f2spSource?.stop()
         super.onDestroy()
     }

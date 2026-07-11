@@ -1,5 +1,6 @@
 package com.benzn.grandtime.core
 
+import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.hardware.HardKey
 import com.benzn.grandtime.hardware.RawDirection
 import com.benzn.grandtime.keymap.KeyAction
@@ -22,6 +23,9 @@ object AppState {
     val overrides = MutableStateFlow<Map<String, KeyAction>>(emptyMap())
     val probeEntries = MutableStateFlow<List<ProbeEntry>>(emptyList())
     val lastAction = MutableStateFlow<String?>(null)
+
+    /** 采集状态(Service 写,Home 卡读)。 */
+    val captureState = MutableStateFlow<CaptureState>(CaptureState.Idle)
 
     /** UI 屏幕按键 → Service(down/up 原始事件)。 */
     val screenKeyEvents = MutableSharedFlow<Pair<HardKey, RawDirection>>(extraBufferCapacity = 16)
