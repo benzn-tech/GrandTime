@@ -3,23 +3,29 @@ package com.benzn.grandtime.capture
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.core.content.ContextCompat
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.PhotoQuality
+import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.VideoQuality
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.CaptureRecordDao
 import com.benzn.grandtime.keymap.KeyAction
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 命令执行器:CaptureCore 决策,这里做真事(绑相机/录制/DB/震动/通知)。
@@ -51,6 +57,18 @@ class CaptureManager(
     private var currentAudioRecordId: String? = null
     private var currentAudioFile: File? = null
 
+    /** 720P/1080P 录像中拍照的抓帧请求(spec §2.5)。单挂起槽:非 null 时新请求一律防抖拒绝。 */
+    private data class PendingFrameGrab(
+        val photoId: String,
+        val sessionId: String,
+        val keypressMillis: Long,
+        val segFile: File,
+        val segStart: Long,
+        val jpegQuality: Int,
+        val resolution: String,
+    )
+    private var pendingFrameGrab: PendingFrameGrab? = null
+
     val handledActions: Set<KeyAction> = setOf(
         KeyAction.START_STOP_VIDEO,
         KeyAction.TAKE_PHOTO,
@@ -70,6 +88,7 @@ class CaptureManager(
         segmentTimer?.cancel()
         if (video.isRecording) video.stop()
         if (audio.isRecording) audio.stop()
+        pendingFrameGrab = null
         lifecycleOwner.destroy()
     }
 
@@ -147,7 +166,14 @@ class CaptureManager(
         video.startSegment(videoCapture, file) { error, message ->
             scope.launch {
                 finalizeVideoDbRow()
+                // 抓帧请求登记的段与本次 finalize 的段匹配才消费——防止跨段串号。
+                val grab = pendingFrameGrab
+                if (grab != null && grab.segFile == file) {
+                    pendingFrameGrab = null
+                    performFrameGrab(grab)
+                }
                 if (error) {
+                    pendingFrameGrab = null // 会话失败,后续不再有段 finalize——不留孤儿挂起槽
                     execute(core.onFailure(message ?: "Video error"))
                     session.unbind()
                 } else {
@@ -185,9 +211,10 @@ class CaptureManager(
         val settings = settingsStore.settings.first()
         val recordingVideo = core.state is CaptureState.RecordingVideo
         val imageCapture = when {
+            // 720P/1080P 录像中(session.imageCapture == null,双绑不可用)= 抓帧路径(spec §2.5)。
+            // 480P 双绑(imageCapture != null)与 Idle/录音中拍照维持原传感器 JPEG 路径,不受影响。
             recordingVideo -> session.imageCapture ?: run {
-                notify("Photo during video not supported on this device")
-                vibrate(2)
+                initiateFrameGrab(cmd, settings)
                 return
             }
             session.imageCapture != null -> session.imageCapture!!
@@ -220,6 +247,78 @@ class CaptureManager(
                 // 只有仍在录像(RecordingVideo,双用例共用绑定)才保留。
                 if (core.state !is CaptureState.RecordingVideo && !video.isRecording) session.unbind()
             }
+        }
+    }
+
+    /**
+     * 720P/1080P 录像中拍照 = 抓帧(spec §2.5)。记录按键时刻与当前段,强制滚段
+     * (等价 onSegmentTimerFired 的 StopVideo(rollToNext=true));段 finalize 回调里
+     * (startVideoSegment)真正抽帧,录像无感续录。
+     */
+    private fun initiateFrameGrab(cmd: CaptureCommand.TakePhoto, settings: RecordingSettings) {
+        if (pendingFrameGrab != null) {
+            vibrate(2)
+            notify("Capturing, please wait")
+            probe("frame-grab rejected: previous grab still pending")
+            return
+        }
+        val segFile = currentVideoFile
+        if (segFile == null) {
+            // 防御性兜底:理论上 RecordingVideo 状态下段文件必存在;真出现即视为不支持。
+            notify("Photo during video not supported on this device")
+            vibrate(2)
+            return
+        }
+        pendingFrameGrab = PendingFrameGrab(
+            photoId = UUID.randomUUID().toString(),
+            sessionId = cmd.sessionId,
+            keypressMillis = System.currentTimeMillis(),
+            segFile = segFile,
+            segStart = currentVideoStartedAt,
+            jpegQuality = jpegQuality(settings.photoQuality),
+            resolution = settings.videoQuality.resolutionString(),
+        )
+        probe("frame-grab requested: rolling segment early")
+        segmentTimer?.cancel()
+        pendingRoll = true
+        video.stop()
+    }
+
+    /** IO 线程抽帧压 JPEG 落盘 + 写 DB 行;调用方已把匹配的 pendingFrameGrab 置 null。 */
+    private suspend fun performFrameGrab(grab: PendingFrameGrab) {
+        val out = storage.newFile(MediaStorage.Kind.PHOTO, grab.keypressMillis)
+        val ok = withContext(Dispatchers.IO) {
+            try {
+                MediaMetadataRetriever().use { retriever ->
+                    retriever.setDataSource(grab.segFile.absolutePath)
+                    val offsetUs = frameOffsetMicros(grab.keypressMillis, grab.segStart)
+                    val frame = retriever.getFrameAtTime(offsetUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                        ?: return@withContext false
+                    FileOutputStream(out).use { stream ->
+                        frame.compress(Bitmap.CompressFormat.JPEG, grab.jpegQuality, stream)
+                    }
+                    frame.recycle()
+                }
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+        if (ok) {
+            dao.insert(
+                CaptureRecord(
+                    id = grab.photoId, kind = "photo", filePath = out.absolutePath, fileName = out.name,
+                    startedAt = grab.keypressMillis, endedAt = grab.keypressMillis, sizeBytes = out.length(),
+                    codec = "frame-grab", resolution = grab.resolution, sessionId = grab.sessionId,
+                    createdAt = grab.keypressMillis,
+                )
+            )
+            notify("Photo saved (recording continues)")
+            probe("frame-grab saved: ${out.name}")
+        } else {
+            notify("Photo capture failed")
+            vibrate(2)
+            probe("frame-grab failed")
         }
     }
 
@@ -276,3 +375,10 @@ private fun VideoQuality.resolutionString(): String = when (this) {
 }
 
 private fun jpegQuality(quality: PhotoQuality): Int = if (quality == PhotoQuality.HIGH) 95 else 80
+
+/**
+ * 抓帧偏移(微秒)= (按键时刻 − 段起始) 钳制非负,换算 MediaMetadataRetriever 的微秒单位
+ * (spec §2.5)。段起点之前按下(时钟偏差)归零,不取负偏移。纯函数,JVM 可测。
+ */
+internal fun frameOffsetMicros(keypressMillis: Long, segStart: Long): Long =
+    (keypressMillis - segStart).coerceAtLeast(0) * 1000
