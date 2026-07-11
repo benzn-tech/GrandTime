@@ -24,9 +24,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,7 +54,9 @@ data class MediaEntry(val name: String, val type: MediaFilter, val sizeBytes: Lo
 fun FilesScreen() {
     val context = LocalContext.current
     var filter by rememberSaveable { mutableStateOf(MediaFilter.ALL) }
-    val entries = remember { scanMedia(context) }
+    val entries by produceState(initialValue = emptyList<MediaEntry>(), context) {
+        value = withContext(Dispatchers.IO) { scanMedia(context) }
+    }
     val filtered = if (filter == MediaFilter.ALL) entries else entries.filter { it.type == filter }
     val fs = LocalFsColors.current
 
@@ -168,7 +172,7 @@ private fun dayLabel(millis: Long): String {
 }
 
 private fun formatSize(bytes: Long): String = when {
-    bytes >= 1_000_000 -> "%.1f MB".format(bytes / 1_000_000.0)
+    bytes >= 1_000_000 -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1_000_000.0)
     bytes >= 1_000 -> "${bytes / 1_000} KB"
     else -> "$bytes B"
 }
