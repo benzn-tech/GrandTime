@@ -1,6 +1,7 @@
 package com.benzn.grandtime.ui
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,13 +23,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,26 +39,41 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.R
+import com.benzn.grandtime.db.CaptureDb
+import com.benzn.grandtime.db.CaptureRecord
+import com.benzn.grandtime.db.FilesReconciler
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-enum class MediaFilter(val label: String) { ALL("All"), VIDEO("Video"), AUDIO("Audio"), PHOTO("Photo") }
-
-data class MediaEntry(val name: String, val type: MediaFilter, val sizeBytes: Long, val modifiedMillis: Long)
+enum class MediaFilter(val label: String, val kind: String?) {
+    ALL("All", null),
+    VIDEO("Video", "video"),
+    AUDIO("Audio", "audio"),
+    PHOTO("Photo", "photo"),
+}
 
 @Composable
 fun FilesScreen() {
     val context = LocalContext.current
+    val dao = remember { CaptureDb.get(context.applicationContext).captureRecords() }
     var filter by rememberSaveable { mutableStateOf(MediaFilter.ALL) }
-    val entries by produceState(initialValue = emptyList<MediaEntry>(), context) {
-        value = withContext(Dispatchers.IO) { scanMedia(context) }
-    }
-    val filtered = if (filter == MediaFilter.ALL) entries else entries.filter { it.type == filter }
+    val records by dao.observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
     val fs = LocalFsColors.current
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            FilesReconciler(dao, durationReader = ::readDurationMillis).reconcile(scanDisk(context))
+        }
+    }
+
+    val filtered = filter.kind?.let { k -> records.filter { it.kind == k } } ?: records
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(
@@ -81,7 +96,7 @@ fun FilesScreen() {
         if (filtered.isEmpty()) {
             FsCard {
                 Column(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().padding(vertical = 32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Icon(
@@ -101,7 +116,7 @@ fun FilesScreen() {
                 }
             }
         } else {
-            val grouped = filtered.groupBy { dayLabel(it.modifiedMillis) }
+            val grouped = filtered.groupBy { dayLabel(it.startedAt) }
             LazyColumn(Modifier.weight(1f)) {
                 grouped.forEach { (day, dayItems) ->
                     item(key = "header-$day") {
@@ -113,7 +128,7 @@ fun FilesScreen() {
                             modifier = Modifier.padding(vertical = 8.dp),
                         )
                     }
-                    items(dayItems, key = { "${it.type}-${it.name}" }) { entry -> MediaRow(entry) }
+                    items(dayItems, key = { it.id }) { record -> MediaRow(record) }
                 }
             }
         }
@@ -121,7 +136,7 @@ fun FilesScreen() {
 }
 
 @Composable
-private fun MediaRow(entry: MediaEntry) {
+private fun MediaRow(record: CaptureRecord) {
     val fs = LocalFsColors.current
     Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -130,7 +145,7 @@ private fun MediaRow(entry: MediaEntry) {
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                entry.type.label.first().toString(),
+                record.kind.first().uppercase(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.SemiBold,
@@ -138,7 +153,7 @@ private fun MediaRow(entry: MediaEntry) {
         }
         Spacer(Modifier.width(12.dp))
         Text(
-            entry.name,
+            record.fileName,
             fontFamily = FontFamily.Monospace,
             fontSize = 13.sp,
             maxLines = 1,
@@ -146,23 +161,37 @@ private fun MediaRow(entry: MediaEntry) {
             modifier = Modifier.weight(1f),
         )
         Spacer(Modifier.width(12.dp))
-        Text(formatSize(entry.sizeBytes), style = MaterialTheme.typography.bodySmall, color = fs.textTertiary)
+        record.durationMs?.let { d ->
+            Text(mmssLabel(d), style = MaterialTheme.typography.bodySmall, color = fs.textTertiary)
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(formatSize(record.sizeBytes), style = MaterialTheme.typography.bodySmall, color = fs.textTertiary)
     }
 }
 
-/** SP3 存储契约:录制文件落 getExternalFilesDir(null)/media/{video,audio,photo}。 */
-private fun scanMedia(context: Context): List<MediaEntry> {
-    val root = File(context.getExternalFilesDir(null), "media")
-    val dirs = mapOf(
-        "video" to MediaFilter.VIDEO,
-        "audio" to MediaFilter.AUDIO,
-        "photo" to MediaFilter.PHOTO,
-    )
-    return dirs.flatMap { (dirName, type) ->
-        File(root, dirName).listFiles()?.filter { it.isFile }?.map { f ->
-            MediaEntry(f.name, type, f.length(), f.lastModified())
+private fun scanDisk(context: Context): List<FilesReconciler.DiskFile> {
+    val volumes = context.getExternalFilesDirs(null).filterNotNull()
+    val root = if (volumes.size >= 2) volumes[1] else volumes.firstOrNull() ?: return emptyList()
+    val dirs = mapOf("video" to "video", "audio" to "audio", "photo" to "photo")
+    return dirs.flatMap { (dirName, kind) ->
+        File(File(root, "media"), dirName).listFiles()?.filter { it.isFile }?.map { f ->
+            FilesReconciler.DiskFile(f.absolutePath, f.name, kind, f.length(), f.lastModified())
         } ?: emptyList()
-    }.sortedByDescending { it.modifiedMillis }
+    }
+}
+
+private fun readDurationMillis(path: String): Long? = try {
+    MediaMetadataRetriever().use { r ->
+        r.setDataSource(path)
+        r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+    }
+} catch (e: Exception) {
+    null
+}
+
+private fun mmssLabel(durationMs: Long): String {
+    val total = durationMs / 1000
+    return "%02d:%02d".format(total / 60, total % 60)
 }
 
 private fun dayLabel(millis: Long): String {
@@ -172,7 +201,7 @@ private fun dayLabel(millis: Long): String {
 }
 
 private fun formatSize(bytes: Long): String = when {
-    bytes >= 1_000_000 -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1_000_000.0)
+    bytes >= 1_000_000 -> String.format(Locale.US, "%.1f MB", bytes / 1_000_000.0)
     bytes >= 1_000 -> "${bytes / 1_000} KB"
     else -> "$bytes B"
 }
