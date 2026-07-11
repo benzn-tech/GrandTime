@@ -169,8 +169,11 @@ class CaptureManager(
                 // 抓帧请求登记的段与本次 finalize 的段匹配才消费——防止跨段串号。
                 val grab = pendingFrameGrab
                 if (grab != null && grab.segFile == file) {
-                    pendingFrameGrab = null
-                    performFrameGrab(grab)
+                    try {
+                        performFrameGrab(grab)
+                    } finally {
+                        pendingFrameGrab = null
+                    }
                 }
                 if (error) {
                     pendingFrameGrab = null // 会话失败,后续不再有段 finalize——不留孤儿挂起槽
