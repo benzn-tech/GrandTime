@@ -5,19 +5,31 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.benzn.grandtime.R
+import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.service.CoreService
 import com.benzn.grandtime.ui.theme.FieldSightTheme
 
@@ -30,7 +42,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { FieldSightTheme { MainScreen() } }
+        setContent { FieldSightTheme { MainScaffold() } }
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
@@ -47,19 +59,65 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun MainScreen() {
-    var tab by remember { mutableIntStateOf(0) }
-    val titles = listOf("状态", "探针", "改键")
-    Column(Modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = tab) {
-            titles.forEachIndexed { index, title ->
-                Tab(selected = tab == index, onClick = { tab = index }, text = { Text(title) })
+private fun MainScaffold() {
+    var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
+    val isSubScreen = screen == Screen.KEY_BINDINGS || screen == Screen.DIAGNOSTICS
+    BackHandler(enabled = isSubScreen) { screen = Screen.SETTINGS }
+    val running by AppState.serviceRunning.collectAsStateWithLifecycle()
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            AppTopBar(
+                title = if (isSubScreen) screen.title else null,
+                showBack = isSubScreen,
+                onBack = { screen = Screen.SETTINGS },
+                serviceRunning = running,
+            )
+        },
+        bottomBar = {
+            if (!isSubScreen) {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                    val itemColors = NavigationBarItemDefaults.colors(
+                        indicatorColor = MaterialTheme.colorScheme.secondary,
+                        selectedIconColor = MaterialTheme.colorScheme.onSecondary,
+                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    NavigationBarItem(
+                        selected = screen == Screen.HOME,
+                        onClick = { screen = Screen.HOME },
+                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
+                        label = { Text("Home") },
+                        colors = itemColors,
+                    )
+                    NavigationBarItem(
+                        selected = screen == Screen.FILES,
+                        onClick = { screen = Screen.FILES },
+                        icon = { Icon(painterResource(R.drawable.ic_nav_files), contentDescription = null) },
+                        label = { Text("Files") },
+                        colors = itemColors,
+                    )
+                    NavigationBarItem(
+                        selected = screen == Screen.SETTINGS,
+                        onClick = { screen = Screen.SETTINGS },
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                        label = { Text("Settings") },
+                        colors = itemColors,
+                    )
+                }
             }
-        }
-        when (tab) {
-            0 -> StatusScreen()
-            1 -> ProbeScreen()
-            2 -> KeymapScreen()
+        },
+    ) { padding ->
+        Box(Modifier.padding(padding)) {
+            when (screen) {
+                Screen.HOME -> HomeScreen()
+                Screen.FILES -> FilesScreen()
+                Screen.SETTINGS -> SettingsScreen(onOpen = { screen = it })
+                Screen.KEY_BINDINGS -> KeyBindingsScreen()
+                Screen.DIAGNOSTICS -> DiagnosticsScreen()
+            }
         }
     }
 }
