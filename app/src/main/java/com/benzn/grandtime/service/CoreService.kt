@@ -45,6 +45,7 @@ class CoreService : LifecycleService() {
     private var f2spSource: F2spKeyEventSource? = null
     private var captureManager: CaptureManager? = null
     private lateinit var probeLog: ProbeLog
+    private lateinit var overlayGuard: OverlayGuard
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     override fun onCreate() {
@@ -53,6 +54,9 @@ class CoreService : LifecycleService() {
         // 必须在 startForegroundService 后尽快前台化,先于任何 suspend 工作
         startForeground(NOTIFICATION_ID, buildNotification("Standing by"))
         probeLog = ProbeLog(File(filesDir, "probe"))
+        // 息屏/后台相机访问需要 overlay 窗口维持进程可见态,见 OverlayGuard 注释
+        overlayGuard = OverlayGuard(this)
+        overlayGuard.show()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -161,6 +165,7 @@ class CoreService : LifecycleService() {
         AppState.serviceRunning.value = false
         captureManager?.shutdown()
         f2spSource?.stop()
+        overlayGuard.hide()
         super.onDestroy()
     }
 }
