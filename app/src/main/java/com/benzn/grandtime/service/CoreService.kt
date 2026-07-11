@@ -124,7 +124,7 @@ class CoreService : LifecycleService() {
 
     private fun buildNotification(text: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_grandtime)
+            .setSmallIcon(R.drawable.ic_stat_fieldsight)
             .setContentTitle("FieldSight")
             .setContentText(text)
             .setOngoing(true)
