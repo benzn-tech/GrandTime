@@ -37,5 +37,6 @@ fun actionLabel(action: KeyAction): String = when (action) {
     KeyAction.START_STOP_AUDIO -> "Start/stop audio"
     KeyAction.SEND_SOS -> "Send SOS"
     KeyAction.TOGGLE_WARNING_LIGHT -> "Toggle warning light"
+    KeyAction.ASK_AGENT -> "Ask agent"
     KeyAction.NONE -> "None"
 }

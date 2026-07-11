@@ -9,5 +9,6 @@ enum class KeyAction {
     START_STOP_AUDIO,
     SEND_SOS,
     TOGGLE_WARNING_LIGHT,
+    ASK_AGENT,
     NONE,
 }
