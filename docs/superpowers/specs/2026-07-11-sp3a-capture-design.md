@@ -139,8 +139,11 @@ observations.site_slug):
   「Required so physical keys can record while the screen is off」
 - **缺权限提示**:Home 卡黄色警示行「Tap to finish setup」(warning 色),点击重入
   向导;缺权限时对应动作拒绝执行并通知提示,不崩溃
-- `foregroundServiceType` 维持不声明(targetSdk 33 合法);**升级注意**:升 34 时
-  必须补 `camera|microphone` 类型与对应清单权限
+- `foregroundServiceType` 已声明为 `camera|microphone`(Android 11+ 对 FGS 内
+  while-in-use 相机/麦克风访问要求声明对应类型,真机实测确认);**升级注意**:
+  升 targetSdk 34 时还需额外补 `FOREGROUND_SERVICE_CAMERA`/`FOREGROUND_SERVICE_MICROPHONE`
+  清单权限,且开机自启路径(startForeground 在运行时权限授予前调用)届时会直接
+  抛异常——需在该升级时一并处理,不在本期范围
 - 通知权限已有;振动无需运行时授权
 
 ## 5. 工程结构变化

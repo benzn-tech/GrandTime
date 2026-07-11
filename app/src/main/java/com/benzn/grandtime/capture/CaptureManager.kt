@@ -94,34 +94,42 @@ class CaptureManager(
     }
 
     private suspend fun execute(commands: List<CaptureCommand>) {
-        for (cmd in commands) when (cmd) {
-            is CaptureCommand.StartVideoSegment -> startVideoSegment(cmd)
-            is CaptureCommand.StopVideo -> {
-                segmentTimer?.cancel()
-                pendingRoll = cmd.rollToNext
-                video.stop()
+        // 命令批次中若 Start* 内部走到 core.onFailure(嵌套 execute 已把状态收回 Idle),
+        // 必须中止本批剩余命令——否则紧随其后的 Vibrate(1)/Notify("Recording ...")
+        // 会覆盖失败提示,留下"正在录制"通知却其实并未开始录制。
+        for (cmd in commands) {
+            val ok = when (cmd) {
+                is CaptureCommand.StartVideoSegment -> startVideoSegment(cmd)
+                is CaptureCommand.StopVideo -> {
+                    segmentTimer?.cancel()
+                    pendingRoll = cmd.rollToNext
+                    video.stop()
+                    true
+                }
+                is CaptureCommand.TakePhoto -> { takePhoto(cmd); true }
+                is CaptureCommand.StartAudio -> startAudio(cmd)
+                CaptureCommand.StopAudio -> { stopAudio(); true }
+                CaptureCommand.ToggleTorch -> {
+                    torch.toggle()
+                    probe("torch ${if (torch.torchOn) "on" else "off"}")
+                    true
+                }
+                CaptureCommand.CycleVolume -> { probe("volume ${volume.cycle()}%"); true }
+                is CaptureCommand.Vibrate -> { vibrate(cmd.times); true }
+                is CaptureCommand.Notify -> { notify(cmd.text); true }
             }
-            is CaptureCommand.TakePhoto -> takePhoto(cmd)
-            is CaptureCommand.StartAudio -> startAudio(cmd)
-            CaptureCommand.StopAudio -> stopAudio()
-            CaptureCommand.ToggleTorch -> {
-                torch.toggle()
-                probe("torch ${if (torch.torchOn) "on" else "off"}")
-            }
-            CaptureCommand.CycleVolume -> probe("volume ${volume.cycle()}%")
-            is CaptureCommand.Vibrate -> vibrate(cmd.times)
-            is CaptureCommand.Notify -> notify(cmd.text)
+            if (!ok) break
         }
         AppState.captureState.value = core.state
     }
 
-    private suspend fun startVideoSegment(cmd: CaptureCommand.StartVideoSegment) {
+    private suspend fun startVideoSegment(cmd: CaptureCommand.StartVideoSegment): Boolean {
         val settings = settingsStore.settings.first()
         val videoCapture = session.videoCapture
             ?: try {
                 session.bindForVideo(settings.videoQuality, jpegQuality(settings.photoQuality))
             } catch (e: Exception) {
-                execute(core.onFailure("Camera unavailable")); return
+                execute(core.onFailure("Camera unavailable")); return false
             }
         val file = storage.newFile(MediaStorage.Kind.VIDEO)
         val startedAt = System.currentTimeMillis()
@@ -152,6 +160,7 @@ class CaptureManager(
         }
         startSegmentTimer(settings.segmentMinutes)
         probe("video segment ${cmd.segmentIndex} started: ${file.name}")
+        return true
     }
 
     private fun startSegmentTimer(minutes: Int) {
@@ -207,17 +216,19 @@ class CaptureManager(
                     notify("Photo failed")
                     vibrate(2)
                 }
-                if (core.state is CaptureState.Idle && !video.isRecording) session.unbind()
+                // Idle 或 RecordingAudio 后都应释放相机(录音不占相机);
+                // 只有仍在录像(RecordingVideo,双用例共用绑定)才保留。
+                if (core.state !is CaptureState.RecordingVideo && !video.isRecording) session.unbind()
             }
         }
     }
 
-    private suspend fun startAudio(cmd: CaptureCommand.StartAudio) {
+    private suspend fun startAudio(cmd: CaptureCommand.StartAudio): Boolean {
         val file = storage.newFile(MediaStorage.Kind.AUDIO)
         val startedAt = System.currentTimeMillis()
         if (!audio.start(file)) {
             execute(core.onFailure("Audio recorder unavailable"))
-            return
+            return false
         }
         val recordId = UUID.randomUUID().toString()
         currentAudioRecordId = recordId
@@ -229,6 +240,7 @@ class CaptureManager(
             )
         )
         probe("audio started: ${file.name}")
+        return true
     }
 
     private suspend fun stopAudio() {
@@ -244,6 +256,9 @@ class CaptureManager(
         currentAudioRecordId = null
         currentAudioFile = null
         if (!stoppedCleanly) probe("audio stop reported error")
+        // 录音专属绑定不存在(MediaRecorder 不占 CameraX),但录音期间若拍过照,
+        // 相机绑定会残留到这里——收尾时兜底释放;video 仍在录时保持绑定,no-op 安全。
+        if (!video.isRecording) session.unbind()
         execute(core.onAudioFinalized())
     }
 

@@ -33,8 +33,6 @@ class CameraSession(
         private set
     var imageCapture: ImageCapture? = null
         private set
-    var photoDuringVideoSupported: Boolean = true
-        private set
 
     private var provider: ProcessCameraProvider? = null
 
@@ -85,16 +83,13 @@ class CameraSession(
             try {
                 camera = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, video, image)
                 imageCapture = image
-                photoDuringVideoSupported = true
             } catch (e: IllegalArgumentException) {
                 camera = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, video)
                 imageCapture = null
-                photoDuringVideoSupported = false
             }
         } else {
             camera = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, video)
             imageCapture = null
-            photoDuringVideoSupported = false
         }
         videoCapture = video
         return video

@@ -72,6 +72,10 @@ class CoreService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        // 幂等:SAW 权限可能在服务已运行后才授予(如用户从设置页返回),
+        // MainActivity.onResume 会重踢 startForegroundService 触发这里——
+        // show() 内部对"已显示"或"SAW 未授权"均 no-op,重复调用无害。
+        overlayGuard.show()
         if (!pipelineStarted) {
             pipelineStarted = true
             startPipeline()

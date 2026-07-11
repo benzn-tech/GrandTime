@@ -64,6 +64,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 从系统设置页(如 overlay 授权)返回时重踢一次——startForegroundService
+        // 打给已在跑的服务是廉价 no-op,借此触发 CoreService.onStartCommand 里
+        // 的 overlayGuard.show() 幂等重挂,捕获"服务已起、权限后补"的场景。
+        startCore()
+    }
+
     private fun startCore() {
         startForegroundService(Intent(this, CoreService::class.java))
     }

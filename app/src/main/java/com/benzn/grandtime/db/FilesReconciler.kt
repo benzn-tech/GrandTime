@@ -36,8 +36,14 @@ class FilesReconciler(
                 )
             )
         }
-        val diskPaths = diskFiles.map { it.path }.toSet()
-        val gone = records.filter { !it.missing && it.filePath !in diskPaths }.map { it.id }
+        val diskByPath = diskFiles.associateBy { it.path }
+        // 孤儿行修复:曾开始但从未收尾(endedAt=null)的行,若磁盘文件确实存在
+        // (如进程被杀导致 finalize 回调未跑),用磁盘元数据补齐收尾字段。
+        records.filter { it.endedAt == null && it.filePath in diskByPath }.forEach { r ->
+            val f = diskByPath.getValue(r.filePath)
+            dao.finalize(r.id, f.modifiedMillis, durationReader(f.path) ?: 0L, f.sizeBytes)
+        }
+        val gone = records.filter { !it.missing && it.filePath !in diskByPath }.map { it.id }
         if (gone.isNotEmpty()) dao.markMissing(gone)
     }
 }
