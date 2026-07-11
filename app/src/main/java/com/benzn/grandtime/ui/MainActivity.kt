@@ -3,7 +3,10 @@ package com.benzn.grandtime.ui
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -37,26 +40,45 @@ import com.benzn.grandtime.ui.theme.FieldSightTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val notifPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            startCore() // 授权与否都启动:通知不可见不影响 FGS 运行
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            startCore()
+            maybeRequestOverlay()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { FieldSightTheme { MainScaffold() } }
 
-        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
+        val required = listOf(
+            Manifest.permission.POST_NOTIFICATIONS,
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+
+        if (required.isEmpty()) {
             startCore()
+            maybeRequestOverlay()
         } else {
-            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            permissionLauncher.launch(required.toTypedArray())
         }
     }
 
     private fun startCore() {
         startForegroundService(Intent(this, CoreService::class.java))
+    }
+
+    private fun maybeRequestOverlay() {
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(
+                this,
+                "Allow \"Display over other apps\" so physical keys can record while the screen is off",
+                Toast.LENGTH_LONG,
+            ).show()
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            )
+        }
     }
 }
 
