@@ -81,7 +81,7 @@ fun FilesScreen() {
         if (filtered.isEmpty()) {
             FsCard {
                 Column(
-                    Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                    Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Icon(
