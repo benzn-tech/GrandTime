@@ -19,7 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.benzn.grandtime.service.CoreService
-import com.benzn.grandtime.ui.theme.GrandTimeTheme
+import com.benzn.grandtime.ui.theme.FieldSightTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { GrandTimeTheme { MainScreen() } }
+        setContent { FieldSightTheme { MainScreen() } }
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
