@@ -9,10 +9,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -77,35 +79,38 @@ private fun MainScaffold() {
         },
         bottomBar = {
             if (!isSubScreen) {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                    val itemColors = NavigationBarItemDefaults.colors(
-                        indicatorColor = MaterialTheme.colorScheme.secondary,
-                        selectedIconColor = MaterialTheme.colorScheme.onSecondary,
-                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    NavigationBarItem(
-                        selected = screen == Screen.HOME,
-                        onClick = { screen = Screen.HOME },
-                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                        label = { Text("Home") },
-                        colors = itemColors,
-                    )
-                    NavigationBarItem(
-                        selected = screen == Screen.FILES,
-                        onClick = { screen = Screen.FILES },
-                        icon = { Icon(painterResource(R.drawable.ic_nav_files), contentDescription = null) },
-                        label = { Text("Files") },
-                        colors = itemColors,
-                    )
-                    NavigationBarItem(
-                        selected = screen == Screen.SETTINGS,
-                        onClick = { screen = Screen.SETTINGS },
-                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                        label = { Text("Settings") },
-                        colors = itemColors,
-                    )
+                Column {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                        val itemColors = NavigationBarItemDefaults.colors(
+                            indicatorColor = MaterialTheme.colorScheme.secondary,
+                            selectedIconColor = MaterialTheme.colorScheme.onSecondary,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        NavigationBarItem(
+                            selected = screen == Screen.HOME,
+                            onClick = { screen = Screen.HOME },
+                            icon = { Icon(Icons.Outlined.Home, contentDescription = null) },
+                            label = { Text("Home") },
+                            colors = itemColors,
+                        )
+                        NavigationBarItem(
+                            selected = screen == Screen.FILES,
+                            onClick = { screen = Screen.FILES },
+                            icon = { Icon(painterResource(R.drawable.ic_nav_files), contentDescription = null) },
+                            label = { Text("Files") },
+                            colors = itemColors,
+                        )
+                        NavigationBarItem(
+                            selected = screen == Screen.SETTINGS,
+                            onClick = { screen = Screen.SETTINGS },
+                            icon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+                            label = { Text("Settings") },
+                            colors = itemColors,
+                        )
+                    }
                 }
             }
         },

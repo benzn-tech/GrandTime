@@ -20,7 +20,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -59,7 +58,7 @@ fun AppTopBar(title: String?, showBack: Boolean, onBack: () -> Unit, serviceRunn
             val accent = MaterialTheme.colorScheme.secondary
             Text(
                 buildAnnotatedString {
-                    withStyle(SpanStyle(color = Color.White)) { append("Field") }
+                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onPrimary)) { append("Field") }
                     withStyle(SpanStyle(color = accent)) { append("Sight") }
                 },
                 fontSize = 18.sp,
