@@ -67,6 +67,20 @@ ADJUST_VOLUME 任何状态可用。NONE/SEND_SOS/TOGGLE_VIDEO_UPLOAD/TOGGLE_WARN
 抓帧替代方案留 SP3b 评估(抓帧同样占用例名额,本期不做)。DB codec 值 'frame-grab'
 保留给 SP3b。
 
+### 2.5 高画质录像中拍照 = 抓帧(SP3a.1,2026-07-12 增补,用户拍板)
+
+真机实测矩阵:480P 双绑可用(录像中出 1280×960 传感器照片);720P/1080P 双绑被压到
+预览档,只绑视频。SMART-PTT 的"录像中拍照"大概率即视频帧抓取。据此:
+
+- **默认画质 = 1080P**(RecordingSettings.videoQuality 默认不变,本就是 P1080)
+- 720P/1080P 录像中按拍照键 → **抓帧路径**:Manager 记录按键时刻 → 立即触发一次
+  分段收尾(复用滚动机制,录像无感续录)→ 段 finalize 后用 MediaMetadataRetriever
+  按 (按键时刻 − 段起始) 偏移抽帧 → 按 photo_quality 压 JPEG 存 IMG_ 文件 →
+  DB 行 codec='frame-grab'、resolution=视频档、sessionId 同录像、startedAt=按键时刻
+- 480P 录像中拍照维持双绑传感器路径(codec='jpeg');录音中拍照不受影响(5MP)
+- 抓帧进行中再按拍照键 → 忽略+震两下(防抖);CaptureCore 零改动,全在 Manager 层
+- 用户后续若抽查 SMART-PTT 样片证实为 5MP 独立出片,再评估 Camera2Interop 定向解锁
+
 ### 分段滚动
 
 录像每满 N 分钟(SettingsStore.segmentMinutes,1/3/5/10)收尾当前段、无缝续录下一段
