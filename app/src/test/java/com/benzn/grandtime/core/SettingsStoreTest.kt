@@ -71,4 +71,34 @@ class SettingsStoreTest {
             runBlocking { store.setSegmentMinutes(2) }
         }
     }
+
+    @Test
+    fun `photo resolution and screen off default and roundtrip`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        assertEquals(PhotoResolution.MAX, store.settings.first().photoResolution)
+        assertEquals(3, store.settings.first().screenOffMinutes)
+        store.setPhotoResolution(PhotoResolution.STD)
+        store.setScreenOffMinutes(0)
+        assertEquals(PhotoResolution.STD, store.settings.first().photoResolution)
+        assertEquals(0, store.settings.first().screenOffMinutes)
+    }
+
+    @Test
+    fun `invalid photo resolution and screen off fall back`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, ds) = newStore()
+        ds.edit {
+            it[androidx.datastore.preferences.core.stringPreferencesKey("photo_resolution")] = "BOGUS"
+            it[androidx.datastore.preferences.core.intPreferencesKey("screen_off_minutes")] = 42
+        }
+        assertEquals(PhotoResolution.MAX, store.settings.first().photoResolution)
+        assertEquals(3, store.settings.first().screenOffMinutes)
+    }
+
+    @Test
+    fun `setScreenOffMinutes rejects values outside options`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { store.setScreenOffMinutes(2) }
+        }
+    }
 }
