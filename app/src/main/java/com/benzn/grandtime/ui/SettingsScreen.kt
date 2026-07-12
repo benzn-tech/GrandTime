@@ -36,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.PhotoQuality
+import com.benzn.grandtime.core.PhotoResolution
 import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.VideoQuality
@@ -43,7 +44,7 @@ import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import kotlinx.coroutines.launch
 
-private enum class SettingDialog { VIDEO_QUALITY, SEGMENT, PHOTO_QUALITY }
+private enum class SettingDialog { VIDEO_QUALITY, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, SCREEN_OFF }
 
 @Composable
 fun SettingsScreen(onOpen: (Screen) -> Unit) {
@@ -70,6 +71,13 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             SettingRow("Segment length", "${settings.segmentMinutes} min") { dialog = SettingDialog.SEGMENT }
             RowDivider()
             SettingRow("Photo quality", settings.photoQuality.label) { dialog = SettingDialog.PHOTO_QUALITY }
+            RowDivider()
+            SettingRow("Photo resolution", settings.photoResolution.label) { dialog = SettingDialog.PHOTO_RESOLUTION }
+            RowDivider()
+            SettingRow(
+                "Auto screen-off",
+                if (settings.screenOffMinutes == 0) "Never" else "${settings.screenOffMinutes} min",
+            ) { dialog = SettingDialog.SCREEN_OFF }
         }
         GroupHeader("Keys")
         FsCard(contentPadding = 0.dp) {
@@ -120,6 +128,22 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             selected = settings.photoQuality,
             label = { it.label },
             onSelect = { scope.launch { store.setPhotoQuality(it) } },
+            onDismiss = { dialog = null },
+        )
+        SettingDialog.PHOTO_RESOLUTION -> RadioDialog(
+            title = "Photo resolution",
+            options = PhotoResolution.entries,
+            selected = settings.photoResolution,
+            label = { it.label },
+            onSelect = { scope.launch { store.setPhotoResolution(it) } },
+            onDismiss = { dialog = null },
+        )
+        SettingDialog.SCREEN_OFF -> RadioDialog(
+            title = "Auto screen-off",
+            options = SettingsStore.SCREEN_OFF_OPTIONS,
+            selected = settings.screenOffMinutes,
+            label = { if (it == 0) "Never" else "$it min" },
+            onSelect = { scope.launch { store.setScreenOffMinutes(it) } },
             onDismiss = { dialog = null },
         )
         null -> {}
