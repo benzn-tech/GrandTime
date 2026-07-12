@@ -1,13 +1,16 @@
 package com.benzn.grandtime.capture
 
+import android.content.Context
+import android.os.Environment
+import android.os.storage.StorageManager
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 卷选择(SD 优先)/目录/命名。spec §3。 */
+/** 公共存储:<root>/FieldSight/device/{video,audio,photo}。SD 优先(spec §3)。 */
 class MediaStorage(
-    private val volumesProvider: () -> List<File?>,
+    private val rootProvider: () -> File,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     enum class Kind(val dir: String, val prefix: String, val ext: String) {
@@ -16,13 +19,8 @@ class MediaStorage(
         PHOTO("photo", "IMG", "jpg"),
     }
 
-    fun root(): File {
-        val volumes = volumesProvider().filterNotNull()
-        require(volumes.isNotEmpty()) { "no storage volume available" }
-        return if (volumes.size >= 2) volumes[1] else volumes[0]
-    }
-
-    fun mediaDir(kind: Kind): File = File(File(root(), "media"), kind.dir).apply { mkdirs() }
+    fun mediaDir(kind: Kind): File =
+        File(File(File(rootProvider(), "FieldSight"), "device"), kind.dir).apply { mkdirs() }
 
     fun newFile(kind: Kind, startMillis: Long = clock()): File {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(startMillis))
@@ -36,5 +34,17 @@ class MediaStorage(
         return candidate
     }
 
-    fun hasFreeSpace(minBytes: Long = 200L * 1024 * 1024): Boolean = root().usableSpace >= minBytes
+    fun hasFreeSpace(minBytes: Long = 200L * 1024 * 1024): Boolean = rootProvider().usableSpace >= minBytes
+
+    companion object {
+        /** SD 优先:枚举可移动卷取其目录;无则内置主共享存储。 */
+        fun publicRoot(context: Context): File {
+            val removable = runCatching {
+                val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
+                sm.storageVolumes.firstOrNull { it.isRemovable && it.state == Environment.MEDIA_MOUNTED }
+                    ?.directory
+            }.getOrNull()
+            return removable ?: Environment.getExternalStorageDirectory()
+        }
+    }
 }

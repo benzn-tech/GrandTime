@@ -47,7 +47,7 @@ class CaptureManager(
     private val audio = AudioRecorder(context)
     private val torch = TorchController(context, session)
     private val volume = VolumeCycler(context)
-    private val storage = MediaStorage({ context.getExternalFilesDirs(null).toList() })
+    private val storage = MediaStorage({ MediaStorage.publicRoot(context) })
 
     private var segmentTimer: Job? = null
     private var pendingRoll = false
