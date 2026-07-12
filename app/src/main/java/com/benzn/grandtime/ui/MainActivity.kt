@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             startCore()
             maybeRequestOverlay()
+            maybeRequestAllFiles()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,6 +65,7 @@ class MainActivity : ComponentActivity() {
         if (required.isEmpty()) {
             startCore()
             maybeRequestOverlay()
+            maybeRequestAllFiles()
         } else {
             permissionLauncher.launch(required.toTypedArray())
         }
@@ -89,6 +92,15 @@ class MainActivity : ComponentActivity() {
             ).show()
             startActivity(
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            )
+        }
+    }
+
+    private fun maybeRequestAllFiles() {
+        if (!Environment.isExternalStorageManager()) {
+            Toast.makeText(this, "Allow \"All files access\" so recordings save to a browsable folder", Toast.LENGTH_LONG).show()
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
             )
         }
     }

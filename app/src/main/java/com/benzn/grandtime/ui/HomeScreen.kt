@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Environment
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -127,13 +128,17 @@ private fun mmss(elapsedMillis: Long): String {
 private fun isSetupComplete(context: Context): Boolean {
     val camera = context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
     val mic = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-    return camera && mic && Settings.canDrawOverlays(context)
+    return camera && mic && Settings.canDrawOverlays(context) && Environment.isExternalStorageManager()
 }
 
 private fun openSetup(context: Context) {
     if (!Settings.canDrawOverlays(context)) {
         context.startActivity(
             Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+        )
+    } else if (!Environment.isExternalStorageManager()) {
+        context.startActivity(
+            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}"))
         )
     } else {
         context.startActivity(
