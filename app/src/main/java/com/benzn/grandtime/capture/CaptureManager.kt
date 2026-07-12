@@ -26,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,8 +75,11 @@ class CaptureManager(
         }
         // 预览 surface 收发:录像态且 UI 提供了 surface 才 attach;否则(切后台/回 Idle)detach。
         scope.launch {
-            AppState.previewSurface.collect { sp ->
-                if (sp != null && core.state is CaptureState.RecordingVideo) {
+            combine(
+                AppState.previewSurface,
+                AppState.captureState,
+            ) { sp, state -> sp to state }.collect { (sp, state) ->
+                if (sp != null && state is CaptureState.RecordingVideo) {
                     runCatching { session.attachPreview(sp) }
                 } else {
                     session.detachPreview()
