@@ -112,6 +112,9 @@ private fun MainScaffold() {
     val isSubScreen = screen == Screen.KEY_BINDINGS || screen == Screen.DIAGNOSTICS
     val isRecording = screen == Screen.RECORDING
     BackHandler(enabled = isSubScreen) { screen = Screen.SETTINGS }
+    // 录像中吞掉系统返回键(no-op):避免误触退到后台造成困惑(录像本身经 Service 不受影响),
+    // 用户必须用 RecordingScreen 里的 Stop 按钮结束录制。
+    BackHandler(enabled = isRecording) {}
     val running by AppState.serviceRunning.collectAsStateWithLifecycle()
 
     // Service 侧 captureState 驱动导航:进入 RecordingVideo → 全屏 RECORDING;

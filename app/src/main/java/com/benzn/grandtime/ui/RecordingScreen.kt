@@ -31,7 +31,13 @@ fun RecordingScreen(onStop: () -> Unit) {
     LaunchedEffect(Unit) { while (true) { nowMillis = System.currentTimeMillis(); delay(1000) } }
 
     // 预览 surface 交给 CaptureManager;熄屏请求未到时保持屏幕常亮。
-    val previewView = remember { PreviewView(context) }
+    // FIT_CENTER(非默认 FILL_CENTER):录制帧是 16:9 横向,屏幕是 480x640 竖屏容器,
+    // FILL_CENTER 会裁掉画面两端来填满竖屏 → 看起来"比例不对"/像被放大裁切。
+    // FIT_CENTER 完整显示 16:9 帧(上下留黑边),做到"所见即所录"——
+    // 参见 Goal A 结论:实际录制并未裁横向 FOV,裁的只是竖直方向,问题出在预览的裁切显示上。
+    val previewView = remember {
+        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
+    }
     DisposableEffect(Unit) {
         AppState.previewSurface.value = previewView.surfaceProvider
         onDispose { AppState.previewSurface.value = null }
