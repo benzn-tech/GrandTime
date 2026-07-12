@@ -1,21 +1,26 @@
 package com.benzn.grandtime.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Context
-import android.media.MediaMetadataRetriever
+import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -32,6 +37,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -39,8 +46,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import com.benzn.grandtime.R
+import com.benzn.grandtime.capture.MediaStorage
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.FilesReconciler
@@ -117,18 +129,25 @@ fun FilesScreen() {
             }
         } else {
             val grouped = filtered.groupBy { dayLabel(it.startedAt) }
-            LazyColumn(Modifier.weight(1f)) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f),
+            ) {
                 grouped.forEach { (day, dayItems) ->
-                    item(key = "header-$day") {
+                    item(key = "header-$day", span = { GridItemSpan(maxLineSpan) }) {
                         Text(
                             day,
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                             color = fs.textTertiary,
-                            modifier = Modifier.padding(vertical = 8.dp),
+                            modifier = Modifier.padding(vertical = 4.dp),
                         )
                     }
-                    items(dayItems, key = { it.id }) { record -> MediaRow(record) }
+                    items(dayItems, key = { it.id }) { record ->
+                        MediaCell(record) { openFile(context, record) }
+                    }
                 }
             }
         }
@@ -136,54 +155,106 @@ fun FilesScreen() {
 }
 
 @Composable
-private fun MediaRow(record: CaptureRecord) {
+private fun MediaCell(record: CaptureRecord, onClick: () -> Unit) {
+    val context = LocalContext.current
     val fs = LocalFsColors.current
-    Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.clickable(onClick = onClick)) {
         Box(
-            Modifier.size(24.dp).clip(MaterialTheme.shapes.small)
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(MaterialTheme.shapes.small)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                record.kind.first().uppercase(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.SemiBold,
-            )
+            if (record.kind == "audio") {
+                Icon(
+                    painterResource(R.drawable.ic_nav_files),
+                    contentDescription = null,
+                    tint = fs.textTertiary,
+                    modifier = Modifier.size(28.dp),
+                )
+            } else {
+                val model = ImageRequest.Builder(context)
+                    .data(File(record.filePath))
+                    .apply { if (record.kind == "video") videoFrameMillis(0) }
+                    .crossfade(true)
+                    .build()
+                AsyncImage(
+                    model = model,
+                    contentDescription = record.fileName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            if (record.kind == "video") {
+                Row(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .clip(MaterialTheme.shapes.small)
+                        .background(Color(0x99000000))
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("▶", color = Color.White, fontSize = 9.sp)
+                    record.durationMs?.let { d ->
+                        Spacer(Modifier.size(3.dp))
+                        Text(mmssLabel(d), color = Color.White, fontSize = 9.sp)
+                    }
+                }
+            }
         }
-        Spacer(Modifier.width(12.dp))
         Text(
             record.fileName,
             fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
+            fontSize = 10.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
+            color = fs.textTertiary,
+            modifier = Modifier.padding(top = 2.dp),
         )
-        Spacer(Modifier.width(12.dp))
-        record.durationMs?.let { d ->
-            Text(mmssLabel(d), style = MaterialTheme.typography.bodySmall, color = fs.textTertiary)
-            Spacer(Modifier.width(8.dp))
-        }
-        Text(formatSize(record.sizeBytes), style = MaterialTheme.typography.bodySmall, color = fs.textTertiary)
     }
 }
 
+/** 打开文件用 FileProvider content:// (file:// 在 API24+ 传给外部 app 会崩)。 */
+private fun openFile(context: Context, record: CaptureRecord) {
+    val mime = when (record.kind) {
+        "video" -> "video/*"
+        "audio" -> "audio/*"
+        else -> "image/*"
+    }
+    try {
+        val uri = FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", File(record.filePath),
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(intent)
+    } catch (e: ActivityNotFoundException) {
+        Toast.makeText(context, "No app can open this file", Toast.LENGTH_SHORT).show()
+    } catch (e: IllegalArgumentException) {
+        Toast.makeText(context, "File not accessible", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** 公共根 FieldSight/device/{video,audio,photo} 扫盘,供对账补插磁盘上有而 DB 无的文件。 */
 private fun scanDisk(context: Context): List<FilesReconciler.DiskFile> {
-    val volumes = context.getExternalFilesDirs(null).filterNotNull()
-    val root = if (volumes.size >= 2) volumes[1] else volumes.firstOrNull() ?: return emptyList()
-    val dirs = mapOf("video" to "video", "audio" to "audio", "photo" to "photo")
-    return dirs.flatMap { (dirName, kind) ->
-        File(File(root, "media"), dirName).listFiles()?.filter { it.isFile }?.map { f ->
+    val base = File(File(MediaStorage.publicRoot(context), "FieldSight"), "device")
+    val kinds = listOf("video", "audio", "photo")
+    return kinds.flatMap { kind ->
+        File(base, kind).listFiles()?.filter { it.isFile }?.map { f ->
             FilesReconciler.DiskFile(f.absolutePath, f.name, kind, f.length(), f.lastModified())
         } ?: emptyList()
     }
 }
 
 private fun readDurationMillis(path: String): Long? = try {
-    MediaMetadataRetriever().use { r ->
+    android.media.MediaMetadataRetriever().use { r ->
         r.setDataSource(path)
-        r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+        r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
     }
 } catch (e: Exception) {
     null
@@ -198,10 +269,4 @@ private fun dayLabel(millis: Long): String {
     val dayKey = SimpleDateFormat("yyyyMMdd", Locale.US)
     val display = SimpleDateFormat("d MMM yyyy", Locale.US)
     return if (dayKey.format(Date(millis)) == dayKey.format(Date())) "Today" else display.format(Date(millis))
-}
-
-private fun formatSize(bytes: Long): String = when {
-    bytes >= 1_000_000 -> String.format(Locale.US, "%.1f MB", bytes / 1_000_000.0)
-    bytes >= 1_000 -> "${bytes / 1_000} KB"
-    else -> "$bytes B"
 }
