@@ -16,12 +16,17 @@ class MediaMigrator(
             val destDir = File(File(File(newRoot, "FieldSight"), "device"), kind).apply { mkdirs() }
             for (src in files) {
                 val dest = File(destDir, src.name)
-                if (dest.exists()) { src.delete(); continue }
                 val oldPath = src.absolutePath
-                if (src.renameTo(dest) || (src.copyTo(dest, overwrite = false).exists().also { src.delete() })) {
-                    onMoved(oldPath, dest)
-                    moved++
+                if (dest.exists()) { src.delete(); continue }
+                val ok = if (src.renameTo(dest)) {
+                    true
+                } else {
+                    runCatching {
+                        src.copyTo(dest, overwrite = false)
+                        if (dest.length() == src.length()) { src.delete(); true } else { dest.delete(); false }
+                    }.getOrElse { dest.delete(); false }
                 }
+                if (ok) { onMoved(oldPath, dest); moved++ }
             }
         }
         return moved

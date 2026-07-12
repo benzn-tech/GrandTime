@@ -42,4 +42,17 @@ class MediaMigratorTest {
         val n = MediaMigrator(tmp.newFolder("none"), tmp.newFolder("dst")) { _, _ -> }.migrate()
         assertEquals(0, n)
     }
+
+    @Test
+    fun `dest already exists - source deleted, not recounted, dest untouched`() {
+        val oldRoot = tmp.newFolder("olddup"); val newRoot = tmp.newFolder("newdup")
+        seed(oldRoot, "video", "VID_1.mp4") // source content "x"
+        val destDir = File(File(File(newRoot, "FieldSight"), "device"), "video").apply { mkdirs() }
+        File(destDir, "VID_1.mp4").writeText("PRESERVED") // pre-existing dest
+        val moved = mutableListOf<String>()
+        val n = MediaMigrator(oldRoot, newRoot) { old, _ -> moved.add(old) }.migrate()
+        assertEquals(0, n)                                   // duplicate not counted
+        assertFalse(File(File(File(oldRoot, "media"), "video"), "VID_1.mp4").exists()) // source removed
+        assertEquals("PRESERVED", File(destDir, "VID_1.mp4").readText())               // dest NOT overwritten
+    }
 }
