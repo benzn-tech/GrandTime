@@ -1,0 +1,72 @@
+package com.benzn.grandtime.ui
+
+import android.view.WindowManager
+import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.capture.CaptureState
+import kotlinx.coroutines.delay
+
+@Composable
+fun RecordingScreen(onStop: () -> Unit) {
+    val context = LocalContext.current
+    val capture by AppState.captureState.collectAsStateWithLifecycle()
+    val screenOff by AppState.screenOffRequest.collectAsStateWithLifecycle()
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { nowMillis = System.currentTimeMillis(); delay(1000) } }
+
+    // 预览 surface 交给 CaptureManager;熄屏请求未到时保持屏幕常亮。
+    val previewView = remember { PreviewView(context) }
+    DisposableEffect(Unit) {
+        AppState.previewSurface.value = previewView.surfaceProvider
+        onDispose { AppState.previewSurface.value = null }
+    }
+    val activity = remember(context) { context as? android.app.Activity }
+    LaunchedEffect(screenOff) {
+        val w = activity?.window ?: return@LaunchedEffect
+        if (screenOff) w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+        val start = (capture as? CaptureState.RecordingVideo)?.startedAtMillis
+        Row(
+            Modifier.align(Alignment.TopStart).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "REC ${mmss((nowMillis - (start ?: nowMillis)))}",
+                color = Color.White, style = MaterialTheme.typography.titleMedium,
+            )
+        }
+        Button(
+            onClick = onStop,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp).height(56.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error, contentColor = Color.White,
+            ),
+        ) { Text("Stop") }
+    }
+}
+
+private fun mmss(elapsed: Long): String {
+    val t = (elapsed / 1000).coerceAtLeast(0); return "%02d:%02d".format(t / 60, t % 60)
+}

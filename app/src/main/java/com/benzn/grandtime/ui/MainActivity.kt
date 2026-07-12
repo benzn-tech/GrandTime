@@ -26,6 +26,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -34,7 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.R
+import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.hardware.HardKey
+import com.benzn.grandtime.hardware.RawDirection
 import com.benzn.grandtime.service.CoreService
 import com.benzn.grandtime.ui.theme.FieldSightTheme
 
@@ -94,21 +98,32 @@ class MainActivity : ComponentActivity() {
 private fun MainScaffold() {
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     val isSubScreen = screen == Screen.KEY_BINDINGS || screen == Screen.DIAGNOSTICS
+    val isRecording = screen == Screen.RECORDING
     BackHandler(enabled = isSubScreen) { screen = Screen.SETTINGS }
     val running by AppState.serviceRunning.collectAsStateWithLifecycle()
+
+    // Service 侧 captureState 驱动导航:进入 RecordingVideo → 全屏 RECORDING;
+    // 离开 RecordingVideo(停止/失败)且当前在 RECORDING → 回 HOME。
+    val capture by AppState.captureState.collectAsStateWithLifecycle()
+    LaunchedEffect(capture) {
+        if (capture is CaptureState.RecordingVideo && screen != Screen.RECORDING) screen = Screen.RECORDING
+        else if (capture !is CaptureState.RecordingVideo && screen == Screen.RECORDING) screen = Screen.HOME
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            AppTopBar(
-                title = if (isSubScreen) screen.title else null,
-                showBack = isSubScreen,
-                onBack = { screen = Screen.SETTINGS },
-                serviceRunning = running,
-            )
+            if (!isRecording) {
+                AppTopBar(
+                    title = if (isSubScreen) screen.title else null,
+                    showBack = isSubScreen,
+                    onBack = { screen = Screen.SETTINGS },
+                    serviceRunning = running,
+                )
+            }
         },
         bottomBar = {
-            if (!isSubScreen) {
+            if (!isSubScreen && !isRecording) {
                 Column {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
@@ -152,6 +167,13 @@ private fun MainScaffold() {
                 Screen.SETTINGS -> SettingsScreen(onOpen = { screen = it })
                 Screen.KEY_BINDINGS -> KeyBindingsScreen()
                 Screen.DIAGNOSTICS -> DiagnosticsScreen()
+                Screen.RECORDING -> RecordingScreen(
+                    onStop = {
+                        // 与物理键同管线:短按 VIDEO(down 立即接 up)= 录像态下的停止(spec 键位)。
+                        AppState.screenKeyEvents.tryEmit(HardKey.VIDEO to RawDirection.DOWN)
+                        AppState.screenKeyEvents.tryEmit(HardKey.VIDEO to RawDirection.UP)
+                    },
+                )
             }
         }
     }
