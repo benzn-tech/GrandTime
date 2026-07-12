@@ -103,10 +103,28 @@ class CameraSession(
         return video
     }
 
-    suspend fun bindForPhoto(jpegQuality: Int): ImageCapture {
+    /**
+     * 独立拍照绑定。[targetPx] 为设置里的照片精度目标像素数(spec §2.7):null=不限(满传感器,
+     * 沿用 CameraX 默认 MAXIMUM 档);非 null 时按 4:3 换算目标边长,用 ResolutionStrategy
+     * 就近选(CLOSEST_LOWER_THEN_HIGHER,同 bindForVideo 480P 分支的做法)。
+     */
+    suspend fun bindForPhoto(jpegQuality: Int, targetPx: Long? = null): ImageCapture {
         val p = provider()
         p.unbindAll()
-        val image = ImageCapture.Builder().setJpegQuality(jpegQuality).build()
+        val builder = ImageCapture.Builder().setJpegQuality(jpegQuality)
+        if (targetPx != null) {
+            builder.setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            sizeForTargetPixels(targetPx),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                        )
+                    )
+                    .build()
+            )
+        }
+        val image = builder.build()
         camera = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, image)
         videoCapture = null
         imageCapture = image
@@ -151,5 +169,12 @@ class CameraSession(
         videoCapture = null
         imageCapture = null
         previewUseCase = null
+    }
+
+    /** 目标像素数 → 4:3 近似边长(照片精度换算,spec §2.7)。 */
+    private fun sizeForTargetPixels(targetPx: Long): Size {
+        val height = kotlin.math.sqrt(targetPx * 3.0 / 4.0).toInt().coerceAtLeast(1)
+        val width = (height * 4 / 3).coerceAtLeast(1)
+        return Size(width, height)
     }
 }

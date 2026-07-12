@@ -5,11 +5,14 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
+import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.core.content.ContextCompat
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.PhotoQuality
+import com.benzn.grandtime.core.PhotoResolution
 import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.VideoQuality
@@ -48,14 +51,38 @@ class CaptureManager(
     private val torch = TorchController(context, session)
     private val volume = VolumeCycler(context)
     private val storage = MediaStorage({ MediaStorage.publicRoot(context) })
+    private val sounds = CaptureSounds()
 
     private var segmentTimer: Job? = null
+    private var screenOffTimer: Job? = null
     private var pendingRoll = false
     private var currentVideoRecordId: String? = null
     private var currentVideoFile: File? = null
     private var currentVideoStartedAt: Long = 0
     private var currentAudioRecordId: String? = null
     private var currentAudioFile: File? = null
+
+    init {
+        // 首启一次性迁移:旧的 app 私有目录媒体 → 公共存储(spec §3),迁移成功的行更新 DB 路径。
+        scope.launch(Dispatchers.IO) {
+            val oldRoot = context.getExternalFilesDir(null) ?: return@launch
+            val migrator = MediaMigrator(
+                oldRoot = oldRoot,
+                newRoot = MediaStorage.publicRoot(context),
+            ) { oldPath, newFile -> scope.launch { dao.updatePath(oldPath, newFile.absolutePath) } }
+            runCatching { migrator.migrate() }
+        }
+        // 预览 surface 收发:录像态且 UI 提供了 surface 才 attach;否则(切后台/回 Idle)detach。
+        scope.launch {
+            AppState.previewSurface.collect { sp ->
+                if (sp != null && core.state is CaptureState.RecordingVideo) {
+                    runCatching { session.attachPreview(sp) }
+                } else {
+                    session.detachPreview()
+                }
+            }
+        }
+    }
 
     /** 720P/1080P 录像中拍照的抓帧请求(spec §2.5)。单挂起槽:非 null 时新请求一律防抖拒绝。 */
     private data class PendingFrameGrab(
@@ -86,9 +113,11 @@ class CaptureManager(
 
     fun shutdown() {
         segmentTimer?.cancel()
+        screenOffTimer?.cancel()
         if (video.isRecording) video.stop()
         if (audio.isRecording) audio.stop()
         pendingFrameGrab = null
+        sounds.release()
         lifecycleOwner.destroy()
     }
 
@@ -103,6 +132,11 @@ class CaptureManager(
         }
         if (needsMic && !granted(Manifest.permission.RECORD_AUDIO)) {
             notify("Microphone permission required — open the app"); return false
+        }
+        val startsCaptureAny = action == KeyAction.START_STOP_VIDEO ||
+            action == KeyAction.START_STOP_AUDIO || action == KeyAction.TAKE_PHOTO
+        if (startsCaptureAny && !Environment.isExternalStorageManager()) {
+            notify("Storage access required — finish setup"); return false
         }
         val startsCapture = (action == KeyAction.START_STOP_VIDEO || action == KeyAction.START_STOP_AUDIO) &&
             core.state is CaptureState.Idle || action == KeyAction.TAKE_PHOTO
@@ -177,19 +211,44 @@ class CaptureManager(
                 }
                 if (error) {
                     pendingFrameGrab = null // 会话失败,后续不再有段 finalize——不留孤儿挂起槽
+                    stopScreenOffTimer()
                     execute(core.onFailure(message ?: "Video error"))
                     session.unbind()
                 } else {
                     val roll = pendingRoll
                     pendingRoll = false
                     execute(core.onVideoFinalized(roll))
-                    if (core.state is CaptureState.Idle) session.unbind()
+                    if (core.state is CaptureState.Idle) {
+                        sounds.stopRecording()
+                        stopScreenOffTimer()
+                        session.unbind()
+                    }
                 }
             }
         }
         startSegmentTimer(settings.segmentMinutes)
+        if (cmd.segmentIndex == 1) {
+            sounds.startRecording()
+            startScreenOffTimer(settings.screenOffMinutes)
+        }
         probe("video segment ${cmd.segmentIndex} started: ${file.name}")
         return true
+    }
+
+    /** 录像段 1 起计时,满 N 分钟置 AppState.screenOffRequest=true(spec §2.7);0=Never 不计。 */
+    private fun startScreenOffTimer(minutes: Int) {
+        screenOffTimer?.cancel()
+        if (minutes <= 0) return
+        screenOffTimer = scope.launch {
+            delay(minutes * 60_000L)
+            AppState.screenOffRequest.value = true
+        }
+    }
+
+    private fun stopScreenOffTimer() {
+        screenOffTimer?.cancel()
+        screenOffTimer = null
+        AppState.screenOffRequest.value = false
     }
 
     private fun startSegmentTimer(minutes: Int) {
@@ -205,6 +264,7 @@ class CaptureManager(
         val file = currentVideoFile ?: return
         val ended = System.currentTimeMillis()
         dao.finalize(id, ended, ended - currentVideoStartedAt, file.length())
+        scan(file.absolutePath)
         probe("video segment saved: ${file.name} (${file.length()} bytes)")
         currentVideoRecordId = null
         currentVideoFile = null
@@ -222,7 +282,7 @@ class CaptureManager(
             }
             session.imageCapture != null -> session.imageCapture!!
             else -> try {
-                session.bindForPhoto(jpegQuality(settings.photoQuality))
+                session.bindForPhoto(jpegQuality(settings.photoQuality), settings.photoResolution.targetPixels())
             } catch (e: Exception) {
                 execute(core.onFailure("Camera unavailable")); return
             }
@@ -240,6 +300,8 @@ class CaptureManager(
                             codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
                         )
                     )
+                    scan(file.absolutePath)
+                    sounds.shutter()
                     notify(if (core.state is CaptureState.Idle) "Photo saved" else "Photo saved (recording continues)")
                     probe("photo saved: ${file.name}")
                 } else {
@@ -316,6 +378,8 @@ class CaptureManager(
                     createdAt = grab.keypressMillis,
                 )
             )
+            scan(out.absolutePath)
+            sounds.shutter()
             notify("Photo saved (recording continues)")
             probe("frame-grab saved: ${out.name}")
         } else {
@@ -341,6 +405,7 @@ class CaptureManager(
                 startedAt = startedAt, codec = "aac", sessionId = cmd.sessionId, createdAt = startedAt,
             )
         )
+        sounds.startRecording()
         probe("audio started: ${file.name}")
         return true
     }
@@ -353,6 +418,7 @@ class CaptureManager(
         if (id != null && file != null) {
             val ended = System.currentTimeMillis()
             dao.finalize(id, ended, if (startedAt != null) ended - startedAt else 0L, file.length())
+            scan(file.absolutePath)
             probe("audio saved: ${file.name}")
         }
         currentAudioRecordId = null
@@ -361,6 +427,7 @@ class CaptureManager(
         // 录音专属绑定不存在(MediaRecorder 不占 CameraX),但录音期间若拍过照,
         // 相机绑定会残留到这里——收尾时兜底释放;video 仍在录时保持绑定,no-op 安全。
         if (!video.isRecording) session.unbind()
+        sounds.stopRecording()
         execute(core.onAudioFinalized())
     }
 
@@ -368,6 +435,11 @@ class CaptureManager(
         val vibrator = context.getSystemService(Vibrator::class.java) ?: return
         val pattern = if (times == 1) longArrayOf(0, 80) else longArrayOf(0, 60, 80, 60)
         vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+    }
+
+    /** 落盘文件纳入系统媒体库(spec §3),各 finalize/insert 点后调用。 */
+    private fun scan(path: String) {
+        MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
     }
 }
 
@@ -378,6 +450,13 @@ private fun VideoQuality.resolutionString(): String = when (this) {
 }
 
 private fun jpegQuality(quality: PhotoQuality): Int = if (quality == PhotoQuality.HIGH) 95 else 80
+
+/** 照片精度(spec §2.7)→ CameraSession.bindForPhoto 的目标像素数;MAX=null(不限,满传感器)。 */
+private fun PhotoResolution.targetPixels(): Long? = when (this) {
+    PhotoResolution.MAX -> null
+    PhotoResolution.HIGH -> 3_000_000L
+    PhotoResolution.STD -> 1_000_000L
+}
 
 /**
  * 抓帧偏移(微秒)= (按键时刻 − 段起始) 钳制非负,换算 MediaMetadataRetriever 的微秒单位

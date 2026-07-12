@@ -30,6 +30,12 @@ object AppState {
     /** UI 屏幕按键 → Service(down/up 原始事件)。 */
     val screenKeyEvents = MutableSharedFlow<Pair<HardKey, RawDirection>>(extraBufferCapacity = 16)
 
+    /** RecordingScreen 提供的预览 surface(前台可见时非 null)。 */
+    val previewSurface = MutableStateFlow<androidx.camera.core.Preview.SurfaceProvider?>(null)
+
+    /** 自动熄屏请求(录像满 N 分钟置 true;UI 观察后释放屏幕常亮)。 */
+    val screenOffRequest = MutableStateFlow(false)
+
     fun addProbe(entry: ProbeEntry) {
         probeEntries.value = (listOf(entry) + probeEntries.value).take(PROBE_LIMIT)
     }

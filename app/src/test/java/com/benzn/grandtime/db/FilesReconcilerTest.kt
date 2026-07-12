@@ -20,6 +20,10 @@ private class FakeDao : CaptureRecordDao {
     override fun observeAll(): Flow<List<CaptureRecord>> = flowOf(rows)
     override suspend fun listAll(): List<CaptureRecord> = rows.toList()
     override suspend fun markMissing(ids: List<String>) { missingIds.addAll(ids) }
+    override suspend fun updatePath(oldPath: String, newPath: String) {
+        val idx = rows.indexOfFirst { it.filePath == oldPath }
+        if (idx >= 0) rows[idx] = rows[idx].copy(filePath = newPath)
+    }
 }
 
 class FilesReconcilerTest {
