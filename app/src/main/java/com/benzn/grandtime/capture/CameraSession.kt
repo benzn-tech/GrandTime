@@ -1,10 +1,12 @@
 package com.benzn.grandtime.capture
 
 import android.content.Context
+import android.util.Log
 import android.util.Size
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -27,12 +29,18 @@ class CameraSession(
     private val context: Context,
     private val lifecycleOwner: ServiceLifecycleOwner,
 ) {
+    companion object {
+        private const val TAG = "CameraSession"
+    }
+
     var camera: Camera? = null
         private set
     var videoCapture: VideoCapture<Recorder>? = null
         private set
     var imageCapture: ImageCapture? = null
         private set
+
+    private var previewUseCase: Preview? = null
 
     private var provider: ProcessCameraProvider? = null
 
@@ -105,10 +113,43 @@ class CameraSession(
         return image
     }
 
+    /**
+     * 追加 Preview 用例到当前绑定,不解绑 VideoCapture/ImageCapture(录像中调用不中断录像)。
+     * bindToLifecycle 对已绑用例是幂等追加,因此这里不调用 unbindAll。
+     * 若设备三流(Video+Image+Preview)超限抛 IllegalArgumentException,则放弃 imageCapture,
+     * 仅保留 Video+Preview 重绑。前台可见时调用。
+     */
+    suspend fun attachPreview(surfaceProvider: Preview.SurfaceProvider) {
+        val p = provider()
+        val preview = Preview.Builder().build().also { it.setSurfaceProvider(surfaceProvider) }
+        try {
+            camera = p.bindToLifecycle(
+                lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA,
+                *listOfNotNull(videoCapture, imageCapture, preview).toTypedArray(),
+            )
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "attachPreview: 三流超限,放弃 imageCapture,仅绑 Video+Preview", e)
+            camera = p.bindToLifecycle(
+                lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA,
+                *listOfNotNull(videoCapture, preview).toTypedArray(),
+            )
+            imageCapture = null
+        }
+        previewUseCase = preview
+    }
+
+    /** 仅解绑 Preview 用例,不影响正在进行的录像/拍照绑定。 */
+    fun detachPreview() {
+        val preview = previewUseCase ?: return
+        runCatching { provider?.unbind(preview) }
+        previewUseCase = null
+    }
+
     suspend fun unbind() {
         provider().unbindAll()
         camera = null
         videoCapture = null
         imageCapture = null
+        previewUseCase = null
     }
 }
