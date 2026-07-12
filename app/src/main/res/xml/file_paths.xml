@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
+    <!-- external-path 只覆盖主存储;root-path 兼顾可移动 SD 卷(/storage/XXXX-XXXX),
+         配合 SD 优先写盘(MediaStorage.publicRoot)。仅按 URI 授权、provider 不导出,安全。 -->
     <external-path name="external_storage" path="." />
+    <root-path name="all_volumes" path="/" />
 </paths>
