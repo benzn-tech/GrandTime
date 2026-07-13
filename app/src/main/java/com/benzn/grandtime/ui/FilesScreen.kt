@@ -58,6 +58,7 @@ import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.FilesReconciler
 import com.benzn.grandtime.ui.theme.LocalFsColors
+import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -205,6 +206,7 @@ private fun MediaCell(record: CaptureRecord, onClick: () -> Unit) {
                     }
                 }
             }
+            UploadStatusBadge(record, Modifier.align(Alignment.TopEnd))
         }
         Text(
             record.fileName,
@@ -215,6 +217,36 @@ private fun MediaCell(record: CaptureRecord, onClick: () -> Unit) {
             color = fs.textTertiary,
             modifier = Modifier.padding(top = 2.dp),
         )
+    }
+}
+
+/** 上传状态角标(仿 duration badge 样式),failed 可点击重新入队。 */
+@Composable
+private fun UploadStatusBadge(record: CaptureRecord, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val fs = LocalFsColors.current
+    val (symbol, color) = when (record.uploadStatus) {
+        "uploaded" -> "✓" to fs.successDot
+        "uploading" -> "↑" to Color.White
+        "failed" -> "!" to MaterialTheme.colorScheme.error
+        else -> "…" to Color(0xFFBDBDBD) // pending
+    }
+    Row(
+        modifier
+            .padding(4.dp)
+            .clip(MaterialTheme.shapes.small)
+            .background(Color(0x99000000))
+            .let { base ->
+                if (record.uploadStatus == "failed") {
+                    base.clickable { WorkManagerUploadEnqueuer(context).enqueue(record.id) }
+                } else {
+                    base
+                }
+            }
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(symbol, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
     }
 }
 

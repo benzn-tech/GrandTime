@@ -51,8 +51,10 @@ fun HomeScreen() {
     val running by AppState.serviceRunning.collectAsStateWithLifecycle()
     val login by AppState.loginState.collectAsStateWithLifecycle()
     val capture by AppState.captureState.collectAsStateWithLifecycle()
+    val site by AppState.selectedSite.collectAsStateWithLifecycle()
     val fs = LocalFsColors.current
     val context = LocalContext.current
+    var showSitePicker by remember { mutableStateOf(false) }
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(capture) {
@@ -98,6 +100,17 @@ fun HomeScreen() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (login is LoginState.LoggedIn) {
+                Text(
+                    "Site: ${site?.name?.takeIf { it.isNotBlank() } ?: "Not selected"}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clickable { showSitePicker = true },
+                )
+            }
+        }
+        if (showSitePicker) {
+            SitePickerDialog(onDismiss = { showSitePicker = false })
         }
         if (!setupComplete) {
             Spacer(Modifier.height(12.dp))

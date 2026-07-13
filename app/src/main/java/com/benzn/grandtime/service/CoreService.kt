@@ -17,7 +17,9 @@ import com.benzn.grandtime.capture.CaptureManager
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.ProbeEntry
 import com.benzn.grandtime.core.SettingsStore
+import com.benzn.grandtime.core.SiteStore
 import com.benzn.grandtime.core.settingsDataStore
+import com.benzn.grandtime.core.siteDataStore
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.hardware.F2spKeyEventSource
 import com.benzn.grandtime.hardware.KeyPress
@@ -126,6 +128,9 @@ class CoreService : LifecycleService() {
         }
         lifecycleScope.launch {
             keyMapStore.overrides.collect { AppState.overrides.value = it }
+        }
+        lifecycleScope.launch {
+            SiteStore(applicationContext.siteDataStore).site.collect { AppState.selectedSite.value = it }
         }
 
         captureManager = CaptureManager(
