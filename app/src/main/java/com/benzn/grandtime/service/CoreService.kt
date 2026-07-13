@@ -135,18 +135,24 @@ class CoreService : LifecycleService() {
                 val idToken = auth.freshIdToken()
                 if (idToken != null) {
                     runCatching {
-                        AppState.availableSites.value = withContext(Dispatchers.IO) {
+                        val sites = withContext(Dispatchers.IO) {
                             SitesApiClient(BuildConfig.ORG_API_BASE_URL).listSites(idToken)
                         }
+                        AppState.availableSites.value = sites
+                        SiteStore(applicationContext.siteDataStore).setSiteList(sites)
                     }
                 }
                 // 登录态落定后补扫:把从未成功入队的 pending/failed 录制重新入队上传——
                 // 覆盖"上传功能上线前的旧录制"和"未正常关闭遗留"两种场景。per-recordId
                 // enqueueUniqueWork(KEEP) 去重,已在途的不受影响;worker 自身校验鉴权+
                 // 封顶重试,文件缺失的旧行会自然退化为 failed 而非死循环。
+                // 仅补扫这条路径带 20s 初始延迟——避免瞬间占满网络,挤掉用户此刻正在
+                // 交互的前台请求(如 SitePickerDialog 的后台刷新);CaptureManager 的
+                // 实时上传(拍摄/录制完成即传)不受影响,仍是 delay=0。
                 val dao = CaptureDb.get(applicationContext).captureRecords()
                 val enq = WorkManagerUploadEnqueuer(applicationContext)
-                dao.listByUploadStatus(listOf("pending", "failed")).forEach { enq.enqueue(it.id) }
+                dao.listByUploadStatus(listOf("pending", "failed"))
+                    .forEach { enq.enqueue(it.id, initialDelaySeconds = 20) }
             }
         }
         lifecycleScope.launch {

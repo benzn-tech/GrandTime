@@ -60,10 +60,20 @@ fun SitePickerDialog(onDismiss: () -> Unit) {
     }
     var currentSiteId by remember { mutableStateOf<String?>(null) }
 
-    // 缓存(CoreService 启动时预取)命中则秒开;这里的拉取只是后台刷新——
-    // 成功则更新缓存+本地态,失败时若已有缓存在展示则不覆盖(仅 Loading 起点才降级 Failed)。
+    // 冷开秒显:优先内存缓存(CoreService 预取,常见路径);若那还没就绪(prefetch 尚
+    // 未跑完),退而读磁盘缓存(SiteStore.siteList,前一次成功拉取写入的)——两者任一
+    // 非空就立刻进 Loaded,不再让用户盯着圈圈等 ~10s。真·首次冷启动(两者皆空)才落到
+    // Loading 圈圈。
     LaunchedEffect(Unit) {
+        if (state is SitePickerState.Loading) {
+            val diskCached = SiteStore(context.siteDataStore).siteList.first()
+            if (diskCached.isNotEmpty()) {
+                state = SitePickerState.Loaded(diskCached)
+            }
+        }
         currentSiteId = SiteStore(context.siteDataStore).site.first()?.id
+        // 网络拉取只是后台刷新——成功则更新内存缓存+磁盘缓存+本地态,失败时若已有
+        // 缓存在展示则不覆盖(仅 Loading 起点才降级 Failed,不能拿失败抹掉已显示的列表)。
         val result = withContext(Dispatchers.IO) {
             val idToken = (context.applicationContext as GrandTimeApp).authManager.freshIdToken()
             if (idToken == null) {
@@ -74,6 +84,7 @@ fun SitePickerDialog(onDismiss: () -> Unit) {
         }
         if (result != null) {
             AppState.availableSites.value = result
+            SiteStore(context.siteDataStore).setSiteList(result)
             state = SitePickerState.Loaded(result)
         } else if (state is SitePickerState.Loading) {
             state = SitePickerState.Failed

@@ -3,6 +3,9 @@ package com.benzn.grandtime.core
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import com.benzn.grandtime.net.SitesApiClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
@@ -11,6 +14,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -42,5 +46,30 @@ class SiteStoreTest {
         store.set(SelectedSite("u1", "north", "North Wharf"))
         store.set(null)
         assertNull(store.site.first())
+    }
+
+    @Test
+    fun `setSiteList then read back`() = runTest(UnconfinedTestDispatcher()) {
+        val store = newStore()
+        val sites = listOf(
+            SitesApiClient.SiteOption("u1", "north", "North Wharf"),
+            SitesApiClient.SiteOption("u2", "south", "South Dock"),
+        )
+        store.setSiteList(sites)
+        assertEquals(sites, store.siteList.first())
+    }
+
+    @Test
+    fun `siteList absent is empty`() = runTest(UnconfinedTestDispatcher()) {
+        val store = newStore()
+        assertTrue(store.siteList.first().isEmpty())
+    }
+
+    @Test
+    fun `siteList malformed json is empty`() = runTest(UnconfinedTestDispatcher()) {
+        val dataStore = newDataStore()
+        dataStore.edit { it[stringPreferencesKey("site_list_json")] = "not json" }
+        val store = SiteStore(dataStore)
+        assertTrue(store.siteList.first().isEmpty())
     }
 }

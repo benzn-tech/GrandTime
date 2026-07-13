@@ -12,7 +12,12 @@ import java.util.concurrent.TimeUnit
 
 /** Enqueues an upload for a finalized capture_records row. Injectable so CaptureManager stays testable. */
 interface UploadEnqueuer {
-    fun enqueue(recordId: String)
+    /**
+     * [initialDelaySeconds] > 0 defers the work's earliest run (hardening #85 startup-sweep
+     * throttle) so a backlog of pending/failed uploads doesn't congest the network right when
+     * the user is interacting in the foreground. Real-time captures pass 0 (immediate).
+     */
+    fun enqueue(recordId: String, initialDelaySeconds: Long = 0)
 }
 
 /**
@@ -20,16 +25,18 @@ interface UploadEnqueuer {
  * (e.g. a stray retry hook) coalesce instead of running the upload twice.
  */
 class WorkManagerUploadEnqueuer(private val context: Context) : UploadEnqueuer {
-    override fun enqueue(recordId: String) {
+    override fun enqueue(recordId: String, initialDelaySeconds: Long) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
-        val request = OneTimeWorkRequestBuilder<UploadWorker>()
+        val builder = OneTimeWorkRequestBuilder<UploadWorker>()
             .setInputData(workDataOf("recordId" to recordId))
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-            .build()
+        if (initialDelaySeconds > 0) {
+            builder.setInitialDelay(initialDelaySeconds, TimeUnit.SECONDS)
+        }
         WorkManager.getInstance(context)
-            .enqueueUniqueWork("upload_$recordId", ExistingWorkPolicy.KEEP, request)
+            .enqueueUniqueWork("upload_$recordId", ExistingWorkPolicy.KEEP, builder.build())
     }
 }

@@ -45,7 +45,7 @@ class CaptureManager(
     private val notify: (String) -> Unit,
     private val probe: (String) -> Unit,
     private val uploadEnqueuer: UploadEnqueuer = object : UploadEnqueuer {
-        override fun enqueue(recordId: String) {}
+        override fun enqueue(recordId: String, initialDelaySeconds: Long) {}
     },
 ) {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { UUID.randomUUID().toString() })
