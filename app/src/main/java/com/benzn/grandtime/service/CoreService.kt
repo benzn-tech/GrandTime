@@ -125,6 +125,15 @@ class CoreService : LifecycleService() {
         }
         lifecycleScope.launch {
             auth.silentLogin()
+            // 登录态落定后补扫:把从未成功入队的 pending/failed 录制重新入队上传——
+            // 覆盖"上传功能上线前的旧录制"和"未正常关闭遗留"两种场景。per-recordId
+            // enqueueUniqueWork(KEEP) 去重,已在途的不受影响;worker 自身校验鉴权+
+            // 封顶重试,文件缺失的旧行会自然退化为 failed 而非死循环。
+            if (AppState.loginState.value is com.benzn.grandtime.core.LoginState.LoggedIn) {
+                val dao = CaptureDb.get(applicationContext).captureRecords()
+                val enq = WorkManagerUploadEnqueuer(applicationContext)
+                dao.listByUploadStatus(listOf("pending", "failed")).forEach { enq.enqueue(it.id) }
+            }
         }
         lifecycleScope.launch {
             keyMapStore.overrides.collect { AppState.overrides.value = it }

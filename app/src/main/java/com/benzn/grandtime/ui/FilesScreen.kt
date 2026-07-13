@@ -220,7 +220,7 @@ private fun MediaCell(record: CaptureRecord, onClick: () -> Unit) {
     }
 }
 
-/** 上传状态角标(仿 duration badge 样式),failed 可点击重新入队。 */
+/** 上传状态角标(仿 duration badge 样式),pending/failed 可点击(重新)入队。 */
 @Composable
 private fun UploadStatusBadge(record: CaptureRecord, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -231,13 +231,14 @@ private fun UploadStatusBadge(record: CaptureRecord, modifier: Modifier = Modifi
         "failed" -> "!" to MaterialTheme.colorScheme.error
         else -> "…" to Color(0xFFBDBDBD) // pending
     }
+    val enqueueable = record.uploadStatus == "pending" || record.uploadStatus == "failed"
     Row(
         modifier
             .padding(4.dp)
             .clip(MaterialTheme.shapes.small)
             .background(Color(0x99000000))
             .let { base ->
-                if (record.uploadStatus == "failed") {
+                if (enqueueable) {
                     base.clickable { WorkManagerUploadEnqueuer(context).enqueue(record.id) }
                 } else {
                     base
