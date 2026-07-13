@@ -17,7 +17,26 @@ class MediaMigrator(
             for (src in files) {
                 val dest = File(destDir, src.name)
                 val oldPath = src.absolutePath
-                if (dest.exists()) { src.delete(); continue }
+                if (dest.exists()) {
+                    // Only treat as already-migrated if content is identical (same length)
+                    if (dest.length() == src.length()) {
+                        src.delete()
+                        continue
+                    } else {
+                        // Different content, same name: migrate source to non-colliding name
+                        val newDest = findNonCollidingFile(destDir, src.name)
+                        val ok = if (src.renameTo(newDest)) {
+                            true
+                        } else {
+                            runCatching {
+                                src.copyTo(newDest, overwrite = false)
+                                if (newDest.length() == src.length()) { src.delete(); true } else { newDest.delete(); false }
+                            }.getOrElse { newDest.delete(); false }
+                        }
+                        if (ok) { onMoved(oldPath, newDest); moved++ }
+                        continue
+                    }
+                }
                 val ok = if (src.renameTo(dest)) {
                     true
                 } else {
@@ -30,5 +49,17 @@ class MediaMigrator(
             }
         }
         return moved
+    }
+
+    private fun findNonCollidingFile(dir: File, name: String): File {
+        val dotIndex = name.lastIndexOf('.')
+        val stem = if (dotIndex > 0) name.substring(0, dotIndex) else name
+        val ext = if (dotIndex > 0) name.substring(dotIndex) else ""
+        var counter = 1
+        while (true) {
+            val candidate = File(dir, "${stem}_$counter$ext")
+            if (!candidate.exists()) return candidate
+            counter++
+        }
     }
 }

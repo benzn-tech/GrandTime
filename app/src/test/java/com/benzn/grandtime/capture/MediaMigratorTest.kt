@@ -44,15 +44,30 @@ class MediaMigratorTest {
     }
 
     @Test
-    fun `dest already exists - source deleted, not recounted, dest untouched`() {
+    fun `dest already exists with same content - source deleted, not recounted, dest untouched (idempotent)`() {
         val oldRoot = tmp.newFolder("olddup"); val newRoot = tmp.newFolder("newdup")
         seed(oldRoot, "video", "VID_1.mp4") // source content "x"
         val destDir = File(File(File(newRoot, "FieldSight"), "device"), "video").apply { mkdirs() }
-        File(destDir, "VID_1.mp4").writeText("PRESERVED") // pre-existing dest
+        File(destDir, "VID_1.mp4").writeText("x") // pre-existing dest with SAME content
         val moved = mutableListOf<String>()
         val n = MediaMigrator(oldRoot, newRoot) { old, _ -> moved.add(old) }.migrate()
         assertEquals(0, n)                                   // duplicate not counted
         assertFalse(File(File(File(oldRoot, "media"), "video"), "VID_1.mp4").exists()) // source removed
-        assertEquals("PRESERVED", File(destDir, "VID_1.mp4").readText())               // dest NOT overwritten
+        assertEquals("x", File(destDir, "VID_1.mp4").readText())               // dest NOT overwritten
+    }
+
+    @Test
+    fun `cross-root same-name different-content preserves both`() {
+        val root1 = tmp.newFolder("r1"); val root2 = tmp.newFolder("r2"); val newRoot = tmp.newFolder("dst")
+        // same kind+name on two roots, DIFFERENT content
+        File(File(File(root1, "media"), "video"), "VID_1.mp4").apply { parentFile!!.mkdirs(); writeText("AAA") }
+        File(File(File(root2, "media"), "video"), "VID_1.mp4").apply { parentFile!!.mkdirs(); writeText("BBBBBB") }
+        val moved = mutableListOf<String>()
+        val n1 = MediaMigrator(root1, newRoot) { o, _ -> moved.add(o) }.migrate()
+        val n2 = MediaMigrator(root2, newRoot) { o, _ -> moved.add(o) }.migrate()
+        val destDir = File(File(File(newRoot, "FieldSight"), "device"), "video")
+        assertEquals(1, n1); assertEquals(1, n2)
+        assertEquals("AAA", File(destDir, "VID_1.mp4").readText())      // first preserved
+        assertEquals("BBBBBB", File(destDir, "VID_1_1.mp4").readText()) // second under suffixed name, both kept
     }
 }
