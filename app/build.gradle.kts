@@ -15,6 +15,9 @@ android {
         targetSdk = 33
         versionCode = 3
         versionName = "0.4.0"
+        buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
+        buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
+        buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
     }
 
     compileOptions {
@@ -26,6 +29,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -50,6 +54,8 @@ dependencies {
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
+    implementation(libs.okhttp)
+    implementation(libs.security.crypto)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
