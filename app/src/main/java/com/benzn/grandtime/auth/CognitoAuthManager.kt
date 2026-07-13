@@ -35,7 +35,10 @@ class CognitoAuthManager(
         // 尽力刷新 idToken(供上传);失败不改变登录态(refresh 过期才登出)
         return when (val r = withContext(Dispatchers.IO) { client.refresh(session.refreshToken) }) {
             is AuthOutcome.Tokens -> { idTokenCache = r.idToken; true }
-            is AuthOutcome.Error -> true // 网络问题保留登录态;refresh 真失效由下次 freshIdToken/登录处理
+            is AuthOutcome.Error -> true // 网络问题保留登录态
+            AuthOutcome.AuthInvalid -> { // refresh token 真失效 → 登出
+                tokenStore.clear(); idTokenCache = null; applyLoggedOut(); false
+            }
             AuthOutcome.NewPasswordRequired -> true
         }
     }
@@ -58,6 +61,10 @@ class CognitoAuthManager(
             }
             AuthOutcome.NewPasswordRequired -> SignInResult.NewPasswordRequired
             is AuthOutcome.Error -> SignInResult.Failure(r.message)
+            // Unreachable via client.signIn() (it uses parseInitiateAuth directly, which never
+            // returns AuthInvalid — only refresh() does). Branch exists only for sealed-interface
+            // exhaustiveness; kept account-enumeration-safe if it were ever reached.
+            AuthOutcome.AuthInvalid -> SignInResult.Failure("Incorrect email or password")
         }
     }
 
@@ -72,7 +79,10 @@ class CognitoAuthManager(
         val session = tokenStore.load() ?: return null
         return when (val r = withContext(Dispatchers.IO) { client.refresh(session.refreshToken) }) {
             is AuthOutcome.Tokens -> r.idToken.also { idTokenCache = it }
-            else -> null
+            AuthOutcome.AuthInvalid -> { // refresh token 真失效 → 登出
+                tokenStore.clear(); idTokenCache = null; applyLoggedOut(); null
+            }
+            else -> null // 网络 Error / NewPasswordRequired:保留登录态,session 不动
         }
     }
 

@@ -13,6 +13,10 @@ sealed interface AuthOutcome {
     data class Tokens(val idToken: String, val refreshToken: String?) : AuthOutcome
     data object NewPasswordRequired : AuthOutcome
     data class Error(val message: String) : AuthOutcome
+    // Cognito itself rejected the refresh token (client-side __type on a 4xx) — session is
+    // genuinely dead, not a transient/network hiccup. Only ever produced by refresh(); signIn
+    // never returns this (it goes through parseInitiateAuth directly).
+    data object AuthInvalid : AuthOutcome
 }
 
 /**
@@ -42,8 +46,17 @@ class CognitoClient(
             .put("ClientId", clientId)
             .put("AuthParameters", JSONObject().put("REFRESH_TOKEN", refreshToken))
             .toString()
-        return runCatching { parseInitiateAuth(http("InitiateAuth", body)) }
-            .getOrElse { AuthOutcome.Error("Network error — check your connection") }
+        // Thrown (IO/network) exceptions are transient — never a verdict on the refresh token itself.
+        val result = runCatching { http("InitiateAuth", body) }
+            .getOrElse { return AuthOutcome.Error("Network error — check your connection") }
+        // A 4xx with a Cognito __type is a genuine client-side rejection of the refresh token
+        // (e.g. NotAuthorizedException "Refresh Token has expired"). 5xx/gateway/malformed bodies
+        // are transient and fall through to parseInitiateAuth, which treats them as Error.
+        val type = runCatching { JSONObject(result.body).optString("__type") }.getOrDefault("")
+        if (result.code in 400..499 && type.isNotBlank()) {
+            return AuthOutcome.AuthInvalid
+        }
+        return parseInitiateAuth(result)
     }
 
     private fun defaultHttp(target: String, body: String): HttpResult {

@@ -53,4 +53,34 @@ class CognitoClientTest {
         val client = CognitoClient("clientId", "ap-southeast-2", fake)
         assertEquals(AuthOutcome.Tokens("idX", "rtX"), client.signIn("u", "p"))
     }
+
+    @Test fun `refresh NotAuthorized maps to AuthInvalid not Error`() {
+        val fake: (String, String) -> HttpResult = { _, _ ->
+            HttpResult(400, """{"__type":"NotAuthorizedException","message":"Refresh Token has expired."}""")
+        }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        assertEquals(AuthOutcome.AuthInvalid, client.refresh("stale-refresh-token"))
+    }
+
+    @Test fun `refresh network exception maps to Error not AuthInvalid`() {
+        val fake: (String, String) -> HttpResult = { _, _ -> throw java.io.IOException("down") }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        val r = client.refresh("any-refresh-token") as AuthOutcome.Error
+        assertEquals("Network error — check your connection", r.message)
+    }
+
+    @Test fun `refresh 5xx gateway error stays Error not AuthInvalid`() {
+        val fake: (String, String) -> HttpResult = { _, _ -> HttpResult(500, "gateway boom") }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        val r = client.refresh("any-refresh-token")
+        assertTrue(r is AuthOutcome.Error)
+    }
+
+    @Test fun `refresh success maps AuthenticationResult to Tokens`() {
+        val fake: (String, String) -> HttpResult = { _, _ ->
+            HttpResult(200, """{"AuthenticationResult":{"IdToken":"idX","RefreshToken":"rtX"}}""")
+        }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        assertEquals(AuthOutcome.Tokens("idX", "rtX"), client.refresh("valid-refresh-token"))
+    }
 }
