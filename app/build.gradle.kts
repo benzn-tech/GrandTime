@@ -18,6 +18,7 @@ android {
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
+        buildConfigField("String", "ORG_API_BASE_URL", "\"https://wdsgobb7b0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
     }
 
     compileOptions {
@@ -56,6 +57,7 @@ dependencies {
     ksp(libs.room.compiler)
     implementation(libs.okhttp)
     implementation(libs.security.crypto)
+    implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
