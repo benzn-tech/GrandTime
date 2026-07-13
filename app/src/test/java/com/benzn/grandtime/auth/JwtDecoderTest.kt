@@ -1,6 +1,7 @@
 package com.benzn.grandtime.auth
 
 import java.util.Base64
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -42,5 +43,22 @@ class JwtDecoderTest {
         assertNull(JwtDecoder.decode("not.a.jwt"))
         assertNull(JwtDecoder.decode("garbage"))
         assertNull(JwtDecoder.decode(""))
+    }
+
+    @Test
+    fun `escaped quote in name is preserved not corrupted`() {
+        val c = JwtDecoder.decode(jwt("""{"sub":"u-1","name":"Jane \"JJ\" Doe"}"""))!!
+        assertEquals("u-1", c.sub)
+        assertEquals("Jane \"JJ\" Doe", c.name)
+    }
+
+    @Test
+    fun `real org json optString returns null for absent key not literal string null`() {
+        // Proves the contract JwtDecoder relies on for email/name(optString(key, null)) against
+        // the real org.json:json dependency (some versions coerce absent keys to the string "null").
+        val obj = JSONObject("""{"sub":"only-sub"}""")
+        assertNull(obj.optString("email", null))
+        assertNull(obj.optString("name", null))
+        assertNull(obj.optString("cognito:username", null))
     }
 }

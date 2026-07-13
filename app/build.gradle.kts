@@ -61,4 +61,6 @@ dependencies {
     testImplementation(libs.coroutines.test)
     // 保证 JVM 单测能直接用 PreferenceDataStoreFactory(KMP jvm 变体)
     testImplementation(libs.datastore.preferences.core)
+    // 真实 org.json 实现,覆盖 android.jar 里抛 "not mocked" 的桩,供 JwtDecoder 单测使用
+    testImplementation("org.json:json:20240303")
 }

@@ -1,6 +1,7 @@
 package com.benzn.grandtime.auth
 
 import java.util.Base64
+import org.json.JSONObject
 
 data class JwtClaims(val sub: String, val email: String?, val name: String?)
 
@@ -10,18 +11,16 @@ object JwtDecoder {
         return try {
             val parts = idToken.split(".")
             if (parts.size < 2) return null
-            val payload = String(Base64.getUrlDecoder().decode(parts[1]))
+            val payloadBytes = Base64.getUrlDecoder().decode(parts[1])
+            val payload = String(payloadBytes, Charsets.UTF_8)
 
-            // Extract fields using regex
-            val subPattern = """"sub"\s*:\s*"([^"]*)"""".toRegex()
-            val emailPattern = """"email"\s*:\s*"([^"]*)"""".toRegex()
-            val namePattern = """"name"\s*:\s*"([^"]*)"""".toRegex()
-            val cognitoPattern = """"cognito:username"\s*:\s*"([^"]*)"""".toRegex()
+            val obj = JSONObject(payload)
 
-            val sub = subPattern.find(payload)?.groupValues?.get(1)?.takeIf { it.isNotBlank() } ?: return null
-            val email = emailPattern.find(payload)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
-            val name = (namePattern.find(payload)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
-                ?: cognitoPattern.find(payload)?.groupValues?.get(1)?.takeIf { it.isNotBlank() })
+            val sub = obj.optString("sub", "")
+            if (sub.isBlank()) return null
+
+            val email = obj.optString("email", null)
+            val name = obj.optString("name", null) ?: obj.optString("cognito:username", null)
 
             JwtClaims(sub = sub, email = email, name = name)
         } catch (e: Exception) {
