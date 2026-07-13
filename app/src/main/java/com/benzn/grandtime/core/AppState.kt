@@ -40,6 +40,9 @@ object AppState {
     /** 当前媒体作用域:登出=device/kind 前缀,登录=用户目录/用户名前缀。 */
     val mediaScope = MutableStateFlow(MediaScope("device", null))
 
+    /** 当前选中的工地(SiteStore 恢复的持久化选择)。 */
+    val selectedSite = MutableStateFlow<SelectedSite?>(null)
+
     fun addProbe(entry: ProbeEntry) {
         probeEntries.value = (listOf(entry) + probeEntries.value).take(PROBE_LIMIT)
     }
