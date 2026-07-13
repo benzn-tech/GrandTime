@@ -20,6 +20,9 @@ interface CaptureRecordDao {
     @Query("SELECT * FROM capture_records")
     suspend fun listAll(): List<CaptureRecord>
 
+    @Query("SELECT * FROM capture_records WHERE id = :id")
+    suspend fun getById(id: String): CaptureRecord?
+
     @Query("UPDATE capture_records SET missing = 1 WHERE id IN (:ids)")
     suspend fun markMissing(ids: List<String>)
 

@@ -19,6 +19,7 @@ import com.benzn.grandtime.core.VideoQuality
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.CaptureRecordDao
 import com.benzn.grandtime.keymap.KeyAction
+import com.benzn.grandtime.upload.UploadEnqueuer
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
@@ -43,6 +44,9 @@ class CaptureManager(
     private val dao: CaptureRecordDao,
     private val notify: (String) -> Unit,
     private val probe: (String) -> Unit,
+    private val uploadEnqueuer: UploadEnqueuer = object : UploadEnqueuer {
+        override fun enqueue(recordId: String) {}
+    },
 ) {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { UUID.randomUUID().toString() })
     private val lifecycleOwner = ServiceLifecycleOwner()
@@ -213,11 +217,12 @@ class CaptureManager(
                 id = recordId, kind = "video", filePath = file.absolutePath, fileName = file.name,
                 startedAt = startedAt, codec = "h264", resolution = settings.videoQuality.resolutionString(),
                 segmentIndex = cmd.segmentIndex, sessionId = cmd.sessionId, createdAt = startedAt,
+                siteId = AppState.selectedSite.value?.id,
             )
         )
         video.startSegment(videoCapture, file) { error, message ->
             scope.launch {
-                finalizeVideoDbRow()
+                val finalizedId = finalizeVideoDbRow()
                 // 抓帧请求登记的段与本次 finalize 的段匹配才消费——防止跨段串号。
                 val grab = pendingFrameGrab
                 if (grab != null && grab.segFile == file) {
@@ -233,6 +238,7 @@ class CaptureManager(
                     execute(core.onFailure(message ?: "Video error"))
                     session.unbind()
                 } else {
+                    if (finalizedId != null) uploadEnqueuer.enqueue(finalizedId)
                     val roll = pendingRoll
                     pendingRoll = false
                     execute(core.onVideoFinalized(roll))
@@ -277,15 +283,17 @@ class CaptureManager(
         }
     }
 
-    private suspend fun finalizeVideoDbRow() {
-        val id = currentVideoRecordId ?: return
-        val file = currentVideoFile ?: return
+    /** Finalizes the DB row for the just-completed segment; returns its id for upload enqueue (null if none was pending). */
+    private suspend fun finalizeVideoDbRow(): String? {
+        val id = currentVideoRecordId ?: return null
+        val file = currentVideoFile ?: return null
         val ended = System.currentTimeMillis()
         dao.finalize(id, ended, ended - currentVideoStartedAt, file.length())
         scan(file.absolutePath)
         probe("video segment saved: ${file.name} (${file.length()} bytes)")
         currentVideoRecordId = null
         currentVideoFile = null
+        return id
     }
 
     private suspend fun takePhoto(cmd: CaptureCommand.TakePhoto) {
@@ -316,8 +324,10 @@ class CaptureManager(
                             id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
                             startedAt = startedAt, endedAt = startedAt, sizeBytes = file.length(),
                             codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
+                            siteId = AppState.selectedSite.value?.id,
                         )
                     )
+                    uploadEnqueuer.enqueue(recordId)
                     scan(file.absolutePath)
                     sounds.shutter()
                     notify(if (core.state is CaptureState.Idle) "Photo saved" else "Photo saved (recording continues)")
@@ -394,8 +404,10 @@ class CaptureManager(
                     startedAt = grab.keypressMillis, endedAt = grab.keypressMillis, sizeBytes = out.length(),
                     codec = "frame-grab", resolution = grab.resolution, sessionId = grab.sessionId,
                     createdAt = grab.keypressMillis,
+                    siteId = AppState.selectedSite.value?.id,
                 )
             )
+            uploadEnqueuer.enqueue(grab.photoId)
             scan(out.absolutePath)
             sounds.shutter()
             notify("Photo saved (recording continues)")
@@ -421,6 +433,7 @@ class CaptureManager(
             CaptureRecord(
                 id = recordId, kind = "audio", filePath = file.absolutePath, fileName = file.name,
                 startedAt = startedAt, codec = "aac", sessionId = cmd.sessionId, createdAt = startedAt,
+                siteId = AppState.selectedSite.value?.id,
             )
         )
         sounds.startRecording()
@@ -436,6 +449,7 @@ class CaptureManager(
         if (id != null && file != null) {
             val ended = System.currentTimeMillis()
             dao.finalize(id, ended, if (startedAt != null) ended - startedAt else 0L, file.length())
+            uploadEnqueuer.enqueue(id)
             scan(file.absolutePath)
             probe("audio saved: ${file.name}")
         }

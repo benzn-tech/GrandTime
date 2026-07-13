@@ -19,6 +19,7 @@ private class FakeDao : CaptureRecordDao {
     }
     override fun observeAll(): Flow<List<CaptureRecord>> = flowOf(rows)
     override suspend fun listAll(): List<CaptureRecord> = rows.toList()
+    override suspend fun getById(id: String): CaptureRecord? = rows.firstOrNull { it.id == id }
     override suspend fun markMissing(ids: List<String>) { missingIds.addAll(ids) }
     override suspend fun updatePath(oldPath: String, newPath: String) {
         val idx = rows.indexOfFirst { it.filePath == oldPath }

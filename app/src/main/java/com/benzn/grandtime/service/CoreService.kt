@@ -27,6 +27,7 @@ import com.benzn.grandtime.keymap.KeyActionDispatcher
 import com.benzn.grandtime.keymap.KeyMapStore
 import com.benzn.grandtime.keymap.keymapDataStore
 import com.benzn.grandtime.ui.actionLabel
+import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import com.benzn.grandtime.util.ProbeLog
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
@@ -134,6 +135,7 @@ class CoreService : LifecycleService() {
             dao = CaptureDb.get(applicationContext).captureRecords(),
             notify = ::notifyStatus,
             probe = ::probe,
+            uploadEnqueuer = WorkManagerUploadEnqueuer(applicationContext),
         )
 
         val dispatcher = KeyActionDispatcher({ AppState.overrides.value }, ::handleAction)
