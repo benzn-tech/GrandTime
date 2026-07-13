@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
+import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.SelectedSite
 import com.benzn.grandtime.core.SiteStore
 import com.benzn.grandtime.core.siteDataStore
@@ -51,19 +52,31 @@ private sealed interface SitePickerState {
 fun SitePickerDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var state by remember { mutableStateOf<SitePickerState>(SitePickerState.Loading) }
+    val cachedSites = AppState.availableSites.value
+    var state by remember {
+        mutableStateOf<SitePickerState>(
+            if (cachedSites.isNotEmpty()) SitePickerState.Loaded(cachedSites) else SitePickerState.Loading,
+        )
+    }
     var currentSiteId by remember { mutableStateOf<String?>(null) }
 
+    // 缓存(CoreService 启动时预取)命中则秒开;这里的拉取只是后台刷新——
+    // 成功则更新缓存+本地态,失败时若已有缓存在展示则不覆盖(仅 Loading 起点才降级 Failed)。
     LaunchedEffect(Unit) {
         currentSiteId = SiteStore(context.siteDataStore).site.first()?.id
-        state = withContext(Dispatchers.IO) {
+        val result = withContext(Dispatchers.IO) {
             val idToken = (context.applicationContext as GrandTimeApp).authManager.freshIdToken()
             if (idToken == null) {
-                SitePickerState.Failed
+                null
             } else {
-                val sites = SitesApiClient(BuildConfig.ORG_API_BASE_URL).listSites(idToken)
-                SitePickerState.Loaded(sites)
+                SitesApiClient(BuildConfig.ORG_API_BASE_URL).listSites(idToken)
             }
+        }
+        if (result != null) {
+            AppState.availableSites.value = result
+            state = SitePickerState.Loaded(result)
+        } else if (state is SitePickerState.Loading) {
+            state = SitePickerState.Failed
         }
     }
 
@@ -74,8 +87,18 @@ fun SitePickerDialog(onDismiss: () -> Unit) {
         text = {
             when (val s = state) {
                 SitePickerState.Loading -> {
-                    Box(Modifier.fillMaxWidth().padding(vertical = 32.dp)) {
-                        CircularProgressIndicator()
+                    Box(
+                        Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Text(
+                                "Loading sites…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(top = 12.dp),
+                            )
+                        }
                     }
                 }
                 SitePickerState.Failed -> {

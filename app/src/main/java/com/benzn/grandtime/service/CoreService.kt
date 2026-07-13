@@ -10,6 +10,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.benzn.grandtime.ui.MainActivity
+import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.R
 import com.benzn.grandtime.auth.AuthManager
@@ -28,11 +29,14 @@ import com.benzn.grandtime.keymap.KeyAction
 import com.benzn.grandtime.keymap.KeyActionDispatcher
 import com.benzn.grandtime.keymap.KeyMapStore
 import com.benzn.grandtime.keymap.keymapDataStore
+import com.benzn.grandtime.net.SitesApiClient
 import com.benzn.grandtime.ui.actionLabel
 import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import com.benzn.grandtime.util.ProbeLog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -125,11 +129,21 @@ class CoreService : LifecycleService() {
         }
         lifecycleScope.launch {
             auth.silentLogin()
-            // 登录态落定后补扫:把从未成功入队的 pending/failed 录制重新入队上传——
-            // 覆盖"上传功能上线前的旧录制"和"未正常关闭遗留"两种场景。per-recordId
-            // enqueueUniqueWork(KEEP) 去重,已在途的不受影响;worker 自身校验鉴权+
-            // 封顶重试,文件缺失的旧行会自然退化为 failed 而非死循环。
             if (AppState.loginState.value is com.benzn.grandtime.core.LoginState.LoggedIn) {
+                // 补扫前先预取工地列表进缓存——补扫会瞬间占满网络,若不先取,
+                // SitePickerDialog 冷开时的 GET /org/sites 要排在一堆上传后面,能卡到 ~10s。
+                val idToken = auth.freshIdToken()
+                if (idToken != null) {
+                    runCatching {
+                        AppState.availableSites.value = withContext(Dispatchers.IO) {
+                            SitesApiClient(BuildConfig.ORG_API_BASE_URL).listSites(idToken)
+                        }
+                    }
+                }
+                // 登录态落定后补扫:把从未成功入队的 pending/failed 录制重新入队上传——
+                // 覆盖"上传功能上线前的旧录制"和"未正常关闭遗留"两种场景。per-recordId
+                // enqueueUniqueWork(KEEP) 去重,已在途的不受影响;worker 自身校验鉴权+
+                // 封顶重试,文件缺失的旧行会自然退化为 failed 而非死循环。
                 val dao = CaptureDb.get(applicationContext).captureRecords()
                 val enq = WorkManagerUploadEnqueuer(applicationContext)
                 dao.listByUploadStatus(listOf("pending", "failed")).forEach { enq.enqueue(it.id) }

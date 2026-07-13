@@ -43,6 +43,9 @@ object AppState {
     /** 当前选中的工地(SiteStore 恢复的持久化选择)。 */
     val selectedSite = MutableStateFlow<SelectedSite?>(null)
 
+    /** 工地列表缓存(启动时由 CoreService 在补扫前预取,SitePickerDialog 直接读,秒开)。 */
+    val availableSites = MutableStateFlow<List<com.benzn.grandtime.net.SitesApiClient.SiteOption>>(emptyList())
+
     fun addProbe(entry: ProbeEntry) {
         probeEntries.value = (listOf(entry) + probeEntries.value).take(PROBE_LIMIT)
     }
