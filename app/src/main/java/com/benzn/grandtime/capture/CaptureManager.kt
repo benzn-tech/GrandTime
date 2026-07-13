@@ -329,6 +329,7 @@ class CaptureManager(
                     )
                     uploadEnqueuer.enqueue(recordId)
                     scan(file.absolutePath)
+                    AppState.lastPhotoFlash.value = file.absolutePath
                     sounds.shutter()
                     notify(if (core.state is CaptureState.Idle) "Photo saved" else "Photo saved (recording continues)")
                     probe("photo saved: ${file.name}")
@@ -409,6 +410,7 @@ class CaptureManager(
             )
             uploadEnqueuer.enqueue(grab.photoId)
             scan(out.absolutePath)
+            AppState.lastPhotoFlash.value = out.absolutePath
             sounds.shutter()
             notify("Photo saved (recording continues)")
             probe("frame-grab saved: ${out.name}")

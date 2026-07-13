@@ -46,6 +46,9 @@ object AppState {
     /** 工地列表缓存(启动时由 CoreService 在补扫前预取,SitePickerDialog 直接读,秒开)。 */
     val availableSites = MutableStateFlow<List<com.benzn.grandtime.net.SitesApiClient.SiteOption>>(emptyList())
 
+    /** 刚拍摄照片的绝对路径(#81 快门确认闪现);null=无待展示。写入方=CaptureManager,读取方=全局悬浮层。 */
+    val lastPhotoFlash = MutableStateFlow<String?>(null)
+
     fun addProbe(entry: ProbeEntry) {
         probeEntries.value = (listOf(entry) + probeEntries.value).take(PROBE_LIMIT)
     }

@@ -12,9 +12,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
@@ -30,11 +36,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
 import com.benzn.grandtime.R
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
@@ -43,6 +57,8 @@ import com.benzn.grandtime.hardware.HardKey
 import com.benzn.grandtime.hardware.RawDirection
 import com.benzn.grandtime.service.CoreService
 import com.benzn.grandtime.ui.theme.FieldSightTheme
+import java.io.File
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
@@ -196,6 +212,39 @@ private fun MainScaffold() {
                     },
                 )
             }
+            // #81:全局快门确认闪现,叠在任意屏幕之上(TAKE_PHOTO 可能来自 Home,抓帧可能发生在
+            // RECORDING 全屏预览中)——TopCenter 小缩略图不挡录像预览/控件。
+            PhotoFlashOverlay()
+        }
+    }
+}
+
+/** 拍照后短暂展示刚拍到的缩略图(~1.5s 停留 + 淡出),纯展示,不拦截触摸(无 clickable)。 */
+@Composable
+private fun PhotoFlashOverlay() {
+    val flash by AppState.lastPhotoFlash.collectAsStateWithLifecycle()
+    flash?.let { path ->
+        val alphaAnim = remember(path) { Animatable(1f) }
+        LaunchedEffect(path) {
+            alphaAnim.snapTo(1f)
+            delay(1500)
+            alphaAnim.animateTo(0f, animationSpec = tween(durationMillis = 400))
+            AppState.lastPhotoFlash.value = null
+        }
+        Box(
+            Modifier.fillMaxSize().padding(24.dp),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            AsyncImage(
+                model = File(path),
+                contentDescription = "Photo captured",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(120.dp)
+                    .alpha(alphaAnim.value)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(8.dp)),
+            )
         }
     }
 }
