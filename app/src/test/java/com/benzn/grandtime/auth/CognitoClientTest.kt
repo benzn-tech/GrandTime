@@ -45,4 +45,12 @@ class CognitoClientTest {
         val r = CognitoClient.parseInitiateAuth(HttpResult(500, "boom")) as AuthOutcome.Error
         assertTrue(r.message.isNotBlank())
     }
+
+    @Test fun `signIn uses injected http and maps success to Tokens`() {
+        val fake: (String, String) -> HttpResult = { _, _ ->
+            HttpResult(200, """{"AuthenticationResult":{"IdToken":"idX","RefreshToken":"rtX"}}""")
+        }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        assertEquals(AuthOutcome.Tokens("idX", "rtX"), client.signIn("u", "p"))
+    }
 }

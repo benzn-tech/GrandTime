@@ -21,8 +21,11 @@ sealed interface AuthOutcome {
 class CognitoClient(
     private val clientId: String,
     private val region: String,
-    private val http: (target: String, body: String) -> HttpResult,
+    http: ((target: String, body: String) -> HttpResult)? = null,
 ) {
+    // Falls back to the real OkHttp path when no override is injected (tests inject a fake).
+    private val http: (String, String) -> HttpResult = http ?: ::defaultHttp
+
     fun signIn(username: String, password: String): AuthOutcome {
         val body = JSONObject()
             .put("AuthFlow", "USER_PASSWORD_AUTH")
