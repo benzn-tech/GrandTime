@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.PhotoQuality
@@ -53,6 +54,7 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
     val scope = rememberCoroutineScope()
     val settings by store.settings.collectAsStateWithLifecycle(initialValue = RecordingSettings())
     val login by AppState.loginState.collectAsStateWithLifecycle()
+    val auth = remember { (context.applicationContext as GrandTimeApp).authManager }
     var dialog by remember { mutableStateOf<SettingDialog?>(null) }
     val versionName = remember {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
@@ -100,7 +102,7 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
                 onClick = null,
             )
             RowDivider()
-            SettingRow("Sign out", "Available after account setup", enabled = false, onClick = null)
+            SettingRow("Sign out", null, enabled = true, onClick = { scope.launch { auth.signOut() } })
         }
         Spacer(Modifier.height(24.dp))
     }

@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.R
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.hardware.HardKey
 import com.benzn.grandtime.hardware.RawDirection
 import com.benzn.grandtime.service.CoreService
@@ -108,6 +109,11 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun MainScaffold() {
+    val login by AppState.loginState.collectAsStateWithLifecycle()
+    if (login is LoginState.LoggedOut) {
+        LoginScreen(onSignedIn = {})
+        return
+    }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     val isSubScreen = screen == Screen.KEY_BINDINGS || screen == Screen.DIAGNOSTICS
     val isRecording = screen == Screen.RECORDING
