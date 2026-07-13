@@ -142,16 +142,22 @@ class CoreService : LifecycleService() {
                         SiteStore(applicationContext.siteDataStore).setSiteList(sites)
                     }
                 }
-                // 登录态落定后补扫:把从未成功入队的 pending/failed 录制重新入队上传——
-                // 覆盖"上传功能上线前的旧录制"和"未正常关闭遗留"两种场景。per-recordId
-                // enqueueUniqueWork(KEEP) 去重,已在途的不受影响;worker 自身校验鉴权+
-                // 封顶重试,文件缺失的旧行会自然退化为 failed 而非死循环。
-                // 仅补扫这条路径带 20s 初始延迟——避免瞬间占满网络,挤掉用户此刻正在
-                // 交互的前台请求(如 SitePickerDialog 的后台刷新);CaptureManager 的
-                // 实时上传(拍摄/录制完成即传)不受影响,仍是 delay=0。
+                // 登录态落定后补扫:重新入队从未成功的录制(pending/failed 和被取消卡住的
+                // uploading)。关键:**只对文件仍在磁盘的行入队**;已删文件(如上传功能上线
+                // 前留下的大量旧测试录制)标 missing=1——被 listByUploadStatus 的 missing=0
+                // 过滤排除,不再每次开机重扫。否则几十条缺失行会灌爆 WorkManager 的 worker
+                // 池(撞并发上限/10分钟窗口→取消→failed→再扫),把实时拍摄/录制上传饿死。
+                // 仅补扫带 20s 初始延迟,避免占满网络挤掉前台;实时上传仍 delay=0 不受影响。
                 val dao = CaptureDb.get(applicationContext).captureRecords()
                 val enq = WorkManagerUploadEnqueuer(applicationContext)
-                dao.listByUploadStatus(listOf("pending", "failed"))
+                val onDisk = mutableListOf<com.benzn.grandtime.db.CaptureRecord>()
+                for (rec in dao.listByUploadStatus(listOf("pending", "failed", "uploading"))) {
+                    if (java.io.File(rec.filePath).exists()) onDisk.add(rec)
+                    else dao.markMissing(listOf(rec.id))   // 已删文件:标 missing,排除出后续扫描
+                }
+                // **封顶补扫**:只补最近 10 条磁盘存在的,避免大 backlog 灌爆 WorkManager/网络栈、
+                // 拖垮实时上传;更旧的留给用户在 Files 里手动点角标补传。实时上传仍 delay=0。
+                onDisk.sortedByDescending { it.startedAt }.take(10)
                     .forEach { enq.enqueue(it.id, initialDelaySeconds = 20) }
             }
         }

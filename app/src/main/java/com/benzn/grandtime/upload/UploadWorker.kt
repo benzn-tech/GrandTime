@@ -87,7 +87,9 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                 is RecordingsApiClient.UploadUrlResult.Ok -> {
                     val file = File(record.filePath)
                     if (!file.exists()) {
+                        // 文件已删:标 missing=1,排除出开机补扫(否则每次开机重扫→churn)。
                         dao.markUploadStatus(recordId, "failed")
+                        dao.markMissing(listOf(recordId))
                         return Result.failure()
                     }
                     val put = client.putFile(urlResult.uploadUrl, contentType, file)
