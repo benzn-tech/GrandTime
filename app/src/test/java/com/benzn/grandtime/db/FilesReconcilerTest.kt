@@ -29,6 +29,16 @@ private class FakeDao : CaptureRecordDao {
             if (rows[i].authorSub == null) rows[i] = rows[i].copy(authorSub = sub)
         }
     }
+    override suspend fun setSiteId(id: String, siteId: String?) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(siteId = siteId)
+    }
+    override suspend fun markUploadStatus(id: String, status: String) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(uploadStatus = status)
+    }
+    override suspend fun listByUploadStatus(statuses: List<String>): List<CaptureRecord> =
+        rows.filter { it.uploadStatus in statuses && !it.missing }
 }
 
 class FilesReconcilerTest {

@@ -23,6 +23,7 @@ data class CaptureRecord(
     val sessionId: String,
     val authorSub: String? = null,
     val siteSlug: String? = null,
+    val siteId: String? = null,
     val uploadStatus: String = "pending",
     val createdAt: Long,
     val missing: Boolean = false,

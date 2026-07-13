@@ -28,4 +28,13 @@ interface CaptureRecordDao {
 
     @Query("UPDATE capture_records SET authorSub = :sub WHERE authorSub IS NULL")
     suspend fun backfillAuthorSub(sub: String)
+
+    @Query("UPDATE capture_records SET siteId = :siteId WHERE id = :id")
+    suspend fun setSiteId(id: String, siteId: String?)
+
+    @Query("UPDATE capture_records SET uploadStatus = :status WHERE id = :id")
+    suspend fun markUploadStatus(id: String, status: String)
+
+    @Query("SELECT * FROM capture_records WHERE uploadStatus IN (:statuses) AND missing = 0")
+    suspend fun listByUploadStatus(statuses: List<String>): List<CaptureRecord>
 }
