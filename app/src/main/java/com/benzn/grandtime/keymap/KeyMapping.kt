@@ -8,7 +8,7 @@ object KeyMapping {
 
     val DEFAULTS: Map<Pair<HardKey, PressType>, KeyAction> = mapOf(
         (HardKey.VIDEO to PressType.SHORT) to KeyAction.START_STOP_VIDEO,
-        (HardKey.VIDEO to PressType.LONG) to KeyAction.TOGGLE_VIDEO_UPLOAD,
+        (HardKey.VIDEO to PressType.LONG) to KeyAction.START_STOP_VIDEO,
         (HardKey.PHOTO to PressType.SHORT) to KeyAction.TAKE_PHOTO,
         (HardKey.PHOTO to PressType.LONG) to KeyAction.TOGGLE_TORCH,
         (HardKey.AUDIO to PressType.SHORT) to KeyAction.ADJUST_VOLUME,

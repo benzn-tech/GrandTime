@@ -12,7 +12,7 @@ class KeyMappingTest {
     fun `default table matches reverse-engineered mapping`() {
         assertEquals(KeyAction.START_STOP_VIDEO,
             KeyMapping.resolve(KeyPress(HardKey.VIDEO, PressType.SHORT), emptyMap()))
-        assertEquals(KeyAction.TOGGLE_VIDEO_UPLOAD,
+        assertEquals(KeyAction.START_STOP_VIDEO,
             KeyMapping.resolve(KeyPress(HardKey.VIDEO, PressType.LONG), emptyMap()))
         assertEquals(KeyAction.TAKE_PHOTO,
             KeyMapping.resolve(KeyPress(HardKey.PHOTO, PressType.SHORT), emptyMap()))
@@ -33,7 +33,7 @@ class KeyMappingTest {
         val overrides = mapOf("VIDEO_SHORT" to KeyAction.TAKE_PHOTO)
         assertEquals(KeyAction.TAKE_PHOTO,
             KeyMapping.resolve(KeyPress(HardKey.VIDEO, PressType.SHORT), overrides))
-        assertEquals(KeyAction.TOGGLE_VIDEO_UPLOAD,
+        assertEquals(KeyAction.START_STOP_VIDEO,
             KeyMapping.resolve(KeyPress(HardKey.VIDEO, PressType.LONG), overrides))
     }
 
