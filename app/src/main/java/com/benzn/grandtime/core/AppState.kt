@@ -12,7 +12,7 @@ data class ProbeEntry(val timestampMillis: Long, val text: String)
 
 sealed interface LoginState {
     data object LoggedOut : LoginState
-    data class LoggedIn(val displayName: String) : LoginState
+    data class LoggedIn(val displayName: String, val authorSub: String? = null) : LoginState
 }
 
 /** Service 写、Compose 读的全局状态仓。 */

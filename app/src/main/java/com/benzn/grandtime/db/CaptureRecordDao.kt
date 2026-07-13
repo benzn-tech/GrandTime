@@ -25,4 +25,7 @@ interface CaptureRecordDao {
 
     @Query("UPDATE capture_records SET filePath = :newPath, missing = 0 WHERE filePath = :oldPath")
     suspend fun updatePath(oldPath: String, newPath: String)
+
+    @Query("UPDATE capture_records SET authorSub = :sub WHERE authorSub IS NULL")
+    suspend fun backfillAuthorSub(sub: String)
 }

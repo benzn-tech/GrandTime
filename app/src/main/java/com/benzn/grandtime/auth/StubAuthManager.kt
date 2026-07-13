@@ -13,4 +13,8 @@ class StubAuthManager : AuthManager {
         _loginState.value = LoginState.LoggedIn("Test account")
         return true
     }
+
+    override suspend fun signIn(username: String, password: String): SignInResult = SignInResult.Success
+    override suspend fun signOut() { _loginState.value = LoginState.LoggedOut }
+    override suspend fun freshIdToken(): String? = null
 }
