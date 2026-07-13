@@ -13,6 +13,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.auth.SignInResult
@@ -39,6 +41,7 @@ fun LoginScreen(onSignedIn: () -> Unit) {
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var passwordVisible by remember { mutableStateOf(false) }
 
     fun submit() {
         if (loading) return
@@ -72,7 +75,12 @@ fun LoginScreen(onSignedIn: () -> Unit) {
             OutlinedTextField(
                 value = password, onValueChange = { password = it }, label = { Text("Password") },
                 singleLine = true, enabled = !loading, modifier = Modifier.fillMaxWidth(),
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    TextButton(onClick = { passwordVisible = !passwordVisible }, enabled = !loading) {
+                        Text(if (passwordVisible) "Hide" else "Show")
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
             )
             error?.let {

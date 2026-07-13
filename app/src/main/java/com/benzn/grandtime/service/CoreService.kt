@@ -4,10 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.benzn.grandtime.ui.MainActivity
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.R
 import com.benzn.grandtime.auth.AuthManager
@@ -39,9 +41,12 @@ class CoreService : LifecycleService() {
         private const val TAG = "GrandTime"
         private const val CHANNEL_ID = "core"
         private const val NOTIFICATION_ID = 1
+        /** BootReceiver 置 true → 开机自动拉起 MainActivity(进 Home / 登录页)。 */
+        const val EXTRA_FROM_BOOT = "from_boot"
     }
 
     private var pipelineStarted = false
+    private var bootLaunchDone = false
     private var f2spSource: F2spKeyEventSource? = null
     private var captureManager: CaptureManager? = null
     private lateinit var probeLog: ProbeLog
@@ -79,6 +84,19 @@ class CoreService : LifecycleService() {
         if (!pipelineStarted) {
             pipelineStarted = true
             startPipeline()
+        }
+        // 开机路径:前台化后延时拉起 MainActivity(仅一次)。延时让窗口子系统就绪、
+        // 越过开机早期"抢窗口"竞态;悬浮窗权限提供后台启动 Activity 豁免。登录门决定落 Home 或登录页。
+        if (intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true && !bootLaunchDone) {
+            bootLaunchDone = true
+            android.os.Handler(mainLooper).postDelayed({
+                if (Settings.canDrawOverlays(this)) {
+                    startActivity(
+                        Intent(this, MainActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }, 2_500)
         }
         return START_STICKY
     }
