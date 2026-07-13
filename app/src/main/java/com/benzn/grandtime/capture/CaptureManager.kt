@@ -52,7 +52,7 @@ class CaptureManager(
     private val audio = AudioRecorder(context)
     private val torch = TorchController(context, session)
     private val volume = VolumeCycler(context)
-    private val storage = MediaStorage({ MediaStorage.publicRoot(context) })
+    private val storage = MediaStorage({ MediaStorage.publicRoot(context) }, scopeProvider = { AppState.mediaScope.value })
     private val sounds = CaptureSounds()
 
     private var segmentTimer: Job? = null

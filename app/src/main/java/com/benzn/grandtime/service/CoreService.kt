@@ -8,9 +8,9 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.R
 import com.benzn.grandtime.auth.AuthManager
-import com.benzn.grandtime.auth.StubAuthManager
 import com.benzn.grandtime.capture.CaptureManager
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.ProbeEntry
@@ -84,7 +84,7 @@ class CoreService : LifecycleService() {
     }
 
     private fun startPipeline() {
-        val auth: AuthManager = StubAuthManager()
+        val auth: AuthManager = (application as GrandTimeApp).authManager
         val keyMapStore = KeyMapStore(applicationContext.keymapDataStore)
 
         // 先构造两个源(不 start),等下面所有收集协程都挂上订阅后再 start()——
