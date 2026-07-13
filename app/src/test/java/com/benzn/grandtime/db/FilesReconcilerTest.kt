@@ -59,6 +59,16 @@ class FilesReconcilerTest {
     }
 
     @Test
+    fun `legacy Android data path missing on disk is not marked missing, normal public path still is`() = runTest {
+        val dao = FakeDao()
+        dao.rows.add(record("legacy", "/storage/emulated/0/Android/data/com.benzn.grandtime/files/media/video/OLD.mp4"))
+        dao.rows.add(record("public-gone", "/storage/emulated/0/FieldSight/device/video/GONE.mp4"))
+        val reconciler = FilesReconciler(dao, durationReader = { null }, clock = { 0L })
+        reconciler.reconcile(emptyList())
+        assertEquals(listOf("public-gone"), dao.missingIds)
+    }
+
+    @Test
     fun `matching rows untouched`() = runTest {
         val dao = FakeDao()
         dao.rows.add(record("keep", "/m/video/KEEP.mp4"))

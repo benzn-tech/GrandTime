@@ -138,6 +138,9 @@ class CameraSession(
      * 仅保留 Video+Preview 重绑。前台可见时调用。
      */
     suspend fun attachPreview(surfaceProvider: Preview.SurfaceProvider) {
+        // 重复 attach 防叠加:若已有 Preview 用例挂着,先 detach 再重绑,
+        // 否则 bindToLifecycle 的幂等追加语义会让第二个 Preview 用例叠在第一个之上。
+        detachPreview()
         val p = provider()
         val preview = Preview.Builder().build().also { it.setSurfaceProvider(surfaceProvider) }
         try {

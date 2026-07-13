@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -65,26 +66,36 @@ class CaptureManager(
 
     init {
         // 首启一次性迁移:旧的 app 私有目录媒体 → 公共存储(spec §3),迁移成功的行更新 DB 路径。
+        // 遍历全部外置卷(非仅默认卷 0)——SP3a 曾优先写 SD(volumes[1]),旧私有文件可能
+        // 落在任意一个卷下,只迁默认卷会让 SD 上的旧文件在公共存储里"隐形"(数据可见性缺口)。
         scope.launch(Dispatchers.IO) {
-            val oldRoot = context.getExternalFilesDir(null) ?: return@launch
-            val migrator = MediaMigrator(
-                oldRoot = oldRoot,
-                newRoot = MediaStorage.publicRoot(context),
-            ) { oldPath, newFile -> scope.launch { dao.updatePath(oldPath, newFile.absolutePath) } }
-            runCatching { migrator.migrate() }
+            val oldRoots = context.getExternalFilesDirs(null).filterNotNull()
+            val newRoot = MediaStorage.publicRoot(context)
+            for (oldRoot in oldRoots) {
+                val migrator = MediaMigrator(
+                    oldRoot = oldRoot,
+                    newRoot = newRoot,
+                ) { oldPath, newFile -> scope.launch { dao.updatePath(oldPath, newFile.absolutePath) } }
+                runCatching { migrator.migrate() }
+            }
         }
         // 预览 surface 收发:录像态且 UI 提供了 surface 才 attach;否则(切后台/回 Idle)detach。
+        // distinctUntilChanged 防抖:每次段滚动 captureState 都会重新 emit 一个新的
+        // RecordingVideo(segmentIndex+1) 实例,若不去重,同一 surface 会被反复 attachPreview,
+        // 在 CameraSession 里越叠越多 Preview 用例。这里只关心"是否处于录像态"这一维度的变化。
         scope.launch {
             combine(
                 AppState.previewSurface,
                 AppState.captureState,
-            ) { sp, state -> sp to state }.collect { (sp, state) ->
-                if (sp != null && state is CaptureState.RecordingVideo) {
-                    runCatching { session.attachPreview(sp) }
-                } else {
-                    session.detachPreview()
+            ) { sp, state -> sp.takeIf { state is CaptureState.RecordingVideo } }
+                .distinctUntilChanged()
+                .collect { sp ->
+                    if (sp != null) {
+                        runCatching { session.attachPreview(sp) }
+                    } else {
+                        session.detachPreview()
+                    }
                 }
-            }
         }
     }
 
@@ -123,6 +134,9 @@ class CaptureManager(
         pendingFrameGrab = null
         sounds.release()
         lifecycleOwner.destroy()
+        // 收尾兜底:防止 screenOffRequest 停留在 true,下次进入 RecordingScreen 时
+        // LaunchedEffect(screenOff) 读到陈旧的 true 而误判"该熄屏"。
+        AppState.screenOffRequest.value = false
     }
 
     private fun granted(permission: String): Boolean =

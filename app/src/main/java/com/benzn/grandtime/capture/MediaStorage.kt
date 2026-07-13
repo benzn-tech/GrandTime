@@ -20,7 +20,7 @@ class MediaStorage(
     }
 
     fun mediaDir(kind: Kind): File =
-        File(File(File(rootProvider(), "FieldSight"), "device"), kind.dir).apply { mkdirs() }
+        mediaSubdir(rootProvider(), kind.dir).apply { mkdirs() }
 
     fun newFile(kind: Kind, startMillis: Long = clock()): File {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(startMillis))
@@ -46,5 +46,9 @@ class MediaStorage(
             }.getOrNull()
             return removable ?: Environment.getExternalStorageDirectory()
         }
+
+        /** 集中 <root>/FieldSight/device/<kindDir> 拼路径的唯一出处(供 SP2 future device→<user> 改名单点改)。 */
+        fun mediaSubdir(root: File, kindDir: String): File =
+            File(File(File(root, "FieldSight"), "device"), kindDir)
     }
 }

@@ -13,8 +13,8 @@ android {
         applicationId = "com.benzn.grandtime"
         minSdk = 33
         targetSdk = 33
-        versionCode = 2
-        versionName = "0.3.0"
+        versionCode = 3
+        versionName = "0.4.0"
     }
 
     compileOptions {

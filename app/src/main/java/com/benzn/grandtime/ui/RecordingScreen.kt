@@ -38,11 +38,16 @@ fun RecordingScreen(onStop: () -> Unit) {
     val previewView = remember {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
     }
+    val activity = remember(context) { context as? android.app.Activity }
     DisposableEffect(Unit) {
         AppState.previewSurface.value = previewView.surfaceProvider
-        onDispose { AppState.previewSurface.value = null }
+        onDispose {
+            AppState.previewSurface.value = null
+            // 安全网:离开录像屏时兜底清掉常亮标志,防止 LaunchedEffect(screenOff) 的
+            // 常规路径因某种原因未执行(如页面被直接销毁)而漏清,导致标志泄漏到其他页面。
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
-    val activity = remember(context) { context as? android.app.Activity }
     LaunchedEffect(screenOff) {
         val w = activity?.window ?: return@LaunchedEffect
         if (screenOff) w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

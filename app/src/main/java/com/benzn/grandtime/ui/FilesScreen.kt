@@ -242,10 +242,10 @@ private fun openFile(context: Context, record: CaptureRecord) {
 
 /** 公共根 FieldSight/device/{video,audio,photo} 扫盘,供对账补插磁盘上有而 DB 无的文件。 */
 private fun scanDisk(context: Context): List<FilesReconciler.DiskFile> {
-    val base = File(File(MediaStorage.publicRoot(context), "FieldSight"), "device")
+    val root = MediaStorage.publicRoot(context)
     val kinds = listOf("video", "audio", "photo")
     return kinds.flatMap { kind ->
-        File(base, kind).listFiles()?.filter { it.isFile }?.map { f ->
+        MediaStorage.mediaSubdir(root, kind).listFiles()?.filter { it.isFile }?.map { f ->
             FilesReconciler.DiskFile(f.absolutePath, f.name, kind, f.length(), f.lastModified())
         } ?: emptyList()
     }

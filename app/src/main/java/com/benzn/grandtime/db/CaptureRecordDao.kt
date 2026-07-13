@@ -23,6 +23,6 @@ interface CaptureRecordDao {
     @Query("UPDATE capture_records SET missing = 1 WHERE id IN (:ids)")
     suspend fun markMissing(ids: List<String>)
 
-    @Query("UPDATE capture_records SET filePath = :newPath WHERE filePath = :oldPath")
+    @Query("UPDATE capture_records SET filePath = :newPath, missing = 0 WHERE filePath = :oldPath")
     suspend fun updatePath(oldPath: String, newPath: String)
 }

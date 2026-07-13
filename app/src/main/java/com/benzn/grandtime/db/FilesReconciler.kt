@@ -43,7 +43,11 @@ class FilesReconciler(
             val f = diskByPath.getValue(r.filePath)
             dao.finalize(r.id, f.modifiedMillis, durationReader(f.path) ?: 0L, f.sizeBytes)
         }
-        val gone = records.filter { !it.missing && it.filePath !in diskByPath }.map { it.id }
+        // 迁移中的旧私有路径("/Android/data/...")跳过——文件正在被 MediaMigrator 搬到公共目录,
+        // 迁移完成前/竞态窗口内磁盘上暂时"看不到"不代表真丢失,不应被标 missing。
+        val gone = records.filter {
+            !it.missing && it.filePath !in diskByPath && "/Android/data/" !in it.filePath
+        }.map { it.id }
         if (gone.isNotEmpty()) dao.markMissing(gone)
     }
 }
