@@ -26,13 +26,28 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
         val app = applicationContext as GrandTimeApp
         val dao = CaptureDb.get(applicationContext).captureRecords()
         return try {
+            // #2: OneTimeWorkRequest has no built-in attempt cap — without this, a permanent
+            // (non-401) uploadUrl error would retry forever. Cap at 8 (~exponential backoff
+            // 30s..5h) and give up for good past that.
+            if (runAttemptCount >= 8) {
+                dao.markUploadStatus(recordId, "failed")
+                return Result.failure()
+            }
+
             val record = dao.getById(recordId) ?: return Result.success()
             if (record.uploadStatus == "uploaded") return Result.success()
 
+            // #1: a fresh/headless worker process (reboot / process-death wakeup) starts with
+            // AppState.loginState defaulted to LoggedOut. silentLogin() restores the accurate
+            // state from the persisted session BEFORE we read the token, so a transient network
+            // failure in freshIdToken() below is never misread as "session dead" (which would
+            // otherwise permanently drop this upload). It also refreshes idTokenCache every
+            // attempt, so a stale rejected token can't be reused on retry (#3).
+            app.authManager.silentLogin()
             val idToken = app.authManager.freshIdToken()
                 ?: return if (AppState.loginState.value is LoginState.LoggedOut) {
-                    // Session is truly dead (freshIdToken already logged us out) — user must
-                    // re-login before this can ever succeed; don't retry forever.
+                    // Session is truly dead (silentLogin/freshIdToken already logged us out) —
+                    // user must re-login before this can ever succeed; don't retry forever.
                     dao.markUploadStatus(recordId, "failed")
                     Result.failure()
                 } else {
@@ -80,9 +95,16 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                         dao.markUploadStatus(recordId, "failed")
                         return Result.retry()
                     }
-                    // Best-effort: file is already in S3 regardless of complete()'s outcome,
-                    // so mark uploaded either way — a follow-up reconcile could tidy up later.
-                    client.complete(idToken, urlResult.recordingId, file.length())
+                    // #4: complete()'s bool must be honored — if the backend never finalizes the
+                    // recording row, marking "uploaded" here would orphan it (file sits in S3,
+                    // backend row stays pending, and nothing ever retries). The whole flow is
+                    // idempotent (upload-url on clientUuid, re-PUT overwrites the same S3 key,
+                    // complete is idempotent), so retrying complete is safe; bounded by #2's cap.
+                    val done = client.complete(idToken, urlResult.recordingId, file.length())
+                    if (!done) {
+                        dao.markUploadStatus(recordId, "failed")
+                        return Result.retry()
+                    }
                     dao.markUploadStatus(recordId, "uploaded")
                     Result.success()
                 }

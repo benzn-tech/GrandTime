@@ -449,7 +449,10 @@ class CaptureManager(
         if (id != null && file != null) {
             val ended = System.currentTimeMillis()
             dao.finalize(id, ended, if (startedAt != null) ended - startedAt else 0L, file.length())
-            uploadEnqueuer.enqueue(id)
+            // #5: only enqueue for upload on a clean stop — an unclean MediaRecorder.stop()
+            // (stoppedCleanly == false) can leave a truncated/corrupt file; the DB row is still
+            // finalized (so it shows up locally) but we don't ship a broken file to the backend.
+            if (stoppedCleanly) uploadEnqueuer.enqueue(id)
             scan(file.absolutePath)
             probe("audio saved: ${file.name}")
         }
