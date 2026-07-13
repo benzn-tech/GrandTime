@@ -53,6 +53,7 @@ import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import com.benzn.grandtime.R
 import com.benzn.grandtime.capture.MediaStorage
+import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.FilesReconciler
@@ -245,7 +246,7 @@ private fun scanDisk(context: Context): List<FilesReconciler.DiskFile> {
     val root = MediaStorage.publicRoot(context)
     val kinds = listOf("video", "audio", "photo")
     return kinds.flatMap { kind ->
-        MediaStorage.mediaSubdir(root, kind).listFiles()?.filter { it.isFile }?.map { f ->
+        MediaStorage.mediaSubdir(root, AppState.mediaScope.value.folder, kind).listFiles()?.filter { it.isFile }?.map { f ->
             FilesReconciler.DiskFile(f.absolutePath, f.name, kind, f.length(), f.lastModified())
         } ?: emptyList()
     }

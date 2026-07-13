@@ -1,5 +1,6 @@
 package com.benzn.grandtime.core
 
+import com.benzn.grandtime.auth.MediaScope
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.hardware.HardKey
 import com.benzn.grandtime.hardware.RawDirection
@@ -35,6 +36,9 @@ object AppState {
 
     /** 自动熄屏请求(录像满 N 分钟置 true;UI 观察后释放屏幕常亮)。 */
     val screenOffRequest = MutableStateFlow(false)
+
+    /** 当前媒体作用域:登出=device/kind 前缀,登录=用户目录/用户名前缀。 */
+    val mediaScope = MutableStateFlow(MediaScope("device", null))
 
     fun addProbe(entry: ProbeEntry) {
         probeEntries.value = (listOf(entry) + probeEntries.value).take(PROBE_LIMIT)

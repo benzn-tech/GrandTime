@@ -8,9 +8,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 公共存储:<root>/FieldSight/device/{video,audio,photo}。SD 优先(spec §3)。 */
+/** 公共存储:<root>/FieldSight/<folder>/{video,audio,photo}。SD 优先(spec §3)。 */
 class MediaStorage(
     private val rootProvider: () -> File,
+    private val scopeProvider: () -> com.benzn.grandtime.auth.MediaScope =
+        { com.benzn.grandtime.auth.MediaScope("device", null) },
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     enum class Kind(val dir: String, val prefix: String, val ext: String) {
@@ -20,15 +22,16 @@ class MediaStorage(
     }
 
     fun mediaDir(kind: Kind): File =
-        mediaSubdir(rootProvider(), kind.dir).apply { mkdirs() }
+        mediaSubdir(rootProvider(), scopeProvider().folder, kind.dir).apply { mkdirs() }
 
     fun newFile(kind: Kind, startMillis: Long = clock()): File {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(startMillis))
         val dir = mediaDir(kind)
-        var candidate = File(dir, "${kind.prefix}_$stamp.${kind.ext}")
+        val prefix = scopeProvider().namePrefix ?: kind.prefix
+        var candidate = File(dir, "${prefix}_$stamp.${kind.ext}")
         var suffix = 1
         while (candidate.exists()) {
-            candidate = File(dir, "${kind.prefix}_${stamp}_$suffix.${kind.ext}")
+            candidate = File(dir, "${prefix}_${stamp}_$suffix.${kind.ext}")
             suffix++
         }
         return candidate
@@ -47,8 +50,8 @@ class MediaStorage(
             return removable ?: Environment.getExternalStorageDirectory()
         }
 
-        /** 集中 <root>/FieldSight/device/<kindDir> 拼路径的唯一出处(供 SP2 future device→<user> 改名单点改)。 */
-        fun mediaSubdir(root: File, kindDir: String): File =
-            File(File(File(root, "FieldSight"), "device"), kindDir)
+        /** 集中 <root>/FieldSight/<folder>/<kindDir> 拼路径的唯一出处(登出=device,登录=<user>_<sub>)。 */
+        fun mediaSubdir(root: File, folder: String, kindDir: String): File =
+            File(File(File(root, "FieldSight"), folder), kindDir)
     }
 }

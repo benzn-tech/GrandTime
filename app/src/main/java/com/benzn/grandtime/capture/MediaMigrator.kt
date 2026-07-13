@@ -13,7 +13,7 @@ class MediaMigrator(
         for (kind in listOf("video", "audio", "photo")) {
             val srcDir = File(File(oldRoot, "media"), kind)
             val files = srcDir.listFiles()?.filter { it.isFile } ?: continue
-            val destDir = MediaStorage.mediaSubdir(newRoot, kind).apply { mkdirs() }
+            val destDir = MediaStorage.mediaSubdir(newRoot, "device", kind).apply { mkdirs() }
             for (src in files) {
                 val dest = File(destDir, src.name)
                 val oldPath = src.absolutePath
