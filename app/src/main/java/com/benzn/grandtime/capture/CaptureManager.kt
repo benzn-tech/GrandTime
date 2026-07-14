@@ -203,8 +203,8 @@ class CaptureManager(
         if (result == null) {
             stopScreenOffTimer()
             sounds.stopRecording()
-            scope.launch { pipeline.release() }
             execute(core.onFailure("Camera unavailable"))
+            pipeline.release()
             return false
         }
         currentVideoRecordId = recordId

@@ -32,6 +32,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     private var audioThread: Thread? = null
     @Volatile private var audioStopRequested = false
     private var audioTrack = -1
+    private val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // muxer(视频/音频线程共享,muxerLock 串行化 addTrack/start/writeSampleData/stop)
     private var muxer: MediaMuxer? = null
@@ -72,9 +73,14 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
             setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE)
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
         }
-        audioCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
-            configure(aFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val ac = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        try {
+            ac.configure(aFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        } catch (e: Exception) {
+            runCatching { ac.release() } // 释放半配置的 AAC 编码器,避免泄漏
+            throw e
         }
+        audioCodec = ac
         val minBuf = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val bufSize = maxOf(minBuf, 4096 * 2)
         val ar = AudioRecord(MediaRecorder.AudioSource.MIC, AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize)
@@ -121,9 +127,20 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         videoThread = Thread { videoLoop() }.apply { name = "seg-video"; start() }
         if (audioEnabled) {
             audioStopRequested = false
-            runCatching { audioCodec?.start() }
-            runCatching { audioRecord?.startRecording() }
-            audioThread = Thread { audioLoop() }.apply { name = "seg-audio"; start() }
+            val audioStarted = runCatching {
+                audioCodec?.start()
+                audioRecord?.startRecording()
+                audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING
+            }.getOrDefault(false)
+            if (audioStarted) {
+                audioThread = Thread { audioLoop() }.apply { name = "seg-audio"; start() }
+            } else {
+                probe("音频启动失败,本段降为纯视频")
+                audioEnabled = false   // maybeStartMuxer 改为仅凭视频轨启动,避免整段无输出
+                runCatching { audioRecord?.stop() }; runCatching { audioRecord?.release() }
+                runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
+                audioRecord = null; audioCodec = null
+            }
         }
     }
 
@@ -207,8 +224,10 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
 
     /** 结束段:音/视频各自 EOS → 两 drain 线程排空 → 关 muxer/codec/audio。幂等。 */
     fun stop() {
+        if (!stopped.compareAndSet(false, true)) return
         if (codec == null) return
         audioStopRequested = true                        // 音频循环下次读到标志,发 input EOS
+        runCatching { audioRecord?.stop() }              // 先停录音,解开可能阻塞的 read
         runCatching { codec?.signalEndOfInputStream() }  // 视频 EOS
         videoThread?.join(2500)
         audioThread?.join(2500)
@@ -217,7 +236,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
             videoThread?.join(500); audioThread?.join(500)
             if (videoThread?.isAlive == true || audioThread?.isAlive == true) probe("segment drain 线程未在超时内退出")
         }
-        runCatching { audioRecord?.stop() }; runCatching { audioRecord?.release() }
+        runCatching { audioRecord?.release() }            // release 放到 join 之后,避免 use-after-release
         runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
         synchronized(muxerLock) {
             runCatching { if (muxerStarted) muxer?.stop() }
