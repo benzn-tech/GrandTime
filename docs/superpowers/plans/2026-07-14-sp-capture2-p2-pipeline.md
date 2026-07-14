@@ -1716,3 +1716,17 @@ git tag sp-capture2-p2-accepted
 **2. Placeholder 扫描**:无 TBD/TODO;device 任务以真机 probe 验证代替 JVM 单测(已在计划头声明,诚实)。
 **3. 类型一致**:`Camera2Pipeline.startSegment(...): SegmentResult?` + `onFinalized(error,message)`(T5/T6 一致);`setPreviewSurface(Surface?)`(T5/T6/T7 一致);`AppState.previewSurface: Surface?`(T7);`TorchController(context, pipeline)`(T6)。`VideoSizeSelector.pickSize/bitRateFor`、`VideoSpec(width,height,bitRate,orientationHint)`(T2/T3/T5 一致)。
 **已知 scope 决策**(非遗漏,显式记录):①GPS/水印留 P3;②照片精度 HIGH/STD 用落盘后降采样实现(T6 `downscaleJpeg`),MAX=满 5MP;③预览 letterbox 手动实现取代 CameraX FIT_CENTER(T7)。
+
+---
+
+## 终审后加固(T11-T13,真机验收前)
+
+Fable 5 整支终审(7ab89b3..7dcbadc)抓出一个 **Critical(C1)+ 5 Important**,均已修 + 真机复验:
+
+- **C1(音频回归)**:旧 CameraX 录像带麦克风音频,新管线只封视频轨 = 无声证据视频。**T11**:`SegmentRecorder` 加 AudioRecord→AAC MediaCodec→同一 muxer 第二轨(muxerLock 串行化两线程写、两轨齐备才 start muxer、双 EOS),`Camera2Pipeline.startSegment` 传 `recordAudio=true`,mic 失败降纯视频。真机验证:录像 = hevc 1440×1080 **+ AAC 44100 单声道**。
+- **I1-I5(T12)**:①录像中改设置畸变→锁 `activeSpec`;②相机死亡泄漏/卡死→`invalidateOnCameraLost` 全拆 + `onCameraLost` 通知 CaptureManager;③连按拍照协程泄漏→`photoInFlight` 单发守卫 + `withTimeoutOrNull(3s)`;④起录失败清理→停熄屏计时器 + 释放相机;⑤降采样丢 EXIF→`ExifInterface` 存/复原 orientation。
+- **T13**(再审补漏):音频启动失败降纯视频(不整段黑洞)、AAC configure 失败释放、`AudioRecord.stop()` 先于 join、`SegmentRecorder.stop()` CAS 幂等、起录失败 `release()` 直接 await。
+
+**真机 T10 验收 PASS**(最终构建 984e263):hevc 1440×1080 4:3 + AAC 音频 + 录像中满 5MP 2592×1944 照片;用户确认预览/红灯/快照闪现。
+
+**P2.5 待办(非阻塞,列 P3 或收尾)**:编码器 EGL 错误检查;分段 drain 错误上报(truncated 文件现按成功 finalize);瞬时起停零帧段;拍照超时后 late-JPEG 占 reader 槽;段起点预卷丢帧;编码器 `eglPresentationTimeANDROID` 精确 A/V 时戳;onFinalized error 分支缺停录音;pipeline 字段级 race(CAS 已挡危险部分,残留 double-notify 良性)。
