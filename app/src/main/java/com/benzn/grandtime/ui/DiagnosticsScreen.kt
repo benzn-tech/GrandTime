@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ButtonDefaults
+import kotlinx.coroutines.launch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -47,8 +48,18 @@ fun DiagnosticsScreen() {
     val fs = LocalFsColors.current
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
     var pressed by remember { mutableStateOf<HardKey?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        OutlinedButton(
+            onClick = {
+                scope.launch {
+                    com.benzn.grandtime.debug.Capture2Probe(context).runAll()
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        ) { Text("Run Capture2 probe (debug)") }
         Row(
             Modifier.fillMaxWidth().padding(bottom = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
