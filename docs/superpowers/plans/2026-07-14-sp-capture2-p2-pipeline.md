@@ -693,6 +693,9 @@ class GlRecordPipeline {
                 EGL14.eglDestroyContext(eglDisplay, eglContext)
                 EGL14.eglTerminate(eglDisplay)
             }
+            eglDisplay = EGL14.EGL_NO_DISPLAY   // 幂等:二次 release 时上面 if 为假,不重复销毁
+            eglContext = EGL14.EGL_NO_CONTEXT
+            pbuffer = EGL14.EGL_NO_SURFACE
             thread.quitSafely()
         }
     }
