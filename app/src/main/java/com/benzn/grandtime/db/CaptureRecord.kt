@@ -5,7 +5,7 @@ import androidx.room.PrimaryKey
 
 /**
  * 本地元数据行,字段与未来 RDS recordings 表 1:1(spec §3.5)。
- * kind: video/audio/photo;codec: h264/aac/jpeg/frame-grab/unknown。
+ * kind: video/audio/photo;codec: hevc/h264/jpeg/aac/unknown。
  */
 @Entity(tableName = "capture_records")
 data class CaptureRecord(
