@@ -81,7 +81,7 @@ class CaptureManager(
         scope.launch {
             combine(AppState.previewSurface, AppState.captureState) { sp, state ->
                 sp.takeIf { state is CaptureState.RecordingVideo }
-            }.distinctUntilChanged().collect { _ -> pipeline.setPreviewSurface(null) }
+            }.distinctUntilChanged().collect { sp -> pipeline.setPreviewSurface(sp) }
         }
     }
 
