@@ -18,6 +18,8 @@ enum class PhotoQuality(val label: String) { HIGH("High"), STANDARD("Standard") 
 
 enum class PhotoResolution(val label: String) { MAX("Max (5MP)"), HIGH("High (3MP)"), STD("Standard (1MP)") }
 
+enum class AspectRatio(val label: String) { RATIO_4_3("4:3"), RATIO_16_9("16:9") }
+
 /** 录制参数:本子项目仅持久化;SP3 采集读取生效。上传固定实时,无开关(产品决定)。 */
 data class RecordingSettings(
     val videoQuality: VideoQuality = VideoQuality.P1080,
@@ -25,6 +27,7 @@ data class RecordingSettings(
     val photoQuality: PhotoQuality = PhotoQuality.HIGH,
     val photoResolution: PhotoResolution = PhotoResolution.MAX,
     val screenOffMinutes: Int = 3,
+    val aspectRatio: AspectRatio = AspectRatio.RATIO_4_3,
 )
 
 class SettingsStore(private val dataStore: DataStore<Preferences>) {
@@ -37,6 +40,7 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
         private val KEY_PHOTO_QUALITY = stringPreferencesKey("photo_quality")
         private val KEY_PHOTO_RESOLUTION = stringPreferencesKey("photo_resolution")
         private val KEY_SCREEN_OFF_MINUTES = intPreferencesKey("screen_off_minutes")
+        private val KEY_ASPECT_RATIO = stringPreferencesKey("aspect_ratio")
     }
 
     val settings: Flow<RecordingSettings> = dataStore.data.map { prefs ->
@@ -52,6 +56,9 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
                 ?.let { name -> PhotoResolution.entries.firstOrNull { it.name == name } }
                 ?: PhotoResolution.MAX,
             screenOffMinutes = prefs[KEY_SCREEN_OFF_MINUTES]?.takeIf { it in SCREEN_OFF_OPTIONS } ?: 3,
+            aspectRatio = prefs[KEY_ASPECT_RATIO]
+                ?.let { name -> AspectRatio.entries.firstOrNull { it.name == name } }
+                ?: AspectRatio.RATIO_4_3,
         )
     }
 
@@ -75,5 +82,9 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
     suspend fun setScreenOffMinutes(value: Int) {
         require(value in SCREEN_OFF_OPTIONS) { "screen off minutes must be one of $SCREEN_OFF_OPTIONS" }
         dataStore.edit { it[KEY_SCREEN_OFF_MINUTES] = value }
+    }
+
+    suspend fun setAspectRatio(value: AspectRatio) {
+        dataStore.edit { it[KEY_ASPECT_RATIO] = value.name }
     }
 }

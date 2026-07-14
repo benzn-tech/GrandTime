@@ -101,4 +101,24 @@ class SettingsStoreTest {
             runBlocking { store.setScreenOffMinutes(2) }
         }
     }
+
+    @Test
+    fun `aspect ratio defaults to 4-3`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        assertEquals(AspectRatio.RATIO_4_3, store.settings.first().aspectRatio)
+    }
+
+    @Test
+    fun `aspect ratio roundtrips`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        store.setAspectRatio(AspectRatio.RATIO_16_9)
+        assertEquals(AspectRatio.RATIO_16_9, store.settings.first().aspectRatio)
+    }
+
+    @Test
+    fun `unknown stored aspect ratio falls back to 4-3`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, ds) = newStore()
+        ds.edit { it[stringPreferencesKey("aspect_ratio")] = "RATIO_99_9" }
+        assertEquals(AspectRatio.RATIO_4_3, store.settings.first().aspectRatio)
+    }
 }
