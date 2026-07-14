@@ -160,57 +160,58 @@ git commit -m "feat(settings): add AspectRatio (4:3 default / 16:9) setting"
 - Consumes: `AspectRatio`(T1)、`VideoQuality`(既有)、`android.util.Size`。
 - Produces:
   - `data class VideoSpec(val width: Int, val height: Int, val bitRate: Int, val orientationHint: Int)`
-  - `object VideoSizeSelector { const val ENCODER_MAX_W=1920; const val ENCODER_MAX_H=1088; fun pickSize(aspect: AspectRatio, quality: VideoQuality, supported: List<Size>): Size; fun bitRateFor(quality: VideoQuality): Int }`
+  - `data class VideoSize(val width: Int, val height: Int)`(纯 Kotlin 类型,替代 `android.util.Size`,保证选择器可 JVM 纯单测、不引 Robolectric;`Camera2Pipeline` 在边界处把 `getOutputSizes()` 的 `android.util.Size` map 成 `VideoSize`)
+  - `object VideoSizeSelector { const val ENCODER_MAX_W=1920; const val ENCODER_MAX_H=1088; fun pickSize(aspect: AspectRatio, quality: VideoQuality, supported: List<VideoSize>): VideoSize; fun bitRateFor(quality: VideoQuality): Int }`
 
-> `android.util.Size` 在 JVM 单测里可用(它是纯数据类,无需 Robolectric)。
+> **不用 `android.util.Size`**:它在默认 JVM 单测里被 android.jar 打桩(方法抛 "not mocked"),会逼引 Robolectric——违反"不加依赖"约束。故选择器用纯 `VideoSize`,测试纯 JUnit。
 
 - [ ] **Step 1: 写失败测试**——`VideoSizeSelectorTest.kt`(用 P1 实测的真实支持尺寸列表):
 
 ```kotlin
 package com.benzn.grandtime.capture.camera2
 
-import android.util.Size
 import com.benzn.grandtime.core.AspectRatio
 import com.benzn.grandtime.core.VideoQuality
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VideoSizeSelectorTest {
     // P1 实测 F2SP 后置 cam0 支持的视频/预览尺寸(节选,含各宽高比)
     private val supported = listOf(
-        Size(2592, 1944), Size(1920, 1440), Size(1440, 1080), Size(1280, 960),
-        Size(960, 720), Size(640, 480),                       // 4:3
-        Size(2560, 1440), Size(1920, 1080), Size(1280, 720), Size(640, 360), // 16:9
+        VideoSize(2592, 1944), VideoSize(1920, 1440), VideoSize(1440, 1080), VideoSize(1280, 960),
+        VideoSize(960, 720), VideoSize(640, 480),                       // 4:3
+        VideoSize(2560, 1440), VideoSize(1920, 1080), VideoSize(1280, 720), VideoSize(640, 360), // 16:9
     )
 
     @Test fun `4-3 1080 picks 1440x1080 within encoder cap`() {
-        assertEquals(Size(1440, 1080), VideoSizeSelector.pickSize(AspectRatio.RATIO_4_3, VideoQuality.P1080, supported))
+        assertEquals(VideoSize(1440, 1080), VideoSizeSelector.pickSize(AspectRatio.RATIO_4_3, VideoQuality.P1080, supported))
     }
 
     @Test fun `16-9 1080 picks 1920x1080`() {
-        assertEquals(Size(1920, 1080), VideoSizeSelector.pickSize(AspectRatio.RATIO_16_9, VideoQuality.P1080, supported))
+        assertEquals(VideoSize(1920, 1080), VideoSizeSelector.pickSize(AspectRatio.RATIO_16_9, VideoQuality.P1080, supported))
     }
 
     @Test fun `4-3 720 picks 960x720`() {
-        assertEquals(Size(960, 720), VideoSizeSelector.pickSize(AspectRatio.RATIO_4_3, VideoQuality.P720, supported))
+        assertEquals(VideoSize(960, 720), VideoSizeSelector.pickSize(AspectRatio.RATIO_4_3, VideoQuality.P720, supported))
     }
 
     @Test fun `16-9 720 picks 1280x720`() {
-        assertEquals(Size(1280, 720), VideoSizeSelector.pickSize(AspectRatio.RATIO_16_9, VideoQuality.P720, supported))
+        assertEquals(VideoSize(1280, 720), VideoSizeSelector.pickSize(AspectRatio.RATIO_16_9, VideoQuality.P720, supported))
     }
 
     @Test fun `4-3 480 picks 640x480`() {
-        assertEquals(Size(640, 480), VideoSizeSelector.pickSize(AspectRatio.RATIO_4_3, VideoQuality.P480, supported))
+        assertEquals(VideoSize(640, 480), VideoSizeSelector.pickSize(AspectRatio.RATIO_4_3, VideoQuality.P480, supported))
     }
 
     @Test fun `never exceeds encoder cap 1920x1088`() {
         val s = VideoSizeSelector.pickSize(AspectRatio.RATIO_4_3, VideoQuality.P1080, supported)
-        assert(s.width <= 1920 && s.height <= 1088)
+        assertTrue(s.width <= 1920 && s.height <= 1088)
     }
 
     @Test fun `bitrate decreases with lower quality`() {
-        assert(VideoSizeSelector.bitRateFor(VideoQuality.P1080) > VideoSizeSelector.bitRateFor(VideoQuality.P720))
-        assert(VideoSizeSelector.bitRateFor(VideoQuality.P720) > VideoSizeSelector.bitRateFor(VideoQuality.P480))
+        assertTrue(VideoSizeSelector.bitRateFor(VideoQuality.P1080) > VideoSizeSelector.bitRateFor(VideoQuality.P720))
+        assertTrue(VideoSizeSelector.bitRateFor(VideoQuality.P720) > VideoSizeSelector.bitRateFor(VideoQuality.P480))
     }
 }
 ```
@@ -225,7 +226,6 @@ Expected: FAIL(类不存在)。
 ```kotlin
 package com.benzn.grandtime.capture.camera2
 
-import android.util.Size
 import com.benzn.grandtime.core.AspectRatio
 import com.benzn.grandtime.core.VideoQuality
 
@@ -236,6 +236,9 @@ data class VideoSpec(
     val bitRate: Int,
     val orientationHint: Int,
 )
+
+/** 尺寸纯类型(替代 android.util.Size,保证选择器 JVM 纯单测)。 */
+data class VideoSize(val width: Int, val height: Int)
 
 /**
  * 从相机支持尺寸里选编码尺寸:精确匹配宽高比、≤ 硬编上限(1920×1088)、
@@ -257,7 +260,7 @@ object VideoSizeSelector {
         VideoQuality.P480 -> 6_000_000
     }
 
-    fun pickSize(aspect: AspectRatio, quality: VideoQuality, supported: List<Size>): Size {
+    fun pickSize(aspect: AspectRatio, quality: VideoQuality, supported: List<VideoSize>): VideoSize {
         val (aw, ah) = when (aspect) {
             AspectRatio.RATIO_4_3 -> 4 to 3
             AspectRatio.RATIO_16_9 -> 16 to 9
@@ -269,7 +272,7 @@ object VideoSizeSelector {
             return exact.firstOrNull { it.height <= target } ?: exact.last()
         }
         // 兜底:无精确宽高比档时,取上限内、高度最接近目标的任意档(理论上不该发生)。
-        return inCap.minByOrNull { kotlin.math.abs(it.height - target) } ?: Size(1280, 720)
+        return inCap.minByOrNull { kotlin.math.abs(it.height - target) } ?: VideoSize(1280, 720)
     }
 }
 ```
@@ -837,9 +840,10 @@ class Camera2Pipeline(
         cm().getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
     }
 
-    private fun supportedVideoSizes(id: String): List<Size> {
+    private fun supportedVideoSizes(id: String): List<VideoSize> {
         val map = cm().getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        return map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)?.toList() ?: emptyList()
+        return map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+            ?.map { VideoSize(it.width, it.height) } ?: emptyList()
     }
 
     @SuppressLint("MissingPermission")
