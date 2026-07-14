@@ -24,22 +24,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.debug.WatermarkProbe
 import com.benzn.grandtime.hardware.HardKey
 import com.benzn.grandtime.hardware.RawDirection
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @Composable
 fun DiagnosticsScreen() {
@@ -47,8 +52,15 @@ fun DiagnosticsScreen() {
     val fs = LocalFsColors.current
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
     var pressed by remember { mutableStateOf<HardKey?>(null) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        // 临时:P3-T1 水印方向定标探针(Task14 随本轮探针一起删除)
+        OutlinedButton(
+            onClick = { scope.launch(Dispatchers.Default) { WatermarkProbe(context).run() } },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        ) { Text("Run watermark probe (debug)") }
         Row(
             Modifier.fillMaxWidth().padding(bottom = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
