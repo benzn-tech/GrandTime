@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.ExifInterface
 import android.media.MediaScannerConnection
 import android.os.Environment
 import android.os.VibrationEffect
@@ -65,6 +66,17 @@ class CaptureManager(
     private var currentAudioFile: File? = null
 
     init {
+        // 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
+        pipeline.onCameraLost = {
+            scope.launch {
+                if (core.state is CaptureState.RecordingVideo) {
+                    finalizeVideoDbRow()?.let { uploadEnqueuer.enqueue(it) }
+                    stopScreenOffTimer()
+                    sounds.stopRecording()
+                    execute(core.onFailure("Camera lost — recording stopped"))
+                }
+            }
+        }
         // 首启一次性迁移(不变)
         scope.launch(Dispatchers.IO) {
             val oldRoots = context.getExternalFilesDirs(null).filterNotNull()
@@ -188,7 +200,13 @@ class CaptureManager(
                 }
             }
         }
-        if (result == null) { execute(core.onFailure("Camera unavailable")); return false }
+        if (result == null) {
+            stopScreenOffTimer()
+            sounds.stopRecording()
+            scope.launch { pipeline.release() }
+            execute(core.onFailure("Camera unavailable"))
+            return false
+        }
         currentVideoRecordId = recordId
         currentVideoFile = file
         currentVideoStartedAt = startedAt
@@ -283,6 +301,7 @@ class CaptureManager(
     /** 照片精度降采样(spec §2.7):JPEG 超目标像素则解码→按比例缩小→重压。IO 线程。 */
     private suspend fun downscaleJpeg(file: File, targetPixels: Long, quality: Int) = withContext(Dispatchers.IO) {
         runCatching {
+            val orientation = runCatching { ExifInterface(file.absolutePath).getAttribute(ExifInterface.TAG_ORIENTATION) }.getOrNull()
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.absolutePath, bounds)
             val srcPixels = bounds.outWidth.toLong() * bounds.outHeight
@@ -295,6 +314,13 @@ class CaptureManager(
             FileOutputStream(file).use { scaled.compress(Bitmap.CompressFormat.JPEG, quality, it) }
             if (scaled != src) scaled.recycle()
             src.recycle()
+            // BitmapFactory 解码+重压会丢 EXIF(含相机写入的旋转 tag)——降采样后写回,避免照片显示歪。
+            if (orientation != null) runCatching {
+                ExifInterface(file.absolutePath).apply {
+                    setAttribute(ExifInterface.TAG_ORIENTATION, orientation)
+                    saveAttributes()
+                }
+            }
         }
     }
 

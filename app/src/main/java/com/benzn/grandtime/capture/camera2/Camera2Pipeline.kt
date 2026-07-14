@@ -41,6 +41,11 @@ class Camera2Pipeline(
     @Volatile private var previewSurface: Surface? = null
     @Volatile private var sensorOrientation = 90
     @Volatile private var torchOn = false
+    @Volatile private var activeSpec: VideoSpec? = null
+    @Volatile private var photoInFlight = false
+
+    /** 相机死亡(被抢占/热降频/HAL 错)通知上层,便于状态机退出录像态。 */
+    @Volatile var onCameraLost: (() -> Unit)? = null
 
     val isRecording: Boolean get() = segment != null
 
@@ -58,6 +63,23 @@ class Camera2Pipeline(
             ?.map { VideoSize(it.width, it.height) } ?: emptyList()
     }
 
+    /** 相机死亡(被抢占/热降频/HAL 错):停在飞段(免线程泄漏)+ 全拆会话资源(免下次 ensureSession 覆盖泄漏)+ 通知上层。 */
+    private fun invalidateOnCameraLost(reason: String) {
+        val rec = segment; val enc = currentEncSurface
+        segment = null; currentEncSurface = null; onFinalizedCb = null
+        if (rec != null) {
+            if (enc != null) gl?.removeTarget(enc)
+            Thread { runCatching { rec.stop() } }.apply { name = "seg-lost-teardown"; start() }
+        }
+        runCatching { session?.close() }; session = null
+        runCatching { jpegReader?.close() }; jpegReader = null
+        runCatching { gl?.release() }; gl = null
+        runCatching { cameraSurface?.release() }; cameraSurface = null
+        activeSpec = null
+        probe("camera lost: $reason")
+        onCameraLost?.invoke()
+    }
+
     @SuppressLint("MissingPermission")
     private suspend fun openCameraIfNeeded(): CameraDevice {
         camera?.let { return it }
@@ -68,15 +90,11 @@ class Camera2Pipeline(
                 override fun onOpened(c: CameraDevice) { cont.resume(c) }
                 override fun onDisconnected(c: CameraDevice) {
                     c.close()
-                    if (camera == c) camera = null
-                    runCatching { session?.close() }; session = null
-                    probe("camera onDisconnected")
+                    if (camera == c) { camera = null; invalidateOnCameraLost("disconnected") }
                 }
                 override fun onError(c: CameraDevice, e: Int) {
                     c.close()
-                    if (camera == c) camera = null
-                    runCatching { session?.close() }; session = null
-                    probe("camera onError $e")
+                    if (camera == c) { camera = null; invalidateOnCameraLost("error $e") }
                     if (cont.isActive) cont.cancel(RuntimeException("openCamera $e"))
                 }
             }, handler)
@@ -143,9 +161,12 @@ class Camera2Pipeline(
         var addedEnc: Surface? = null
         var rec: SegmentRecorder? = null
         return try {
-            val size = VideoSizeSelector.pickSize(aspect, quality, supportedVideoSizes(backId()))
-            val spec = VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), sensorOrientation)
+            val spec = activeSpec ?: run {
+                val size = VideoSizeSelector.pickSize(aspect, quality, supportedVideoSizes(backId()))
+                VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), sensorOrientation)
+            }
             ensureSession(spec)
+            activeSpec = spec
             val recorder = SegmentRecorder(probe)
             rec = recorder
             val encSurface = recorder.prepare(file, spec, hevcPreferred, location, recordAudio = true)
@@ -154,7 +175,7 @@ class Camera2Pipeline(
             segment = recorder
             onFinalizedCb = onFinalized
             currentEncSurface = encSurface
-            SegmentResult(recorder.actualCodec, "${size.width}x${size.height}")
+            SegmentResult(recorder.actualCodec, "${spec.width}x${spec.height}")
         } catch (e: Exception) {
             probe("startSegment 失败: ${e.message}")
             addedEnc?.let { gl?.removeTarget(it) }
@@ -192,34 +213,41 @@ class Camera2Pipeline(
         val cam = camera ?: return false
         val s = session ?: return false
         val reader = jpegReader ?: return false
-        return suspendCancellableCoroutine { cont ->
-            reader.setOnImageAvailableListener({ r ->
-                val img = r.acquireLatestImage()
-                var ok = false
-                if (img != null) {
-                    runCatching {
-                        val buf = img.planes[0].buffer
-                        val bytes = ByteArray(buf.remaining()); buf.get(bytes)
-                        file.outputStream().use { it.write(bytes) }
-                        ok = true
+        if (photoInFlight) return false
+        photoInFlight = true
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(3000L) {
+                suspendCancellableCoroutine<Boolean> { cont ->
+                    cont.invokeOnCancellation { runCatching { reader.setOnImageAvailableListener(null, handler) } }
+                    reader.setOnImageAvailableListener({ r ->
+                        val img = r.acquireLatestImage()
+                        var ok = false
+                        if (img != null) {
+                            runCatching {
+                                val buf = img.planes[0].buffer
+                                val bytes = ByteArray(buf.remaining()); buf.get(bytes)
+                                file.outputStream().use { it.write(bytes) }
+                                ok = true
+                            }
+                            img.close()
+                        }
+                        runCatching { reader.setOnImageAvailableListener(null, handler) }
+                        if (cont.isActive) cont.resume(ok) {}
+                    }, handler)
+                    val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                        addTarget(reader.surface)
+                        set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                        set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
+                        set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+                    }.build()
+                    runCatching { s.capture(req, null, handler) }.onFailure {
+                        runCatching { reader.setOnImageAvailableListener(null, handler) }
+                        if (cont.isActive) cont.resume(false) {}
                     }
-                    img.close()
-                }
-                reader.setOnImageAvailableListener(null, handler)
-                if (cont.isActive) cont.resume(ok)
-            }, handler)
-            runCatching {
-                val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                    addTarget(reader.surface)
-                    set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
-                    set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
-                    set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
-                }.build()
-                s.capture(req, null, handler)
-            }.onFailure {
-                reader.setOnImageAvailableListener(null, handler)
-                if (cont.isActive) cont.resume(false)
-            }
+                } ?: false
+            } ?: false
+        } finally {
+            photoInFlight = false
         }
     }
 
@@ -253,5 +281,6 @@ class Camera2Pipeline(
         runCatching { gl?.release() }; gl = null
         runCatching { cameraSurface?.release() }; cameraSurface = null
         previewSurface = null; torchOn = false
+        activeSpec = null
     }
 }
