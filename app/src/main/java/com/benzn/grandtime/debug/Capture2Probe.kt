@@ -25,6 +25,7 @@ class Capture2Probe(private val context: Context) {
 
     suspend fun runAll() {
         log("==== Capture2 probe start ====")
+        runCatching { enumerateFov() }.onFailure { log("enumerateFov 异常: ${it.javaClass.simpleName}: ${it.message}") }
         runCatching { enumerate() }.onFailure { log("enumerate 异常: ${it.javaClass.simpleName}: ${it.message}") }
         // Task2:HEVC 端到端,失败降 H.264
         val hevc = runCatching { recordClip(useHevc = true) }
@@ -141,6 +142,40 @@ class Capture2Probe(private val context: Context) {
             runCatching { muxer?.stop(); muxer?.release() }
             ht.quitSafely()
         }
+    }
+
+    /** 广角调查:枚举全部 cameraId 的 FOV(视场角)+ 变焦范围,判断是否有更广的镜头/0.5x 是否成立。 */
+    fun enumerateFov() {
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        log("---- FOV / 变焦调查:全部 cameraId=${cm.cameraIdList.joinToString()} ----")
+        for (id in cm.cameraIdList) {
+            val ch = runCatching { cm.getCameraCharacteristics(id) }.getOrNull() ?: continue
+            val facing = when (ch.get(CameraCharacteristics.LENS_FACING)) {
+                CameraCharacteristics.LENS_FACING_BACK -> "BACK"
+                CameraCharacteristics.LENS_FACING_FRONT -> "FRONT"
+                else -> "EXT"
+            }
+            val phys = ch.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) // mm
+            val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) // mm
+            // 水平/垂直/对角 FOV(度)= 2*atan(尺寸 / (2*焦距))
+            val fovStr = if (phys != null && focals != null && focals.isNotEmpty()) {
+                focals.joinToString(" | ") { f ->
+                    val hDeg = Math.toDegrees(2.0 * Math.atan((phys.width / (2.0 * f)).toDouble()))
+                    val vDeg = Math.toDegrees(2.0 * Math.atan((phys.height / (2.0 * f)).toDouble()))
+                    val dDeg = Math.toDegrees(2.0 * Math.atan((Math.hypot(phys.width.toDouble(), phys.height.toDouble()) / (2.0 * f))))
+                    "f=${f}mm H=${"%.1f".format(hDeg)}° V=${"%.1f".format(vDeg)}° D=${"%.1f".format(dDeg)}°"
+                }
+            } else "无焦距/物理尺寸"
+            val zoomRange = runCatching { ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) }.getOrNull()
+            val maxDigital = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)
+            val physIds = runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= 28) ch.physicalCameraIds else emptySet<String>()
+            }.getOrDefault(emptySet())
+            log("cam=$id facing=$facing physSize=${phys?.width}x${phys?.height}mm activeArray=${ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)}")
+            log("  $fovStr")
+            log("  zoomRatioRange=$zoomRange maxDigitalZoom=$maxDigital physicalCams=$physIds")
+        }
+        log("---- FOV 调查结束(zoomRatioRange 下限<1.0 = 支持 0.5x 广角变焦) ----")
     }
 
     /** Task 1:不开相机,仅读 CameraCharacteristics + MediaCodecList,枚举尺寸与编码器能力。 */
