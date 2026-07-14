@@ -4,18 +4,17 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
+import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
 import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.core.content.ContextCompat
+import com.benzn.grandtime.capture.camera2.Camera2Pipeline
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.PhotoQuality
 import com.benzn.grandtime.core.PhotoResolution
-import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
-import com.benzn.grandtime.core.VideoQuality
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.CaptureRecordDao
 import com.benzn.grandtime.keymap.KeyAction
@@ -34,8 +33,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 命令执行器:CaptureCore 决策,这里做真事(绑相机/录制/DB/震动/通知)。
- * 全部在 scope(Service 主线程 lifecycleScope)串行执行。
+ * 命令执行器:CaptureCore 决策,这里做真事(录制/拍照/DB/震动/通知)。
+ * 相机走 Camera2Pipeline(Camera2+MediaCodec+GL)。全部在 scope 串行。
  */
 class CaptureManager(
     private val context: Context,
@@ -49,12 +48,9 @@ class CaptureManager(
     },
 ) {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { UUID.randomUUID().toString() })
-    private val lifecycleOwner = ServiceLifecycleOwner()
-    private val session = CameraSession(context, lifecycleOwner)
-    private val video = VideoRecorder(context)
-    private val photo = PhotoTaker(context)
+    private val pipeline = Camera2Pipeline(context, probe)
     private val audio = AudioRecorder(context)
-    private val torch = TorchController(context, session)
+    private val torch = TorchController(context, pipeline)
     private val volume = VolumeCycler(context)
     private val storage = MediaStorage({ MediaStorage.publicRoot(context) }, scopeProvider = { AppState.mediaScope.value })
     private val sounds = CaptureSounds()
@@ -69,58 +65,29 @@ class CaptureManager(
     private var currentAudioFile: File? = null
 
     init {
-        // 首启一次性迁移:旧的 app 私有目录媒体 → 公共存储(spec §3),迁移成功的行更新 DB 路径。
-        // 遍历全部外置卷(非仅默认卷 0)——SP3a 曾优先写 SD(volumes[1]),旧私有文件可能
-        // 落在任意一个卷下,只迁默认卷会让 SD 上的旧文件在公共存储里"隐形"(数据可见性缺口)。
+        // 首启一次性迁移(不变)
         scope.launch(Dispatchers.IO) {
             val oldRoots = context.getExternalFilesDirs(null).filterNotNull()
             val newRoot = MediaStorage.publicRoot(context)
             for (oldRoot in oldRoots) {
-                val migrator = MediaMigrator(
-                    oldRoot = oldRoot,
-                    newRoot = newRoot,
-                ) { oldPath, newFile -> scope.launch { dao.updatePath(oldPath, newFile.absolutePath) } }
+                val migrator = MediaMigrator(oldRoot = oldRoot, newRoot = newRoot) { oldPath, newFile ->
+                    scope.launch { dao.updatePath(oldPath, newFile.absolutePath) }
+                }
                 runCatching { migrator.migrate() }
             }
         }
-        // 预览 surface 收发:录像态且 UI 提供了 surface 才 attach;否则(切后台/回 Idle)detach。
-        // distinctUntilChanged 防抖:每次段滚动 captureState 都会重新 emit 一个新的
-        // RecordingVideo(segmentIndex+1) 实例,若不去重,同一 surface 会被反复 attachPreview,
-        // 在 CameraSession 里越叠越多 Preview 用例。这里只关心"是否处于录像态"这一维度的变化。
+        // 预览挂/摘:录像态且 UI 给了 surface 才挂;否则摘。setPreviewSurface 只切 GL 目标,
+        // 不动相机会话(录像不中断)。distinctUntilChanged 防每次段滚动重复挂。
         scope.launch {
-            combine(
-                AppState.previewSurface,
-                AppState.captureState,
-            ) { sp, state -> sp.takeIf { state is CaptureState.RecordingVideo } }
-                .distinctUntilChanged()
-                .collect { sp ->
-                    if (sp != null) {
-                        runCatching { session.attachPreview(sp) }
-                    } else {
-                        session.detachPreview()
-                    }
-                }
+            combine(AppState.previewSurface, AppState.captureState) { sp, state ->
+                sp.takeIf { state is CaptureState.RecordingVideo }
+            }.distinctUntilChanged().collect { _ -> pipeline.setPreviewSurface(null) }
         }
     }
 
-    /** 720P/1080P 录像中拍照的抓帧请求(spec §2.5)。单挂起槽:非 null 时新请求一律防抖拒绝。 */
-    private data class PendingFrameGrab(
-        val photoId: String,
-        val sessionId: String,
-        val keypressMillis: Long,
-        val segFile: File,
-        val segStart: Long,
-        val jpegQuality: Int,
-        val resolution: String,
-    )
-    private var pendingFrameGrab: PendingFrameGrab? = null
-
     val handledActions: Set<KeyAction> = setOf(
-        KeyAction.START_STOP_VIDEO,
-        KeyAction.TAKE_PHOTO,
-        KeyAction.START_STOP_AUDIO,
-        KeyAction.TOGGLE_TORCH,
-        KeyAction.ADJUST_VOLUME,
+        KeyAction.START_STOP_VIDEO, KeyAction.TAKE_PHOTO, KeyAction.START_STOP_AUDIO,
+        KeyAction.TOGGLE_TORCH, KeyAction.ADJUST_VOLUME,
     )
 
     fun handle(action: KeyAction) {
@@ -133,13 +100,10 @@ class CaptureManager(
     fun shutdown() {
         segmentTimer?.cancel()
         screenOffTimer?.cancel()
-        if (video.isRecording) video.stop()
+        if (pipeline.isRecording) pipeline.stopSegment()
         if (audio.isRecording) audio.stop()
-        pendingFrameGrab = null
         sounds.release()
-        lifecycleOwner.destroy()
-        // 收尾兜底:防止 screenOffRequest 停留在 true,下次进入 RecordingScreen 时
-        // LaunchedEffect(screenOff) 读到陈旧的 true 而误判"该熄屏"。
+        scope.launch { pipeline.release() }
         AppState.screenOffRequest.value = false
     }
 
@@ -169,25 +133,20 @@ class CaptureManager(
     }
 
     private suspend fun execute(commands: List<CaptureCommand>) {
-        // 命令批次中若 Start* 内部走到 core.onFailure(嵌套 execute 已把状态收回 Idle),
-        // 必须中止本批剩余命令——否则紧随其后的 Vibrate(1)/Notify("Recording ...")
-        // 会覆盖失败提示,留下"正在录制"通知却其实并未开始录制。
         for (cmd in commands) {
             val ok = when (cmd) {
                 is CaptureCommand.StartVideoSegment -> startVideoSegment(cmd)
                 is CaptureCommand.StopVideo -> {
                     segmentTimer?.cancel()
                     pendingRoll = cmd.rollToNext
-                    video.stop()
+                    pipeline.stopSegment()
                     true
                 }
                 is CaptureCommand.TakePhoto -> { takePhoto(cmd); true }
                 is CaptureCommand.StartAudio -> startAudio(cmd)
                 CaptureCommand.StopAudio -> { stopAudio(); true }
                 CaptureCommand.ToggleTorch -> {
-                    torch.toggle()
-                    probe("torch ${if (torch.torchOn) "on" else "off"}")
-                    true
+                    torch.toggle(); probe("torch ${if (torch.torchOn) "on" else "off"}"); true
                 }
                 CaptureCommand.CycleVolume -> { probe("volume ${volume.cycle()}%"); true }
                 is CaptureCommand.Vibrate -> { vibrate(cmd.times); true }
@@ -200,43 +159,22 @@ class CaptureManager(
 
     private suspend fun startVideoSegment(cmd: CaptureCommand.StartVideoSegment): Boolean {
         val settings = settingsStore.settings.first()
-        val videoCapture = session.videoCapture
-            ?: try {
-                session.bindForVideo(settings.videoQuality, jpegQuality(settings.photoQuality))
-            } catch (e: Exception) {
-                execute(core.onFailure("Camera unavailable")); return false
-            }
         val file = storage.newFile(MediaStorage.Kind.VIDEO)
         val startedAt = System.currentTimeMillis()
         val recordId = UUID.randomUUID().toString()
-        currentVideoRecordId = recordId
-        currentVideoFile = file
-        currentVideoStartedAt = startedAt
-        dao.insert(
-            CaptureRecord(
-                id = recordId, kind = "video", filePath = file.absolutePath, fileName = file.name,
-                startedAt = startedAt, codec = "h264", resolution = settings.videoQuality.resolutionString(),
-                segmentIndex = cmd.segmentIndex, sessionId = cmd.sessionId, createdAt = startedAt,
-                siteId = AppState.selectedSite.value?.id,
-            )
-        )
-        video.startSegment(videoCapture, file) { error, message ->
+        val result = pipeline.startSegment(
+            file = file,
+            aspect = settings.aspectRatio,
+            quality = settings.videoQuality,
+            hevcPreferred = true,
+            location = null, // GPS 起点写入留 P3
+        ) { error, message ->
             scope.launch {
                 val finalizedId = finalizeVideoDbRow()
-                // 抓帧请求登记的段与本次 finalize 的段匹配才消费——防止跨段串号。
-                val grab = pendingFrameGrab
-                if (grab != null && grab.segFile == file) {
-                    try {
-                        performFrameGrab(grab)
-                    } finally {
-                        pendingFrameGrab = null
-                    }
-                }
                 if (error) {
-                    pendingFrameGrab = null // 会话失败,后续不再有段 finalize——不留孤儿挂起槽
                     stopScreenOffTimer()
                     execute(core.onFailure(message ?: "Video error"))
-                    session.unbind()
+                    pipeline.release()
                 } else {
                     if (finalizedId != null) uploadEnqueuer.enqueue(finalizedId)
                     val roll = pendingRoll
@@ -245,11 +183,23 @@ class CaptureManager(
                     if (core.state is CaptureState.Idle) {
                         sounds.stopRecording()
                         stopScreenOffTimer()
-                        session.unbind()
+                        pipeline.release()
                     }
                 }
             }
         }
+        if (result == null) { execute(core.onFailure("Camera unavailable")); return false }
+        currentVideoRecordId = recordId
+        currentVideoFile = file
+        currentVideoStartedAt = startedAt
+        dao.insert(
+            CaptureRecord(
+                id = recordId, kind = "video", filePath = file.absolutePath, fileName = file.name,
+                startedAt = startedAt, codec = result.codec, resolution = result.resolution,
+                segmentIndex = cmd.segmentIndex, sessionId = cmd.sessionId, createdAt = startedAt,
+                siteId = AppState.selectedSite.value?.id,
+            )
+        )
         startSegmentTimer(settings.segmentMinutes)
         if (cmd.segmentIndex == 1) {
             sounds.startRecording()
@@ -259,7 +209,6 @@ class CaptureManager(
         return true
     }
 
-    /** 录像段 1 起计时,满 N 分钟置 AppState.screenOffRequest=true(spec §2.7);0=Never 不计。 */
     private fun startScreenOffTimer(minutes: Int) {
         screenOffTimer?.cancel()
         if (minutes <= 0) return
@@ -283,7 +232,6 @@ class CaptureManager(
         }
     }
 
-    /** Finalizes the DB row for the just-completed segment; returns its id for upload enqueue (null if none was pending). */
     private suspend fun finalizeVideoDbRow(): String? {
         val id = currentVideoRecordId ?: return null
         val file = currentVideoFile ?: return null
@@ -299,125 +247,54 @@ class CaptureManager(
     private suspend fun takePhoto(cmd: CaptureCommand.TakePhoto) {
         val settings = settingsStore.settings.first()
         val recordingVideo = core.state is CaptureState.RecordingVideo
-        val imageCapture = when {
-            // 720P/1080P 录像中(session.imageCapture == null,双绑不可用)= 抓帧路径(spec §2.5)。
-            // 480P 双绑(imageCapture != null)与 Idle/录音中拍照维持原传感器 JPEG 路径,不受影响。
-            recordingVideo -> session.imageCapture ?: run {
-                initiateFrameGrab(cmd, settings)
-                return
-            }
-            session.imageCapture != null -> session.imageCapture!!
-            else -> try {
-                session.bindForPhoto(jpegQuality(settings.photoQuality), settings.photoResolution.targetPixels())
-            } catch (e: Exception) {
-                execute(core.onFailure("Camera unavailable")); return
-            }
+        // 非录像态(Idle/录音)先确保会话 + 3A 收敛;录像态直接用现有会话。
+        if (!recordingVideo) {
+            runCatching { pipeline.prepareForPhoto(settings.aspectRatio, settings.videoQuality) }
+                .onFailure { execute(core.onFailure("Camera unavailable")); return }
         }
         val file = storage.newFile(MediaStorage.Kind.PHOTO)
         val startedAt = System.currentTimeMillis()
         val recordId = UUID.randomUUID().toString()
-        photo.take(imageCapture, file) { success ->
-            scope.launch {
-                if (success) {
-                    dao.insert(
-                        CaptureRecord(
-                            id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
-                            startedAt = startedAt, endedAt = startedAt, sizeBytes = file.length(),
-                            codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
-                            siteId = AppState.selectedSite.value?.id,
-                        )
-                    )
-                    uploadEnqueuer.enqueue(recordId)
-                    scan(file.absolutePath)
-                    AppState.lastPhotoFlash.value = file.absolutePath
-                    sounds.shutter()
-                    notify(if (core.state is CaptureState.Idle) "Photo saved" else "Photo saved (recording continues)")
-                    probe("photo saved: ${file.name}")
-                } else {
-                    notify("Photo failed")
-                    vibrate(2)
-                }
-                // Idle 或 RecordingAudio 后都应释放相机(录音不占相机);
-                // 只有仍在录像(RecordingVideo,双用例共用绑定)才保留。
-                if (core.state !is CaptureState.RecordingVideo && !video.isRecording) session.unbind()
-            }
-        }
-    }
-
-    /**
-     * 720P/1080P 录像中拍照 = 抓帧(spec §2.5)。记录按键时刻与当前段,强制滚段
-     * (等价 onSegmentTimerFired 的 StopVideo(rollToNext=true));段 finalize 回调里
-     * (startVideoSegment)真正抽帧,录像无感续录。
-     */
-    private fun initiateFrameGrab(cmd: CaptureCommand.TakePhoto, settings: RecordingSettings) {
-        if (pendingFrameGrab != null) {
-            vibrate(2)
-            notify("Capturing, please wait")
-            probe("frame-grab rejected: previous grab still pending")
-            return
-        }
-        val segFile = currentVideoFile
-        if (segFile == null) {
-            // 防御性兜底:理论上 RecordingVideo 状态下段文件必存在;真出现即视为不支持。
-            notify("Photo during video not supported on this device")
-            vibrate(2)
-            return
-        }
-        pendingFrameGrab = PendingFrameGrab(
-            photoId = UUID.randomUUID().toString(),
-            sessionId = cmd.sessionId,
-            keypressMillis = System.currentTimeMillis(),
-            segFile = segFile,
-            segStart = currentVideoStartedAt,
-            jpegQuality = jpegQuality(settings.photoQuality),
-            resolution = settings.videoQuality.resolutionString(),
-        )
-        probe("frame-grab requested: rolling segment early")
-        segmentTimer?.cancel()
-        pendingRoll = true
-        video.stop()
-    }
-
-    /** IO 线程抽帧压 JPEG 落盘 + 写 DB 行;调用方已把匹配的 pendingFrameGrab 置 null。 */
-    private suspend fun performFrameGrab(grab: PendingFrameGrab) {
-        val out = storage.newFile(MediaStorage.Kind.PHOTO, grab.keypressMillis)
-        val ok = withContext(Dispatchers.IO) {
-            try {
-                MediaMetadataRetriever().use { retriever ->
-                    retriever.setDataSource(grab.segFile.absolutePath)
-                    val offsetUs = frameOffsetMicros(grab.keypressMillis, grab.segStart)
-                    val frame = retriever.getFrameAtTime(offsetUs, MediaMetadataRetriever.OPTION_CLOSEST)
-                        ?: return@withContext false
-                    FileOutputStream(out).use { stream ->
-                        frame.compress(Bitmap.CompressFormat.JPEG, grab.jpegQuality, stream)
-                    }
-                    frame.recycle()
-                }
-                true
-            } catch (e: Exception) {
-                false
-            }
-        }
+        val ok = pipeline.takePhoto(file, jpegQuality(settings.photoQuality))
         if (ok) {
+            // 照片精度设置:满 4:3 JPEG 落盘后按目标像素降采样(MAX=不降)。
+            settings.photoResolution.targetPixels()?.let { downscaleJpeg(file, it, jpegQuality(settings.photoQuality)) }
             dao.insert(
                 CaptureRecord(
-                    id = grab.photoId, kind = "photo", filePath = out.absolutePath, fileName = out.name,
-                    startedAt = grab.keypressMillis, endedAt = grab.keypressMillis, sizeBytes = out.length(),
-                    codec = "frame-grab", resolution = grab.resolution, sessionId = grab.sessionId,
-                    createdAt = grab.keypressMillis,
+                    id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
+                    startedAt = startedAt, endedAt = startedAt, sizeBytes = file.length(),
+                    codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
                     siteId = AppState.selectedSite.value?.id,
                 )
             )
-            uploadEnqueuer.enqueue(grab.photoId)
-            scan(out.absolutePath)
-            AppState.lastPhotoFlash.value = out.absolutePath
+            uploadEnqueuer.enqueue(recordId)
+            scan(file.absolutePath)
+            AppState.lastPhotoFlash.value = file.absolutePath
             sounds.shutter()
-            notify("Photo saved (recording continues)")
-            probe("frame-grab saved: ${out.name}")
+            notify(if (core.state is CaptureState.Idle) "Photo saved" else "Photo saved (recording continues)")
+            probe("photo saved: ${file.name}")
         } else {
-            notify("Photo capture failed")
-            vibrate(2)
-            probe("frame-grab failed")
+            notify("Photo failed"); vibrate(2)
+        }
+        // 录像中保留会话;否则(Idle/录音)拍完释放相机。
+        if (core.state !is CaptureState.RecordingVideo && !pipeline.isRecording) pipeline.release()
+    }
+
+    /** 照片精度降采样(spec §2.7):JPEG 超目标像素则解码→按比例缩小→重压。IO 线程。 */
+    private suspend fun downscaleJpeg(file: File, targetPixels: Long, quality: Int) = withContext(Dispatchers.IO) {
+        runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            val srcPixels = bounds.outWidth.toLong() * bounds.outHeight
+            if (srcPixels <= targetPixels || bounds.outWidth <= 0) return@runCatching
+            val scale = kotlin.math.sqrt(targetPixels.toDouble() / srcPixels)
+            val dstW = (bounds.outWidth * scale).toInt().coerceAtLeast(1)
+            val dstH = (bounds.outHeight * scale).toInt().coerceAtLeast(1)
+            val src = BitmapFactory.decodeFile(file.absolutePath) ?: return@runCatching
+            val scaled = Bitmap.createScaledBitmap(src, dstW, dstH, true)
+            FileOutputStream(file).use { scaled.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+            if (scaled != src) scaled.recycle()
+            src.recycle()
         }
     }
 
@@ -425,8 +302,7 @@ class CaptureManager(
         val file = storage.newFile(MediaStorage.Kind.AUDIO)
         val startedAt = System.currentTimeMillis()
         if (!audio.start(file)) {
-            execute(core.onFailure("Audio recorder unavailable"))
-            return false
+            execute(core.onFailure("Audio recorder unavailable")); return false
         }
         val recordId = UUID.randomUUID().toString()
         currentAudioRecordId = recordId
@@ -451,9 +327,6 @@ class CaptureManager(
         if (id != null && file != null) {
             val ended = System.currentTimeMillis()
             dao.finalize(id, ended, if (startedAt != null) ended - startedAt else 0L, file.length())
-            // #5: only enqueue for upload on a clean stop — an unclean MediaRecorder.stop()
-            // (stoppedCleanly == false) can leave a truncated/corrupt file; the DB row is still
-            // finalized (so it shows up locally) but we don't ship a broken file to the backend.
             if (stoppedCleanly) uploadEnqueuer.enqueue(id)
             scan(file.absolutePath)
             probe("audio saved: ${file.name}")
@@ -461,9 +334,8 @@ class CaptureManager(
         currentAudioRecordId = null
         currentAudioFile = null
         if (!stoppedCleanly) probe("audio stop reported error")
-        // 录音专属绑定不存在(MediaRecorder 不占 CameraX),但录音期间若拍过照,
-        // 相机绑定会残留到这里——收尾时兜底释放;video 仍在录时保持绑定,no-op 安全。
-        if (!video.isRecording) session.unbind()
+        // 录音期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
+        if (!pipeline.isRecording) pipeline.release()
         sounds.stopRecording()
         execute(core.onAudioFinalized())
     }
@@ -474,30 +346,16 @@ class CaptureManager(
         vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
     }
 
-    /** 落盘文件纳入系统媒体库(spec §3),各 finalize/insert 点后调用。 */
     private fun scan(path: String) {
         MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
     }
 }
 
-private fun VideoQuality.resolutionString(): String = when (this) {
-    VideoQuality.P1080 -> "1920x1080"
-    VideoQuality.P720 -> "1280x720"
-    VideoQuality.P480 -> "854x480"
-}
-
 private fun jpegQuality(quality: PhotoQuality): Int = if (quality == PhotoQuality.HIGH) 95 else 80
 
-/** 照片精度(spec §2.7)→ CameraSession.bindForPhoto 的目标像素数;MAX=null(不限,满传感器)。 */
+/** 照片精度 → 目标像素数;MAX=null(满 4:3,不降)。 */
 private fun PhotoResolution.targetPixels(): Long? = when (this) {
     PhotoResolution.MAX -> null
     PhotoResolution.HIGH -> 3_000_000L
     PhotoResolution.STD -> 1_000_000L
 }
-
-/**
- * 抓帧偏移(微秒)= (按键时刻 − 段起始) 钳制非负,换算 MediaMetadataRetriever 的微秒单位
- * (spec §2.5)。段起点之前按下(时钟偏差)归零,不取负偏移。纯函数,JVM 可测。
- */
-internal fun frameOffsetMicros(keypressMillis: Long, segStart: Long): Long =
-    (keypressMillis - segStart).coerceAtLeast(0) * 1000
