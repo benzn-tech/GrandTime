@@ -40,6 +40,9 @@ class Capture2Probe(private val context: Context) {
         val conc = runCatching { probeConcurrent() }
             .getOrElse { "concurrent 抛异常: ${it.javaClass.simpleName}: ${it.message}" }
         log("probeConcurrent => $conc")
+        // Task3(P2):SegmentRecorder 独立验证(HEVC/AVC + MediaMuxer + setLocation)
+        val seg = runCatching { probeSegmentRecorder() }.getOrElse { "seg 抛异常: ${it.javaClass.simpleName}: ${it.message}" }
+        log("probeSegmentRecorder => $seg")
         log("==== Capture2 probe end ====")
     }
 
@@ -314,6 +317,54 @@ class Capture2Probe(private val context: Context) {
             runCatching { jpegReader?.close() }
             runCatching { previewSurface?.release() }
             runCatching { previewTex?.release() }
+            ht.quitSafely()
+        }
+    }
+
+    /** Task3 验证:相机 → SegmentRecorder 输入面 → mp4(隔离测 HEVC/AVC+muxer+setLocation)。 */
+    @android.annotation.SuppressLint("MissingPermission")
+    suspend fun probeSegmentRecorder(): String {
+        val dir = java.io.File("/sdcard/FieldSight/_probe").apply { mkdirs() }
+        val out = java.io.File(dir, "probe_seg.mp4")
+        val rec = com.benzn.grandtime.capture.camera2.SegmentRecorder { log(it) }
+        val spec = com.benzn.grandtime.capture.camera2.VideoSpec(1440, 1080, 20_000_000, 90)
+        val surface = rec.prepare(out, spec, hevcPreferred = true, location = -36.85f to 174.76f)
+        val ht = android.os.HandlerThread("seg").apply { start() }
+        val handler = android.os.Handler(ht.looper)
+        var camera: android.hardware.camera2.CameraDevice? = null
+        var session: android.hardware.camera2.CameraCaptureSession? = null
+        try {
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val backId = cm.cameraIdList.first {
+                cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            }
+            val cam: android.hardware.camera2.CameraDevice = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                cm.openCamera(backId, object : android.hardware.camera2.CameraDevice.StateCallback() {
+                    override fun onOpened(c: android.hardware.camera2.CameraDevice) { cont.resume(c) {} }
+                    override fun onDisconnected(c: android.hardware.camera2.CameraDevice) { c.close() }
+                    override fun onError(c: android.hardware.camera2.CameraDevice, e: Int) { c.close(); if (cont.isActive) cont.cancel(RuntimeException("open err $e")) }
+                }, handler)
+            }
+            camera = cam
+            rec.start()
+            val sess: android.hardware.camera2.CameraCaptureSession = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                @Suppress("DEPRECATION")
+                cam.createCaptureSession(listOf(surface), object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(s: android.hardware.camera2.CameraCaptureSession) { cont.resume(s) {} }
+                    override fun onConfigureFailed(s: android.hardware.camera2.CameraCaptureSession) { if (cont.isActive) cont.cancel(RuntimeException("cfg fail")) }
+                }, handler)
+            }
+            session = sess
+            val req = cam.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_RECORD).apply { addTarget(surface) }.build()
+            sess.setRepeatingRequest(req, null, handler)
+            kotlinx.coroutines.delay(3000)
+            sess.stopRepeating()
+            rec.stop()
+            return "OK codec=${rec.actualCodec} size=${out.length()} path=${out.absolutePath}"
+        } finally {
+            runCatching { session?.close() }
+            runCatching { camera?.close() }
+            runCatching { rec.stop() }
             ht.quitSafely()
         }
     }
