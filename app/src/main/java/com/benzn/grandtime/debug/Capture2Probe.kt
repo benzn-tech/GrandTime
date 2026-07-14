@@ -35,6 +35,10 @@ class Capture2Probe(private val context: Context) {
                 .getOrElse { "AVC 抛异常: ${it.javaClass.simpleName}: ${it.message}" }
             log("recordClip(AVC 降级) => $avc")
         }
+        // Task3:三流并发(编码器+拍照+预览),验录像中拍照
+        val conc = runCatching { probeConcurrent() }
+            .getOrElse { "concurrent 抛异常: ${it.javaClass.simpleName}: ${it.message}" }
+        log("probeConcurrent => $conc")
         log("==== Capture2 probe end ====")
     }
 
@@ -181,4 +185,116 @@ class Capture2Probe(private val context: Context) {
             }
         }
     }
+
+    /** Task 3:编码器 + JPEG ImageReader(满5MP)+ 预览 SurfaceTexture 三流;录像中单拍一张。 */
+    @android.annotation.SuppressLint("MissingPermission")
+    suspend fun probeConcurrent(): String {
+        val w = 1440; val h = 1080
+        val ht = android.os.HandlerThread("cap2conc").apply { start() }
+        val handler = android.os.Handler(ht.looper)
+        var codec: android.media.MediaCodec? = null
+        var camera: android.hardware.camera2.CameraDevice? = null
+        var session: android.hardware.camera2.CameraCaptureSession? = null
+        var jpegReader: android.media.ImageReader? = null
+        var previewTex: android.graphics.SurfaceTexture? = null
+        var previewSurface: android.view.Surface? = null
+        try {
+            val fmt = android.media.MediaFormat.createVideoFormat("video/hevc", w, h).apply {
+                setInteger(android.media.MediaFormat.KEY_COLOR_FORMAT,
+                    android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(android.media.MediaFormat.KEY_BIT_RATE, 20_000_000)
+                setInteger(android.media.MediaFormat.KEY_FRAME_RATE, 30)
+                setInteger(android.media.MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            }
+            codec = android.media.MediaCodec.createEncoderByType("video/hevc")
+            codec.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val encSurface = codec.createInputSurface(); codec.start()
+            // JPEG reader 满 5MP(4:3)
+            jpegReader = android.media.ImageReader.newInstance(2592, 1944, ImageFormat.JPEG, 2)
+            // 预览 SurfaceTexture(消费掉帧,不显示)
+            previewTex = SurfaceTexture(0).apply { setDefaultBufferSize(w, h) }
+            previewSurface = android.view.Surface(previewTex)
+
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val backId = cm.cameraIdList.first {
+                cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            }
+            val cam: android.hardware.camera2.CameraDevice = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                cm.openCamera(backId, object : android.hardware.camera2.CameraDevice.StateCallback() {
+                    override fun onOpened(c: android.hardware.camera2.CameraDevice) { cont.resume(c) {} }
+                    override fun onDisconnected(c: android.hardware.camera2.CameraDevice) { c.close() }
+                    override fun onError(c: android.hardware.camera2.CameraDevice, e: Int) {
+                        c.close(); if (cont.isActive) cont.cancel(RuntimeException("openCamera error $e"))
+                    }
+                }, handler)
+            }
+            camera = cam
+            val (sess, streams) = try {
+                configureSession(cam, listOf(encSurface, jpegReader.surface, previewSurface), handler) to 3
+            } catch (e: Throwable) {
+                log("三流配置失败(${e.message}),退化测 encoder+jpeg 双流")
+                configureSession(cam, listOf(encSurface, jpegReader.surface), handler) to 2
+            }
+            session = sess
+            // 录像请求(编码器 + 预览若三流)
+            val recTargets = if (streams == 3) listOf(encSurface, previewSurface) else listOf(encSurface)
+            val recReq = cam.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_RECORD).apply {
+                recTargets.forEach { addTarget(it) }
+            }.build()
+            sess.setRepeatingRequest(recReq, null, handler)
+            // 空跑编码器输出(不落盘,只为不堵)
+            val info = android.media.MediaCodec.BufferInfo()
+            val encThread = Thread {
+                val dl = System.currentTimeMillis() + 3500
+                while (System.currentTimeMillis() < dl) {
+                    val i = runCatching { codec.dequeueOutputBuffer(info, 10_000) }.getOrDefault(-1)
+                    if (i >= 0) runCatching { codec.releaseOutputBuffer(i, false) }
+                }
+            }.apply { start() }
+            // 录像中拍一张(满 5MP)
+            var jpegDims = "未拍到"
+            val latch = java.util.concurrent.CountDownLatch(1)
+            jpegReader.setOnImageAvailableListener({ r ->
+                val img = r.acquireLatestImage()
+                if (img != null) {
+                    val buf = img.planes[0].buffer; val bytes = ByteArray(buf.remaining()); buf.get(bytes)
+                    java.io.File("/sdcard/FieldSight/_probe/probe_still.jpg").writeBytes(bytes)
+                    jpegDims = "${img.width}x${img.height} ${bytes.size}B"
+                    img.close()
+                }
+                latch.countDown()
+            }, handler)
+            kotlinx.coroutines.delay(1000)
+            val stillReq = cam.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(jpegReader.surface)
+            }.build()
+            sess.capture(stillReq, null, handler)
+            val gotStill = latch.await(4, java.util.concurrent.TimeUnit.SECONDS)
+            encThread.join(1000)
+            return "streams=$streams 录像中拍照=${if (gotStill) "成功 $jpegDims" else "失败/超时"}"
+        } finally {
+            runCatching { session?.close() }
+            runCatching { camera?.close() }
+            runCatching { codec?.stop(); codec?.release() }
+            runCatching { jpegReader?.close() }
+            runCatching { previewSurface?.release() }
+            runCatching { previewTex?.release() }
+            ht.quitSafely()
+        }
+    }
+
+    private suspend fun configureSession(
+        cam: android.hardware.camera2.CameraDevice,
+        outputs: List<android.view.Surface>,
+        handler: android.os.Handler,
+    ): android.hardware.camera2.CameraCaptureSession =
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            @Suppress("DEPRECATION")
+            cam.createCaptureSession(outputs, object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: android.hardware.camera2.CameraCaptureSession) { cont.resume(s) {} }
+                override fun onConfigureFailed(s: android.hardware.camera2.CameraCaptureSession) {
+                    if (cont.isActive) cont.cancel(RuntimeException("session configure failed"))
+                }
+            }, handler)
+        }
 }
