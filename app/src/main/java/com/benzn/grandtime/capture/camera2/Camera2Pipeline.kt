@@ -17,7 +17,9 @@ import com.benzn.grandtime.core.AspectRatio
 import com.benzn.grandtime.core.VideoQuality
 import java.io.File
 import kotlin.coroutines.resume
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 
 /**
  * Camera2 录制/拍照门面。会话固定 2 路输出:GL 相机 SurfaceTexture 面 + JPEG ImageReader。
@@ -30,15 +32,15 @@ class Camera2Pipeline(
     private val camThread = HandlerThread("cam2").apply { start() }
     private val handler = Handler(camThread.looper)
 
-    private var camera: CameraDevice? = null
-    private var session: CameraCaptureSession? = null
-    private var jpegReader: ImageReader? = null
-    private var gl: GlRecordPipeline? = null
-    private var cameraSurface: Surface? = null
-    private var segment: SegmentRecorder? = null
-    private var previewSurface: Surface? = null
-    private var sensorOrientation = 90
-    private var torchOn = false
+    @Volatile private var camera: CameraDevice? = null
+    @Volatile private var session: CameraCaptureSession? = null
+    @Volatile private var jpegReader: ImageReader? = null
+    @Volatile private var gl: GlRecordPipeline? = null
+    @Volatile private var cameraSurface: Surface? = null
+    @Volatile private var segment: SegmentRecorder? = null
+    @Volatile private var previewSurface: Surface? = null
+    @Volatile private var sensorOrientation = 90
+    @Volatile private var torchOn = false
 
     val isRecording: Boolean get() = segment != null
 
@@ -64,8 +66,19 @@ class Camera2Pipeline(
         val cam: CameraDevice = suspendCancellableCoroutine { cont ->
             cm().openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(c: CameraDevice) { cont.resume(c) }
-                override fun onDisconnected(c: CameraDevice) { c.close(); if (camera == c) camera = null }
-                override fun onError(c: CameraDevice, e: Int) { c.close(); if (cont.isActive) cont.cancel(RuntimeException("openCamera $e")) }
+                override fun onDisconnected(c: CameraDevice) {
+                    c.close()
+                    if (camera == c) camera = null
+                    runCatching { session?.close() }; session = null
+                    probe("camera onDisconnected")
+                }
+                override fun onError(c: CameraDevice, e: Int) {
+                    c.close()
+                    if (camera == c) camera = null
+                    runCatching { session?.close() }; session = null
+                    probe("camera onError $e")
+                    if (cont.isActive) cont.cancel(RuntimeException("openCamera $e"))
+                }
             }, handler)
         }
         camera = cam
@@ -110,11 +123,13 @@ class Camera2Pipeline(
         val cam = camera ?: return
         val s = session ?: return
         val camSurface = cameraSurface ?: return
-        val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-            addTarget(camSurface)
-            set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
-        }.build()
-        runCatching { s.setRepeatingRequest(req, null, handler) }
+        runCatching {
+            val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                addTarget(camSurface)
+                set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+            }.build()
+            s.setRepeatingRequest(req, null, handler)
+        }
     }
 
     suspend fun startSegment(
@@ -125,38 +140,43 @@ class Camera2Pipeline(
         location: Pair<Float, Float>?,
         onFinalized: (error: Boolean, message: String?) -> Unit,
     ): SegmentResult? {
+        var addedEnc: Surface? = null
+        var rec: SegmentRecorder? = null
         return try {
             val size = VideoSizeSelector.pickSize(aspect, quality, supportedVideoSizes(backId()))
             val spec = VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), sensorOrientation)
             ensureSession(spec)
-            val rec = SegmentRecorder(probe)
-            val encSurface = rec.prepare(file, spec, hevcPreferred, location)
-            gl!!.addTarget(encSurface)
-            rec.start()
-            segment = rec
+            val recorder = SegmentRecorder(probe)
+            rec = recorder
+            val encSurface = recorder.prepare(file, spec, hevcPreferred, location)
+            gl!!.addTarget(encSurface); addedEnc = encSurface
+            recorder.start()
+            segment = recorder
             onFinalizedCb = onFinalized
             currentEncSurface = encSurface
-            SegmentResult(rec.actualCodec, "${size.width}x${size.height}")
+            SegmentResult(recorder.actualCodec, "${size.width}x${size.height}")
         } catch (e: Exception) {
             probe("startSegment 失败: ${e.message}")
+            addedEnc?.let { gl?.removeTarget(it) }
+            runCatching { rec?.stop() }
             null
         }
     }
 
-    private var onFinalizedCb: ((Boolean, String?) -> Unit)? = null
-    private var currentEncSurface: Surface? = null
+    @Volatile private var onFinalizedCb: ((Boolean, String?) -> Unit)? = null
+    @Volatile private var currentEncSurface: Surface? = null
 
-    /** 结束当前段:GL 停画编码器面 → SegmentRecorder.stop → 回调。异步在 handler 线程收尾。 */
+    /** 结束当前段:GL 停画编码器面 → SegmentRecorder.stop → 回调。drain 阻塞放独立线程,不堵相机 handler。 */
     fun stopSegment() {
         val rec = segment ?: return
         val enc = currentEncSurface
         val cb = onFinalizedCb
         segment = null; currentEncSurface = null; onFinalizedCb = null
-        handler.post {
-            if (enc != null) gl?.removeTarget(enc)
-            rec.stop()
+        if (enc != null) gl?.removeTarget(enc)   // 入队 GL 摘目标(GL 线程异步处理,快)
+        Thread {
+            runCatching { rec.stop() }           // drain join 阻塞在此独立线程,不堵相机 handler
             cb?.invoke(false, null)
-        }
+        }.apply { name = "seg-teardown"; start() }
     }
 
     /** Idle/录音态拍照前确保会话存在并让 3A 收敛;录像中已有会话则 no-op。 */
@@ -188,13 +208,18 @@ class Camera2Pipeline(
                 reader.setOnImageAvailableListener(null, handler)
                 if (cont.isActive) cont.resume(ok)
             }, handler)
-            val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                addTarget(reader.surface)
-                set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
-                set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
-                set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
-            }.build()
-            runCatching { s.capture(req, null, handler) }.onFailure { if (cont.isActive) cont.resume(false) }
+            runCatching {
+                val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(reader.surface)
+                    set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                    set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
+                    set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+                }.build()
+                s.capture(req, null, handler)
+            }.onFailure {
+                reader.setOnImageAvailableListener(null, handler)
+                if (cont.isActive) cont.resume(false)
+            }
         }
     }
 
@@ -215,7 +240,13 @@ class Camera2Pipeline(
     }
 
     suspend fun release() {
-        runCatching { segment?.stop() }; segment = null
+        val rec = segment
+        val enc = currentEncSurface
+        segment = null; currentEncSurface = null; onFinalizedCb = null
+        if (rec != null) {
+            if (enc != null) gl?.removeTarget(enc)   // 先摘 GL 编码目标,避免 GL 画到已释放的 Surface
+            withContext(Dispatchers.IO) { runCatching { rec.stop() } }  // drain 阻塞放 IO,避免主线程 ANR
+        }
         runCatching { session?.close() }; session = null
         runCatching { camera?.close() }; camera = null
         runCatching { jpegReader?.close() }; jpegReader = null
