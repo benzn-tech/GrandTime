@@ -4,7 +4,7 @@
 >
 > **跨两仓**:GrandTime(`C:/Users/camil/Dropbox/GrandTime`)+ fieldsight-pipeline(`C:/Users/camil/Dropbox/fieldsight-pipeline`,后端 gps_track 入库)。媒体/GL/GPS 类**无法 JVM 单测**(需硬件),以"实现 + 真机验证"代替 TDD;纯逻辑(WatermarkContent/设置/后端)仍 TDD。**Task 1 是 GL 水印方向真机探针,先定生死再接正式路径。**
 
-**Goal:** 给视频(GL 逐帧叠)与照片(Canvas 叠)烧录 4 行 GPS 水印(用户名/时间戳/经纬度/街道地址),用 `LocationManager` 采 GPS,段起点写 mp4 `setLocation`,逐秒 `gps_track` 上传后端 `recordings.gps_track`。
+**Goal:** 给视频(GL 逐帧叠)与照片(Canvas 叠)烧录 3 行 GPS 水印(用户名/时间戳/经纬度;地址栏预留),用 `LocationManager` 采 GPS,段起点写 mp4 `setLocation`,逐秒 `gps_track` 上传后端 `recordings.gps_track`。
 
 **Architecture:** 在 P2 的 Camera2+GL 管线上叠加:`GpsTracker`(LocationManager)供定位;`WatermarkRenderer` 把 4 行内容画到 Bitmap;`GlRecordPipeline` 加"文字纹理层"(2D alpha 着色器,叠相机帧底部,方向由 Task1 探针定);照片走 Canvas 叠同样内容;`CaptureManager` 编排(GPS 起停、~1Hz 刷水印、段起点 location、照片叠、gps_track 存 DB);上传 worker 把 gps_track 随 complete 上传;后端 `mark_uploaded` 写 jsonb 列。水印开关默认开,关时行为同 P2。
 
@@ -14,7 +14,7 @@
 
 - **全 Android framework + 后端 Python**;不引原生库、不加 Gradle 依赖(armeabi)。
 - **GPS 用 `LocationManager`(GPS_PROVIDER)**,不用 FusedLocation(F2SP 无 GMS 保证)。
-- **水印 4 行**(缺则省略该行):`<用户名>` / `<YYYY-MM-DD HH:mm:ss>` / `<lat>, <lon>`(无定位="定位中…") / `<街道地址>`(Geocoder 反查,离线/失败省略)。
+- **水印 3 行**(P3;第 4 行地址栏预留,暂不做):`<用户名>`(缺省略) / `<YYYY-MM-DD HH:mm:ss>` / `<lat>, <lon>`(无定位="定位中…")。`Watermark.build` 保留 `address` 参数向前兼容,编排传 null。**不做 Geocoder 反查地址**(依赖网络、推后)。
 - **水印开关默认开**;关时视频不叠文字层、照片不叠、逻辑与 P2 完全一致(回归即失败)。
 - **保住 P2 全部功能**:HEVC/AVC、4:3/16:9、分段、录像中拍照、预览挂摘不断录、息屏后台、手电、**音频轨**、SP3b 灯语、SP4 上传+siteId、照片精度降采样。
 - **`gps_track` 是 jsonb**:移动端发 JSON 数组字符串;后端 `parse_body` 得 Python list → 以 `psycopg.types.json.Jsonb(list)` 写列(不是裸字符串)。格式 `[{"t":<epochMs>,"lat":<double>,"lon":<double>}, …]`。
@@ -425,39 +425,30 @@ object WatermarkRenderer {
   - `class GpsTracker(context: Context)`
   - `fun start()` / `fun stop()`(录制起停调;stop 清轨迹)
   - `val latestFix: Pair<Double, Double>?`(lat,lon;无=null)
-  - `val address: String?`(反查街道,无/离线=null)
   - `fun snapshotTrackJson(): String?`(当前轨迹 `[{"t","lat","lon"}]` 的 JSON;空=null)
 
-- [ ] **Step 1: 实现**`GpsTracker.kt`——`LocationManager.requestLocationUpdates(GPS_PROVIDER, 1000ms, 0f)`;每 fix 更新 latestFix + append 轨迹;移动 >50m 触发后台 Geocoder 反查:
+> **P3 只做 3 行水印(用户名/时间/经纬度),地址栏预留**——`GpsTracker` **不做 Geocoder 反查**(反查依赖网络、麻烦,推后)。`Watermark.build`(T2)的 `address` 参数保留(向前兼容),编排(T8/T9)一律传 `address = null` → 天然 3 行。
+
+- [ ] **Step 1: 实现**`GpsTracker.kt`——`LocationManager.requestLocationUpdates(GPS_PROVIDER, 1000ms, 0f)`;每 fix 更新 latestFix + append 轨迹:
 
 ```kotlin
 package com.benzn.grandtime.capture
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import java.util.Locale
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** GPS 采集:LocationManager(GPS_PROVIDER ~1s)。持最新 fix + 累积轨迹 + 反查地址(后台/缓存)。 */
+/** GPS 采集:LocationManager(GPS_PROVIDER ~1s)。持最新 fix + 累积轨迹。地址反查推后(P3 不做)。 */
 class GpsTracker(private val context: Context) {
     private val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val scope = CoroutineScope(Dispatchers.IO)
 
     @Volatile var latestFix: Pair<Double, Double>? = null
         private set
-    @Volatile var address: String? = null
-        private set
     private val track = JSONArray()
-    private var lastGeocodeLat = 0.0
-    private var lastGeocodeLon = 0.0
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
@@ -465,7 +456,6 @@ class GpsTracker(private val context: Context) {
             synchronized(track) {
                 track.put(JSONObject().put("t", loc.time).put("lat", loc.latitude).put("lon", loc.longitude))
             }
-            maybeGeocode(loc.latitude, loc.longitude)
         }
         @Deprecated("") override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
         override fun onProviderEnabled(p: String) {}
@@ -475,7 +465,7 @@ class GpsTracker(private val context: Context) {
     @SuppressLint("MissingPermission") // 调用方确保 ACCESS_FINE_LOCATION(未授权则 start no-op)
     fun start() {
         synchronized(track) { for (i in track.length() - 1 downTo 0) track.remove(i) }
-        latestFix = null; address = null
+        latestFix = null
         runCatching {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, context.mainLooper)
         }
@@ -486,28 +476,11 @@ class GpsTracker(private val context: Context) {
     fun snapshotTrackJson(): String? = synchronized(track) {
         if (track.length() == 0) null else track.toString()
     }
-
-    private fun maybeGeocode(lat: Double, lon: Double) {
-        if (address != null && distanceM(lat, lon, lastGeocodeLat, lastGeocodeLon) < 50) return
-        lastGeocodeLat = lat; lastGeocodeLon = lon
-        scope.launch {
-            val addr = runCatching {
-                @Suppress("DEPRECATION")
-                Geocoder(context, Locale.getDefault()).getFromLocation(lat, lon, 1)
-                    ?.firstOrNull()?.let { it.thoroughfare?.let { t -> "${it.subThoroughfare ?: ""} $t".trim() } ?: it.getAddressLine(0) }
-            }.getOrNull()
-            if (!addr.isNullOrBlank()) address = addr
-        }
-    }
-
-    private fun distanceM(la1: Double, lo1: Double, la2: Double, lo2: Double): Float {
-        val r = FloatArray(1); Location.distanceBetween(la1, lo1, la2, lo2, r); return r[0]
-    }
 }
 ```
 
-- [ ] **Step 2: 构建** `./gradlew assembleDebug`(GPS/Geocoder 真机验收覆盖)。
-- [ ] **Step 3: Commit** `feat(capture): GpsTracker — LocationManager GPS + track + reverse-geocode`
+- [ ] **Step 2: 构建** `./gradlew assembleDebug`(GPS 真机验收覆盖)。
+- [ ] **Step 3: Commit** `feat(capture): GpsTracker — LocationManager GPS fix + track`
 
 ---
 
@@ -532,7 +505,7 @@ class GpsTracker(private val context: Context) {
                 val fix = gps.latestFix
                 val content = com.benzn.grandtime.capture.Watermark.build(
                     userName = name, epochMillis = System.currentTimeMillis(),
-                    lat = fix?.first, lon = fix?.second, address = gps.address,
+                    lat = fix?.first, lon = fix?.second, address = null, // P3 地址栏预留,不填
                     zone = java.time.ZoneId.systemDefault(),
                 )
                 val bmp = com.benzn.grandtime.capture.camera2.WatermarkRenderer.render(content, widthPx = 640)
@@ -568,7 +541,7 @@ class GpsTracker(private val context: Context) {
             val out = src.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
             val name = (AppState.loginState.value as? com.benzn.grandtime.core.LoginState.LoggedIn)?.displayName
             val fix = gps.latestFix
-            val content = com.benzn.grandtime.capture.Watermark.build(name, System.currentTimeMillis(), fix?.first, fix?.second, gps.address, java.time.ZoneId.systemDefault())
+            val content = com.benzn.grandtime.capture.Watermark.build(name, System.currentTimeMillis(), fix?.first, fix?.second, address = null, java.time.ZoneId.systemDefault())
             val wm = com.benzn.grandtime.capture.camera2.WatermarkRenderer.render(content, out.width)
             android.graphics.Canvas(out).drawBitmap(wm, 0f, (out.height - wm.height).toFloat(), null)
             java.io.FileOutputStream(file).use { out.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, it) }
@@ -709,7 +682,7 @@ def mark_uploaded(conn, rec_id, company_id, size_bytes=None, gps_track=None):
 
 - [ ] **Step 1: 删探针**——`git rm debug/WatermarkProbe.kt`,DiagnosticsScreen 去临时按钮。`assembleDebug testDebugUnitTest` 全绿、`grep WatermarkProbe app/src` 零命中。
 - [ ] **Step 2: 真机验收(控制器 + 用户)**——对照 P2 验收 + 新增:
-  1. **视频水印**:录像 → 拉回 mp4,播放确认底部 4 行(用户名/时间/经纬度/地址)**方向正、可读、逐秒走时**;水印**关**时录一段确认无水印(回归)。
+  1. **视频水印**:录像 → 拉回 mp4,播放确认底部 3 行(用户名/时间/经纬度)**方向正、可读、逐秒走时**(地址栏本期不做);水印**关**时录一段确认无水印(回归)。
   2. **照片水印**:录像中/空闲拍照 → JPEG 带同样水印、方向正。
   3. **setLocation 起点**:mp4 `©xyz` atom 含起点 GPS。
   4. **gps_track 入库**:录制上传后,查 fieldsight-test 的 recordings 行 `gps_track` 有逐秒数组(控制器可用后端/日志确认)。
@@ -722,7 +695,7 @@ def mark_uploaded(conn, rec_id, company_id, size_bytes=None, gps_track=None):
 
 ## Self-Review(写完自查)
 
-**Spec 覆盖**:视频水印(T1 GL 层+T5 renderer+T8 刷新)、照片水印(T9)、4 行内容(T2)、LocationManager GPS(T7)、setLocation 起点(T6/T8)、gps_track 全链路(T4 存/T13 传/T12 后端)、地址反查(T7)、开关默认开(T3/T11)、权限(T10)、方向探针(T1)。全覆盖 spec §1-§8。
+**Spec 覆盖**:视频水印(T1 GL 层+T5 renderer+T8 刷新)、照片水印(T9)、3 行内容+地址栏预留(T2)、LocationManager GPS(T7)、setLocation 起点(T6/T8)、gps_track 全链路(T4 存/T13 传/T12 后端)、开关默认开(T3/T11)、权限(T10)、方向探针(T1)。全覆盖 spec §1-§8。地址反查(Geocoder)按用户决定推后,`Watermark.build` 保留 address 参数向前兼容。
 **Placeholder 扫描**:无 TODO/TBD;device 任务以真机验证代替 JVM 单测(计划头声明);`WM_ROTATION_DEG` 默认 90 由 T1 探针定标(诚实,非占位)。
 **类型一致**:`WatermarkContent`/`Watermark.build`(T2)↔ T8/T9 调用一致;`WatermarkRenderer.render(content, widthPx)`(T5)↔ T8/T9;`setWatermarkBitmap`(T1 GL / T6 pipeline)一致;`GpsTracker`(T7)`latestFix/address/snapshotTrackJson`↔ T8/T9;`complete(...,gpsTrack)`(T13)↔ 后端 `gpsTrack`(T12)↔ `CaptureRecord.gpsTrack`(T4)。
 **已知 scope 决策**:①Idle 单拍不强开 GPS(YAGNI,水印用当前 fix);②地址反查 50m 阈值 + 离线降级;③水印带宽固定 640px(视频)/图片宽(照片)。

@@ -7,8 +7,8 @@
 ## 1. 目标
 
 给现场作业记录仪的**视频与照片烧录 GPS 水印**,并把**逐秒 GPS 轨迹上传后端**,补全证据链的时空信息:
-1. **视频水印**:相机帧上逐帧叠 4 行文字(用户名 / 时间戳 / 纬经度 / 街道地址),GL 渲染。
-2. **照片水印**:JPEG 落盘前 Canvas 叠同样 4 行。
+1. **视频水印**:相机帧上逐帧叠 **3 行**文字(用户名 / 时间戳 / 纬经度;**第 4 行地址栏预留,本期不做**),GL 渲染。
+2. **照片水印**:JPEG 落盘前 Canvas 叠同样 3 行。
 3. **GPS 采集**:`LocationManager`(GPS_PROVIDER)取定位;段起点写 mp4 `setLocation` 元数据;逐秒轨迹 `gps_track` 传后端 `recordings` 表(SP4a 已备 `gps_track jsonb` 列)。
 4. **水印开关**:设置项,默认开。
 
@@ -30,18 +30,18 @@ P2 全部功能:HEVC/AVC、4:3/16:9、分段滚动、录像中拍照、预览挂
 ```
 GpsTracker(LocationManager, GPS_PROVIDER ~1s)
   ├─ latestFix: (lat, lon, time)                    → SegmentRecorder.setLocation(段起点)
-  ├─ track: List<{t, lat, lon}>(录制期间累积)       → complete 上传 → 后端 recordings.gps_track
-  └─ address: String?(Geocoder 反查 latestFix,异步、缓存、离线=null)
-WatermarkText = 4 行:
-  用户名(AppState.loginState 的 displayName)
+  └─ track: List<{t, lat, lon}>(录制期间累积)       → complete 上传 → 后端 recordings.gps_track
+     (地址反查 Geocoder 本期不做,推后)
+WatermarkText = 3 行(地址栏预留):
+  用户名(AppState.loginState 的 displayName;缺=省略)
   YYYY-MM-DD HH:mm:ss(逐秒)
   lat, lon(latestFix,如 "-36.8499, 174.7600";无定位="定位中…")
-  街道地址(address,无=省略该行)
+  [第 4 行 街道地址 —— Watermark.build 保留 address 参数向前兼容,本期传 null 不显示]
 视频水印(开):GlRecordPipeline 加"文字纹理"层
   ├─ 文字画到 ARGB Bitmap(Canvas)→ 上传 GL 纹理(内容变才重画重传,~1Hz)
   └─ drawFrame:①画相机 OES 纹理(现有)②带 alpha 的 2D 着色器叠文字纹理于底部
 照片水印(开):Camera2Pipeline.takePhoto 出 JPEG → CaptureManager 落盘前
-  解码 Bitmap → Canvas 叠 4 行 → 重压 JPEG(保 EXIF orientation,复用 P2 helper)
+  解码 Bitmap → Canvas 叠 3 行 → 重压 JPEG(保 EXIF orientation,复用 P2 helper)
 水印开关(SettingsStore.watermark,默认 on):关 → 视频不加文字层、照片不叠、逻辑同 P2
 ```
 
@@ -57,7 +57,7 @@ WatermarkText = 4 行:
 
 - `LocationManager.requestLocationUpdates(GPS_PROVIDER, 1000ms, 0m, listener)`;无 GPS 定位时水印显"定位中…"、`setLocation` 跳过、track 空。
 - 权限 `ACCESS_FINE_LOCATION`:manifest 声明 + 权限向导(SP3c 的向导)加一项;未授权 → 录制照常,水印 GPS 行显"无定位权限",不阻断录制。
-- Geocoder 反查:`Geocoder.getFromLocation`(异步/后台线程),成功缓存地址;移动超阈值(如 50m)才重查;离线/失败 → address=null(省略地址行)。
+- **地址反查(Geocoder)本期不做**(依赖网络、麻烦,用户决定推后)。水印第 4 行地址栏预留:`Watermark.build` 保留 `address` 参数向前兼容,编排传 null → 只显 3 行。日后启用只需接一个 Geocoder + 传值,不动结构。
 - `gps_track` 格式:`[{"t": <epoch_ms>, "lat": <double>, "lon": <double>}, …]`,录制期间每秒 append,段/会话结束随 complete 上传。
 
 ## 6. 设置项 + 后端
