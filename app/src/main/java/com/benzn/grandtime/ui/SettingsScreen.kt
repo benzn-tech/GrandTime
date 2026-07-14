@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.core.AspectRatio
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.PhotoQuality
 import com.benzn.grandtime.core.PhotoResolution
@@ -45,7 +46,7 @@ import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import kotlinx.coroutines.launch
 
-private enum class SettingDialog { VIDEO_QUALITY, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, SCREEN_OFF }
+private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, SCREEN_OFF }
 
 @Composable
 fun SettingsScreen(onOpen: (Screen) -> Unit) {
@@ -69,6 +70,8 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
         GroupHeader("Recording")
         FsCard(contentPadding = 0.dp) {
             SettingRow("Video quality", settings.videoQuality.label) { dialog = SettingDialog.VIDEO_QUALITY }
+            RowDivider()
+            SettingRow("Aspect ratio", settings.aspectRatio.label) { dialog = SettingDialog.ASPECT_RATIO }
             RowDivider()
             SettingRow("Segment length", "${settings.segmentMinutes} min") { dialog = SettingDialog.SEGMENT }
             RowDivider()
@@ -114,6 +117,14 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             selected = settings.videoQuality,
             label = { it.label },
             onSelect = { scope.launch { store.setVideoQuality(it) } },
+            onDismiss = { dialog = null },
+        )
+        SettingDialog.ASPECT_RATIO -> RadioDialog(
+            title = "Aspect ratio",
+            options = AspectRatio.entries,
+            selected = settings.aspectRatio,
+            label = { it.label },
+            onSelect = { scope.launch { store.setAspectRatio(it) } },
             onDismiss = { dialog = null },
         )
         SettingDialog.SEGMENT -> RadioDialog(
