@@ -65,6 +65,4 @@ dependencies {
     testImplementation(libs.datastore.preferences.core)
     // 真实 org.json 实现,覆盖 android.jar 里抛 "not mocked" 的桩,供 JwtDecoder 单测使用
     testImplementation("org.json:json:20240303")
-    // Robolectric for android.util.Size in JVM unit tests
-    testImplementation("org.robolectric:robolectric:4.11.1")
 }

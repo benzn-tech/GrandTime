@@ -1,6 +1,5 @@
 package com.benzn.grandtime.capture.camera2
 
-import android.util.Size
 import com.benzn.grandtime.core.AspectRatio
 import com.benzn.grandtime.core.VideoQuality
 
@@ -11,6 +10,9 @@ data class VideoSpec(
     val bitRate: Int,
     val orientationHint: Int,
 )
+
+/** 视频尺寸。 */
+data class VideoSize(val width: Int, val height: Int)
 
 /**
  * 从相机支持尺寸里选编码尺寸:精确匹配宽高比、≤ 硬编上限(1920×1088)、
@@ -32,7 +34,7 @@ object VideoSizeSelector {
         VideoQuality.P480 -> 6_000_000
     }
 
-    fun pickSize(aspect: AspectRatio, quality: VideoQuality, supported: List<Size>): Size {
+    fun pickSize(aspect: AspectRatio, quality: VideoQuality, supported: List<VideoSize>): VideoSize {
         val (aw, ah) = when (aspect) {
             AspectRatio.RATIO_4_3 -> 4 to 3
             AspectRatio.RATIO_16_9 -> 16 to 9
@@ -44,6 +46,6 @@ object VideoSizeSelector {
             return exact.firstOrNull { it.height <= target } ?: exact.last()
         }
         // 兜底:无精确宽高比档时,取上限内、高度最接近目标的任意档(理论上不该发生)。
-        return inCap.minByOrNull { kotlin.math.abs(it.height - target) } ?: Size(1280, 720)
+        return inCap.minByOrNull { kotlin.math.abs(it.height - target) } ?: VideoSize(1280, 720)
     }
 }
