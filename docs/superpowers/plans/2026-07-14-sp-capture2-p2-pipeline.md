@@ -866,8 +866,15 @@ class Camera2Pipeline(
         val cam: CameraDevice = suspendCancellableCoroutine { cont ->
             cm().openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(c: CameraDevice) { cont.resume(c) }
-                override fun onDisconnected(c: CameraDevice) { c.close(); if (camera == c) camera = null }
-                override fun onError(c: CameraDevice, e: Int) { c.close(); if (cont.isActive) cont.cancel(RuntimeException("openCamera $e")) }
+                override fun onDisconnected(c: CameraDevice) {
+                    c.close(); if (camera == c) camera = null
+                    runCatching { session?.close() }; session = null; probe("camera onDisconnected")
+                }
+                override fun onError(c: CameraDevice, e: Int) {
+                    c.close(); if (camera == c) camera = null
+                    runCatching { session?.close() }; session = null; probe("camera onError $e")
+                    if (cont.isActive) cont.cancel(RuntimeException("openCamera $e"))
+                }
             }, handler)
         }
         camera = cam
@@ -948,17 +955,17 @@ class Camera2Pipeline(
     private var onFinalizedCb: ((Boolean, String?) -> Unit)? = null
     private var currentEncSurface: Surface? = null
 
-    /** 结束当前段:GL 停画编码器面 → SegmentRecorder.stop → 回调。异步在 handler 线程收尾。 */
+    /** 结束当前段:GL 停画编码器面 → SegmentRecorder.stop → 回调。drain 阻塞放独立线程,不堵相机 handler。 */
     fun stopSegment() {
         val rec = segment ?: return
         val enc = currentEncSurface
         val cb = onFinalizedCb
         segment = null; currentEncSurface = null; onFinalizedCb = null
-        handler.post {
-            if (enc != null) gl?.removeTarget(enc)
-            rec.stop()
+        if (enc != null) gl?.removeTarget(enc)   // 入队 GL 摘目标(GL 线程异步处理,快)
+        Thread {
+            runCatching { rec.stop() }           // drain join 阻塞在此独立线程,不堵相机 handler
             cb?.invoke(false, null)
-        }
+        }.apply { name = "seg-teardown"; start() }
     }
 
     /** Idle/录音态拍照前确保会话存在并让 3A 收敛;录像中已有会话则 no-op。 */
@@ -1017,7 +1024,13 @@ class Camera2Pipeline(
     }
 
     suspend fun release() {
-        runCatching { segment?.stop() }; segment = null
+        val rec = segment
+        val enc = currentEncSurface
+        segment = null; currentEncSurface = null; onFinalizedCb = null
+        if (rec != null) {
+            if (enc != null) gl?.removeTarget(enc)   // 先摘 GL 编码目标,避免 GL 画到已释放的 Surface
+            withContext(Dispatchers.IO) { runCatching { rec.stop() } }  // drain 阻塞放 IO,避免主线程 ANR
+        }
         runCatching { session?.close() }; session = null
         runCatching { camera?.close() }; camera = null
         runCatching { jpegReader?.close() }; jpegReader = null
