@@ -43,6 +43,8 @@ class Capture2Probe(private val context: Context) {
         // Task3(P2):SegmentRecorder 独立验证(HEVC/AVC + MediaMuxer + setLocation)
         val seg = runCatching { probeSegmentRecorder() }.getOrElse { "seg 抛异常: ${it.javaClass.simpleName}: ${it.message}" }
         log("probeSegmentRecorder => $seg")
+        // Task4:GL 渲染器(相机 OES → GL 透传 → SegmentRecorder 编码器面)
+        log("probeGlRecord => ${runCatching { probeGlRecord() }.getOrElse { "抛异常: ${it.message}" }}")
         log("==== Capture2 probe end ====")
     }
 
@@ -365,6 +367,61 @@ class Capture2Probe(private val context: Context) {
             runCatching { session?.close() }
             runCatching { camera?.close() }
             runCatching { rec.stop() }
+            ht.quitSafely()
+        }
+    }
+
+    /** Task4 验证:相机 → GL(OES)→ SegmentRecorder 编码器面 → mp4。测 GL 透传+编码。 */
+    @android.annotation.SuppressLint("MissingPermission")
+    suspend fun probeGlRecord(): String {
+        val dir = java.io.File("/sdcard/FieldSight/_probe").apply { mkdirs() }
+        val out = java.io.File(dir, "probe_gl.mp4")
+        val rec = com.benzn.grandtime.capture.camera2.SegmentRecorder { log(it) }
+        val spec = com.benzn.grandtime.capture.camera2.VideoSpec(1440, 1080, 20_000_000, 90)
+        val encSurface = rec.prepare(out, spec, hevcPreferred = true, location = null)
+        val gl = com.benzn.grandtime.capture.camera2.GlRecordPipeline()
+        val ht = android.os.HandlerThread("glp").apply { start() }
+        val handler = android.os.Handler(ht.looper)
+        var camera: android.hardware.camera2.CameraDevice? = null
+        var session: android.hardware.camera2.CameraCaptureSession? = null
+        try {
+            val stDeferred = kotlinx.coroutines.CompletableDeferred<android.graphics.SurfaceTexture>()
+            gl.start(1440, 1080) { stDeferred.complete(it) }
+            val camTex = stDeferred.await()
+            gl.addTarget(encSurface)
+            rec.start()
+            val camInput = android.view.Surface(camTex)
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val backId = cm.cameraIdList.first {
+                cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            }
+            val cam: android.hardware.camera2.CameraDevice = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                cm.openCamera(backId, object : android.hardware.camera2.CameraDevice.StateCallback() {
+                    override fun onOpened(c: android.hardware.camera2.CameraDevice) { cont.resume(c) {} }
+                    override fun onDisconnected(c: android.hardware.camera2.CameraDevice) { c.close() }
+                    override fun onError(c: android.hardware.camera2.CameraDevice, e: Int) { c.close(); if (cont.isActive) cont.cancel(RuntimeException("open err $e")) }
+                }, handler)
+            }
+            camera = cam
+            val sess: android.hardware.camera2.CameraCaptureSession = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                @Suppress("DEPRECATION")
+                cam.createCaptureSession(listOf(camInput), object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(s: android.hardware.camera2.CameraCaptureSession) { cont.resume(s) {} }
+                    override fun onConfigureFailed(s: android.hardware.camera2.CameraCaptureSession) { if (cont.isActive) cont.cancel(RuntimeException("cfg fail")) }
+                }, handler)
+            }
+            session = sess
+            val req = cam.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_RECORD).apply { addTarget(camInput) }.build()
+            sess.setRepeatingRequest(req, null, handler)
+            kotlinx.coroutines.delay(3000)
+            sess.stopRepeating()
+            gl.removeTarget(encSurface)
+            rec.stop()
+            gl.release()
+            return "OK codec=${rec.actualCodec} size=${out.length()} path=${out.absolutePath}"
+        } finally {
+            runCatching { session?.close() }
+            runCatching { camera?.close() }
             ht.quitSafely()
         }
     }
