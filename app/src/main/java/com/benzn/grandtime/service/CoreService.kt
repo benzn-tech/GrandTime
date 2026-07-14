@@ -58,6 +58,7 @@ class CoreService : LifecycleService() {
     private var captureManager: CaptureManager? = null
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
+    private val led = com.benzn.grandtime.hardware.LedController()
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     override fun onCreate() {
@@ -166,6 +167,28 @@ class CoreService : LifecycleService() {
         }
         lifecycleScope.launch {
             SiteStore(applicationContext.siteDataStore).site.collect { AppState.selectedSite.value = it }
+        }
+        // SP3b 物理灯(2 号灯,sysfs)1Hz 闪:录像红 > 录音黄 > 待机蓝。节点不可写则不启。
+        if (led.available) {
+            lifecycleScope.launch {
+                try {
+                    while (true) {
+                        val color = when (AppState.captureState.value) {
+                            is com.benzn.grandtime.capture.CaptureState.RecordingVideo -> com.benzn.grandtime.hardware.LedColor.RED
+                            is com.benzn.grandtime.capture.CaptureState.RecordingAudio -> com.benzn.grandtime.hardware.LedColor.YELLOW
+                            else -> com.benzn.grandtime.hardware.LedColor.BLUE // 待机
+                        }
+                        led.show(color)                 // 亮相位:统一 1s
+                        kotlinx.coroutines.delay(1000)
+                        led.show(null)                  // 灭相位:待机 2s,录像/录音 1s
+                        kotlinx.coroutines.delay(
+                            if (color == com.benzn.grandtime.hardware.LedColor.BLUE) 2000 else 1000,
+                        )
+                    }
+                } finally {
+                    led.off()
+                }
+            }
         }
 
         captureManager = CaptureManager(
