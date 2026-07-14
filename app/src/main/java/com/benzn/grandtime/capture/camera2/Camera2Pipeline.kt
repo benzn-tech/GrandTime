@@ -148,7 +148,7 @@ class Camera2Pipeline(
             ensureSession(spec)
             val recorder = SegmentRecorder(probe)
             rec = recorder
-            val encSurface = recorder.prepare(file, spec, hevcPreferred, location)
+            val encSurface = recorder.prepare(file, spec, hevcPreferred, location, recordAudio = true)
             gl!!.addTarget(encSurface); addedEnc = encSurface
             recorder.start()
             segment = recorder
