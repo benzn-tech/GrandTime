@@ -328,12 +328,12 @@ class Capture2Probe(private val context: Context) {
         val out = java.io.File(dir, "probe_seg.mp4")
         val rec = com.benzn.grandtime.capture.camera2.SegmentRecorder { log(it) }
         val spec = com.benzn.grandtime.capture.camera2.VideoSpec(1440, 1080, 20_000_000, 90)
-        val surface = rec.prepare(out, spec, hevcPreferred = true, location = -36.85f to 174.76f)
         val ht = android.os.HandlerThread("seg").apply { start() }
         val handler = android.os.Handler(ht.looper)
         var camera: android.hardware.camera2.CameraDevice? = null
         var session: android.hardware.camera2.CameraCaptureSession? = null
         try {
+            val surface = rec.prepare(out, spec, hevcPreferred = true, location = -36.85f to 174.76f)
             val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val backId = cm.cameraIdList.first {
                 cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK

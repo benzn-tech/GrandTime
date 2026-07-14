@@ -21,7 +21,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     private var trackIndex = -1
     private var muxerStarted = false
 
-    var actualCodec: String = "hevc"
+    var actualCodec: String = ""
         private set
 
     /** 配置编码器 + muxer,返回编码器输入 Surface。未启动 drain(留给 start())。 */
@@ -47,7 +47,12 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
             val c = MediaCodec.createEncoderByType(mime)
-            c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            try {
+                c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            } catch (e: Exception) {
+                runCatching { c.release() } // 释放半配置的编码器,避免泄漏 HW codec
+                throw e
+            }
             return c
         }
         if (hevcPreferred) {
@@ -95,12 +100,16 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         }
     }
 
-    /** 结束段:标记 EOS → drain 收尾 → 关 muxer/codec。幂等。 */
+    /** 结束段:EOS 信号 → drain 收到 EOS 自然排空尾帧 → 关 muxer/codec。幂等。 */
     fun stop() {
         if (codec == null) return
-        draining = false
         runCatching { codec?.signalEndOfInputStream() }
-        drainThread?.join(2500)
+        drainThread?.join(2500)              // 等 drain 收到 EOS 排空尾帧后自行退出
+        if (drainThread?.isAlive == true) {
+            draining = false                 // 兜底:EOS 未到时解开 drain 循环
+            drainThread?.join(500)
+            if (drainThread?.isAlive == true) probe("segment drain 线程未在超时内退出")
+        }
         runCatching { if (muxerStarted) muxer?.stop() }
         runCatching { muxer?.release() }
         runCatching { codec?.stop() }
