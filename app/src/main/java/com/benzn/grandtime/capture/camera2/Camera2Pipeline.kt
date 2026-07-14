@@ -1,0 +1,226 @@
+package com.benzn.grandtime.capture.camera2
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.ImageFormat
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
+import android.media.ImageReader
+import android.os.Handler
+import android.os.HandlerThread
+import android.util.Size
+import android.view.Surface
+import com.benzn.grandtime.core.AspectRatio
+import com.benzn.grandtime.core.VideoQuality
+import java.io.File
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+
+/**
+ * Camera2 录制/拍照门面。会话固定 2 路输出:GL 相机 SurfaceTexture 面 + JPEG ImageReader。
+ * GL 把相机帧画到编码器输入面(录像段)与预览面(挂了才画)。CaptureManager 只调本类。
+ */
+class Camera2Pipeline(
+    private val context: Context,
+    private val probe: (String) -> Unit = {},
+) {
+    private val camThread = HandlerThread("cam2").apply { start() }
+    private val handler = Handler(camThread.looper)
+
+    private var camera: CameraDevice? = null
+    private var session: CameraCaptureSession? = null
+    private var jpegReader: ImageReader? = null
+    private var gl: GlRecordPipeline? = null
+    private var cameraSurface: Surface? = null
+    private var segment: SegmentRecorder? = null
+    private var previewSurface: Surface? = null
+    private var sensorOrientation = 90
+    private var torchOn = false
+
+    val isRecording: Boolean get() = segment != null
+
+    data class SegmentResult(val codec: String, val resolution: String)
+
+    private fun cm() = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+    private fun backId(): String = cm().cameraIdList.first {
+        cm().getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+    }
+
+    private fun supportedVideoSizes(id: String): List<VideoSize> {
+        val map = cm().getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        return map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+            ?.map { VideoSize(it.width, it.height) } ?: emptyList()
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun openCameraIfNeeded(): CameraDevice {
+        camera?.let { return it }
+        val id = backId()
+        sensorOrientation = cm().getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val cam: CameraDevice = suspendCancellableCoroutine { cont ->
+            cm().openCamera(id, object : CameraDevice.StateCallback() {
+                override fun onOpened(c: CameraDevice) { cont.resume(c) }
+                override fun onDisconnected(c: CameraDevice) { c.close(); if (camera == c) camera = null }
+                override fun onError(c: CameraDevice, e: Int) { c.close(); if (cont.isActive) cont.cancel(RuntimeException("openCamera $e")) }
+            }, handler)
+        }
+        camera = cam
+        return cam
+    }
+
+    /** 建/复用会话([glCameraSurface, jpegReader])。GL 首次建时创建相机 SurfaceTexture。 */
+    private suspend fun ensureSession(spec: VideoSpec) {
+        if (session != null) return
+        val cam = openCameraIfNeeded()
+        // JPEG reader:满 5MP 4:3(拍照精度在 takePhoto 时不重开会话,固定用最大档取证)
+        val jpegSize = pickJpegSize(backId())
+        val reader = ImageReader.newInstance(jpegSize.width, jpegSize.height, ImageFormat.JPEG, 2)
+        jpegReader = reader
+        // GL 相机纹理(缓冲设编码尺寸;透传绘制到编码器面按其自身尺寸)
+        val glp = GlRecordPipeline()
+        gl = glp
+        val stDeferred = kotlinx.coroutines.CompletableDeferred<android.graphics.SurfaceTexture>()
+        glp.start(spec.width, spec.height) { stDeferred.complete(it) }
+        val camTex = stDeferred.await()
+        val camSurface = Surface(camTex)
+        cameraSurface = camSurface
+        session = suspendCancellableCoroutine { cont ->
+            @Suppress("DEPRECATION")
+            cam.createCaptureSession(listOf(camSurface, reader.surface), object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: CameraCaptureSession) { cont.resume(s) }
+                override fun onConfigureFailed(s: CameraCaptureSession) { if (cont.isActive) cont.cancel(RuntimeException("session configure failed")) }
+            }, handler)
+        }
+        applyRepeating()
+    }
+
+    private fun pickJpegSize(id: String): Size {
+        val map = cm().getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val sizes = map?.getOutputSizes(ImageFormat.JPEG)?.toList() ?: emptyList()
+        return sizes.filter { it.width * 3 == it.height * 4 }.maxByOrNull { it.width.toLong() * it.height }
+            ?: sizes.maxByOrNull { it.width.toLong() * it.height } ?: Size(1440, 1080)
+    }
+
+    /** 重设 repeating 请求:目标=相机 GL 面(录像/预览的帧源);带手电标志。 */
+    private fun applyRepeating() {
+        val cam = camera ?: return
+        val s = session ?: return
+        val camSurface = cameraSurface ?: return
+        val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            addTarget(camSurface)
+            set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+        }.build()
+        runCatching { s.setRepeatingRequest(req, null, handler) }
+    }
+
+    suspend fun startSegment(
+        file: File,
+        aspect: AspectRatio,
+        quality: VideoQuality,
+        hevcPreferred: Boolean,
+        location: Pair<Float, Float>?,
+        onFinalized: (error: Boolean, message: String?) -> Unit,
+    ): SegmentResult? {
+        return try {
+            val size = VideoSizeSelector.pickSize(aspect, quality, supportedVideoSizes(backId()))
+            val spec = VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), sensorOrientation)
+            ensureSession(spec)
+            val rec = SegmentRecorder(probe)
+            val encSurface = rec.prepare(file, spec, hevcPreferred, location)
+            gl!!.addTarget(encSurface)
+            rec.start()
+            segment = rec
+            onFinalizedCb = onFinalized
+            currentEncSurface = encSurface
+            SegmentResult(rec.actualCodec, "${size.width}x${size.height}")
+        } catch (e: Exception) {
+            probe("startSegment 失败: ${e.message}")
+            null
+        }
+    }
+
+    private var onFinalizedCb: ((Boolean, String?) -> Unit)? = null
+    private var currentEncSurface: Surface? = null
+
+    /** 结束当前段:GL 停画编码器面 → SegmentRecorder.stop → 回调。异步在 handler 线程收尾。 */
+    fun stopSegment() {
+        val rec = segment ?: return
+        val enc = currentEncSurface
+        val cb = onFinalizedCb
+        segment = null; currentEncSurface = null; onFinalizedCb = null
+        handler.post {
+            if (enc != null) gl?.removeTarget(enc)
+            rec.stop()
+            cb?.invoke(false, null)
+        }
+    }
+
+    /** Idle/录音态拍照前确保会话存在并让 3A 收敛;录像中已有会话则 no-op。 */
+    suspend fun prepareForPhoto(aspect: AspectRatio, quality: VideoQuality) {
+        if (session != null) return
+        val size = VideoSizeSelector.pickSize(aspect, quality, supportedVideoSizes(backId()))
+        ensureSession(VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), sensorOrientation))
+        kotlinx.coroutines.delay(400) // 让 AE/AF 收敛,避免首帧过暗/失焦
+    }
+
+    /** 拍照:对 jpegReader 发 STILL_CAPTURE(录像中也可,满 5MP)。 */
+    suspend fun takePhoto(file: File, jpegQuality: Int): Boolean {
+        val cam = camera ?: return false
+        val s = session ?: return false
+        val reader = jpegReader ?: return false
+        return suspendCancellableCoroutine { cont ->
+            reader.setOnImageAvailableListener({ r ->
+                val img = r.acquireLatestImage()
+                var ok = false
+                if (img != null) {
+                    runCatching {
+                        val buf = img.planes[0].buffer
+                        val bytes = ByteArray(buf.remaining()); buf.get(bytes)
+                        file.outputStream().use { it.write(bytes) }
+                        ok = true
+                    }
+                    img.close()
+                }
+                reader.setOnImageAvailableListener(null, handler)
+                if (cont.isActive) cont.resume(ok)
+            }, handler)
+            val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(reader.surface)
+                set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
+                set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+            }.build()
+            runCatching { s.capture(req, null, handler) }.onFailure { if (cont.isActive) cont.resume(false) }
+        }
+    }
+
+    /** 预览面挂/摘:只切 GL 目标,不动相机会话(录像不中断)。 */
+    fun setPreviewSurface(surface: Surface?) {
+        val glp = gl
+        val old = previewSurface
+        previewSurface = surface
+        if (glp == null) return
+        if (old != null && old != surface) glp.removeTarget(old)
+        if (surface != null) glp.addTarget(surface)
+    }
+
+    /** 会话活时经 repeating 请求切手电;返回是否已处理(false=调用方走 CameraManager)。 */
+    fun setTorch(on: Boolean): Boolean {
+        torchOn = on
+        return if (session != null) { applyRepeating(); true } else false
+    }
+
+    suspend fun release() {
+        runCatching { segment?.stop() }; segment = null
+        runCatching { session?.close() }; session = null
+        runCatching { camera?.close() }; camera = null
+        runCatching { jpegReader?.close() }; jpegReader = null
+        runCatching { gl?.release() }; gl = null
+        runCatching { cameraSurface?.release() }; cameraSurface = null
+        previewSurface = null; torchOn = false
+    }
+}

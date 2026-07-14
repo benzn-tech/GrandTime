@@ -45,6 +45,8 @@ class Capture2Probe(private val context: Context) {
         log("probeSegmentRecorder => $seg")
         // Task4:GL 渲染器(相机 OES → GL 透传 → SegmentRecorder 编码器面)
         log("probeGlRecord => ${runCatching { probeGlRecord() }.getOrElse { "抛异常: ${it.message}" }}")
+        // Task5:Camera2Pipeline 门面(会话+GL+编码+拍照+手电)
+        log("probePipeline => ${runCatching { probePipeline() }.getOrElse { "抛异常: ${it.message}" }}")
         log("==== Capture2 probe end ====")
     }
 
@@ -423,6 +425,31 @@ class Capture2Probe(private val context: Context) {
             runCatching { session?.close() }
             runCatching { camera?.close() }
             ht.quitSafely()
+        }
+    }
+
+    /** Task5 验证:Camera2Pipeline 门面——启一段 → 录像中拍照(满 5MP) → 挂 dummy 预览 → stopSegment → release。 */
+    @android.annotation.SuppressLint("MissingPermission")
+    suspend fun probePipeline(): String {
+        val dir = java.io.File("/sdcard/FieldSight/_probe").apply { mkdirs() }
+        val vid = java.io.File(dir, "probe_pipe.mp4")
+        val pic = java.io.File(dir, "probe_pipe.jpg")
+        val pipe = com.benzn.grandtime.capture.camera2.Camera2Pipeline(context) { log(it) }
+        val done = kotlinx.coroutines.CompletableDeferred<Unit>()
+        try {
+            val res = pipe.startSegment(vid, com.benzn.grandtime.core.AspectRatio.RATIO_4_3, com.benzn.grandtime.core.VideoQuality.P1080, true, -36.85f to 174.76f) { _, _ -> done.complete(Unit) }
+                ?: return "startSegment 失败"
+            kotlinx.coroutines.delay(1000)
+            val photoOk = pipe.takePhoto(pic, 95)
+            val dummyTex = android.graphics.SurfaceTexture(0).apply { setDefaultBufferSize(1440, 1080) }
+            pipe.setPreviewSurface(android.view.Surface(dummyTex))
+            kotlinx.coroutines.delay(1200)
+            pipe.stopSegment()
+            done.await()
+            pipe.release()
+            return "OK codec=${res.codec} res=${res.resolution} vid=${vid.length()} photo=${if (photoOk) pic.length() else -1}"
+        } finally {
+            runCatching { pipe.release() }
         }
     }
 
