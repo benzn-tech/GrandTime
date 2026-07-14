@@ -334,7 +334,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     private var trackIndex = -1
     private var muxerStarted = false
 
-    var actualCodec: String = "hevc"
+    var actualCodec: String = ""  // prepare() 后才有值("hevc"/"h264")
         private set
 
     /** 配置编码器 + muxer,返回编码器输入 Surface。未启动 drain(留给 start())。 */
@@ -360,7 +360,12 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
             val c = MediaCodec.createEncoderByType(mime)
-            c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            try {
+                c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            } catch (e: Exception) {
+                runCatching { c.release() } // 释放半配置的编码器,避免泄漏 HW codec
+                throw e
+            }
             return c
         }
         if (hevcPreferred) {
@@ -408,12 +413,16 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         }
     }
 
-    /** 结束段:标记 EOS → drain 收尾 → 关 muxer/codec。幂等。 */
+    /** 结束段:EOS 信号 → drain 收到 EOS 排空尾帧 → 关 muxer/codec。幂等。 */
     fun stop() {
         if (codec == null) return
-        draining = false
         runCatching { codec?.signalEndOfInputStream() }
-        drainThread?.join(2500)
+        drainThread?.join(2500)              // 等 drain 收到 EOS 排空尾帧后自行退出
+        if (drainThread?.isAlive == true) {
+            draining = false                 // 兜底:EOS 未到时解开 drain 循环
+            drainThread?.join(500)
+            if (drainThread?.isAlive == true) probe("segment drain 线程未在超时内退出")
+        }
         runCatching { if (muxerStarted) muxer?.stop() }
         runCatching { muxer?.release() }
         runCatching { codec?.stop() }
@@ -435,12 +444,12 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         val out = java.io.File(dir, "probe_seg.mp4")
         val rec = com.benzn.grandtime.capture.camera2.SegmentRecorder { log(it) }
         val spec = com.benzn.grandtime.capture.camera2.VideoSpec(1440, 1080, 20_000_000, 90)
-        val surface = rec.prepare(out, spec, hevcPreferred = true, location = -36.85f to 174.76f)
         val ht = android.os.HandlerThread("seg").apply { start() }
         val handler = android.os.Handler(ht.looper)
         var camera: android.hardware.camera2.CameraDevice? = null
         var session: android.hardware.camera2.CameraCaptureSession? = null
         try {
+            val surface = rec.prepare(out, spec, hevcPreferred = true, location = -36.85f to 174.76f)
             val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val backId = cm.cameraIdList.first {
                 cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
