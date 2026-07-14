@@ -54,7 +54,7 @@ fun DiagnosticsScreen() {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         OutlinedButton(
             onClick = {
-                scope.launch {
+                scope.launch(kotlinx.coroutines.Dispatchers.Default) {
                     com.benzn.grandtime.debug.Capture2Probe(context).runAll()
                 }
             },

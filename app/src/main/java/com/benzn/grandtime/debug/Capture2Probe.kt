@@ -26,8 +26,117 @@ class Capture2Probe(private val context: Context) {
     suspend fun runAll() {
         log("==== Capture2 probe start ====")
         runCatching { enumerate() }.onFailure { log("enumerate 异常: ${it.javaClass.simpleName}: ${it.message}") }
-        // Task2/3/4 后续接入:recordClip / probeConcurrent / setLocation
+        // Task2:HEVC 端到端,失败降 H.264
+        val hevc = runCatching { recordClip(useHevc = true) }
+            .getOrElse { "HEVC 抛异常: ${it.javaClass.simpleName}: ${it.message}" }
+        log("recordClip(HEVC) => $hevc")
+        if (hevc.startsWith("HEVC")) {
+            val avc = runCatching { recordClip(useHevc = false) }
+                .getOrElse { "AVC 抛异常: ${it.javaClass.simpleName}: ${it.message}" }
+            log("recordClip(AVC 降级) => $avc")
+        }
         log("==== Capture2 probe end ====")
+    }
+
+    /** Task 2:Camera2 → MediaCodec(hevc/avc)→ MediaMuxer 出 mp4,录 ~3s。返回路径或错误串。 */
+    @android.annotation.SuppressLint("MissingPermission")
+    suspend fun recordClip(useHevc: Boolean): String {
+        val mime = if (useHevc) "video/hevc" else "video/avc"
+        val w = 1440; val h = 1080 // 4:3,在 1920x1088 编码器上限内(测满宽 4:3 广角)
+        val dir = java.io.File("/sdcard/FieldSight/_probe").apply { mkdirs() }
+        val out = java.io.File(dir, "probe_${if (useHevc) "hevc" else "avc"}.mp4")
+        val ht = android.os.HandlerThread("cap2probe").apply { start() }
+        val handler = android.os.Handler(ht.looper)
+        var codec: android.media.MediaCodec? = null
+        var camera: android.hardware.camera2.CameraDevice? = null
+        var session: android.hardware.camera2.CameraCaptureSession? = null
+        var muxer: android.media.MediaMuxer? = null
+        try {
+            // 编码器
+            val fmt = android.media.MediaFormat.createVideoFormat(mime, w, h).apply {
+                setInteger(android.media.MediaFormat.KEY_COLOR_FORMAT,
+                    android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(android.media.MediaFormat.KEY_BIT_RATE, 20_000_000)
+                setInteger(android.media.MediaFormat.KEY_FRAME_RATE, 30)
+                setInteger(android.media.MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            }
+            codec = android.media.MediaCodec.createEncoderByType(mime)
+            codec.configure(fmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val inputSurface = codec.createInputSurface()
+            codec.start()
+            // muxer(Task4:setLocation)
+            muxer = android.media.MediaMuxer(out.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            runCatching { muxer.setLocation(-36.85f, 174.76f) }.onFailure { log("setLocation 失败: ${it.message}") }
+            // 开相机 + 建会话(协程桥)
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val backId = cm.cameraIdList.first {
+                cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            }
+            val cam: android.hardware.camera2.CameraDevice = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                cm.openCamera(backId, object : android.hardware.camera2.CameraDevice.StateCallback() {
+                    override fun onOpened(c: android.hardware.camera2.CameraDevice) { cont.resume(c) {} }
+                    override fun onDisconnected(c: android.hardware.camera2.CameraDevice) { c.close() }
+                    override fun onError(c: android.hardware.camera2.CameraDevice, e: Int) {
+                        c.close(); if (cont.isActive) cont.cancel(RuntimeException("openCamera error $e"))
+                    }
+                }, handler)
+            }
+            camera = cam
+            val sess: android.hardware.camera2.CameraCaptureSession = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                @Suppress("DEPRECATION")
+                cam.createCaptureSession(listOf(inputSurface), object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(s: android.hardware.camera2.CameraCaptureSession) { cont.resume(s) {} }
+                    override fun onConfigureFailed(s: android.hardware.camera2.CameraCaptureSession) {
+                        if (cont.isActive) cont.cancel(RuntimeException("session configure failed"))
+                    }
+                }, handler)
+            }
+            session = sess
+            val req = cam.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_RECORD).apply {
+                addTarget(inputSurface)
+            }.build()
+            sess.setRepeatingRequest(req, null, handler)
+
+            // drain 编码器 ~3s
+            val info = android.media.MediaCodec.BufferInfo()
+            var trackIdx = -1
+            var muxerStarted = false
+            val deadline = System.currentTimeMillis() + 3000
+            while (System.currentTimeMillis() < deadline) {
+                val idx = codec.dequeueOutputBuffer(info, 10_000)
+                if (idx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    trackIdx = muxer.addTrack(codec.outputFormat); muxer.start(); muxerStarted = true
+                } else if (idx >= 0) {
+                    val buf = codec.getOutputBuffer(idx)!!
+                    if (info.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && info.size > 0 && muxerStarted) {
+                        buf.position(info.offset); buf.limit(info.offset + info.size)
+                        muxer.writeSampleData(trackIdx, buf, info)
+                    }
+                    codec.releaseOutputBuffer(idx, false)
+                }
+            }
+            sess.stopRepeating()
+            codec.signalEndOfInputStream()
+            // drain 剩余
+            while (true) {
+                val idx = codec.dequeueOutputBuffer(info, 10_000)
+                if (idx < 0) break
+                val buf = codec.getOutputBuffer(idx)!!
+                if (info.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && info.size > 0 && muxerStarted) {
+                    buf.position(info.offset); buf.limit(info.offset + info.size)
+                    muxer.writeSampleData(trackIdx, buf, info)
+                }
+                codec.releaseOutputBuffer(idx, false)
+                if (info.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+            }
+            return "OK path=${out.absolutePath} size=${out.length()} ${w}x$h $mime"
+        } finally {
+            runCatching { session?.close() }
+            runCatching { camera?.close() }
+            runCatching { codec?.stop(); codec?.release() }
+            runCatching { muxer?.stop(); muxer?.release() }
+            ht.quitSafely()
+        }
     }
 
     /** Task 1:不开相机,仅读 CameraCharacteristics + MediaCodecList,枚举尺寸与编码器能力。 */
