@@ -284,7 +284,7 @@ class CaptureManager(
             epochMillis = epochMillis,
             lat = fix?.first,
             lon = fix?.second,
-            address = null, // P3:地址栏预留,不填
+            address = AppState.selectedSite.value?.name?.takeIf { it.isNotBlank() }, // site name doubles as indoor location anchor
             zone = ZoneId.systemDefault(),
             noFixText = noFixText,
         )

@@ -11,7 +11,12 @@ data class WatermarkContent(val lines: List<String>)
 object Watermark {
     private val TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
-    /** 组装 4 行:用户名(有才加)/ 时间戳 / 经纬度(无定位=占位)/ 街道地址(有才加)。 */
+    /**
+     * Assembles up to 4 lines: username (if present) / timestamp / lat-lon or no-fix placeholder /
+     * address-or-site line. The address/site line is appended whenever non-blank, independent of
+     * fix availability (indoor anchor) — indoors with no GPS fix it is the only location evidence;
+     * outdoors it complements the coordinates.
+     */
     fun build(
         userName: String?,
         epochMillis: Long,
@@ -26,10 +31,10 @@ object Watermark {
         lines += TIME_FMT.format(Instant.ofEpochMilli(epochMillis).atZone(zone))
         if (lat != null && lon != null) {
             lines += "%.4f, %.4f".format(Locale.US, lat, lon)
-            if (!address.isNullOrBlank()) lines += address
         } else {
             lines += noFixText
         }
+        if (!address.isNullOrBlank()) lines += address
         return WatermarkContent(lines)
     }
 }

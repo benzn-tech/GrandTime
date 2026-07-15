@@ -20,6 +20,11 @@ class WatermarkContentTest {
         assertEquals(listOf("Ben Lin", "1970-01-01 00:00:00", "Locating…"), c.lines)
     }
 
+    @Test fun `no fix but address present shows locating placeholder then site name`() {
+        val c = Watermark.build("Ben Lin", 0L, null, null, "UC", utc)
+        assertEquals(listOf("Ben Lin", "1970-01-01 00:00:00", "Locating…", "UC"), c.lines)
+    }
+
     @Test fun `null user omitted, address omitted when null but fix present`() {
         val c = Watermark.build(null, 0L, 1.0, 2.0, null, utc)
         assertEquals(listOf("1970-01-01 00:00:00", "1.0000, 2.0000"), c.lines)
