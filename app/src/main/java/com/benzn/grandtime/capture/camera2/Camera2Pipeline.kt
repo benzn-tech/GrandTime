@@ -39,7 +39,11 @@ class Camera2Pipeline(
     @Volatile private var cameraSurface: Surface? = null
     @Volatile private var segment: SegmentRecorder? = null
     @Volatile private var previewSurface: Surface? = null
-    @Volatile private var sensorOrientation = 90
+    // Fixed 90, NOT read from CameraCharacteristics: this ROM reports SENSOR_ORIENTATION=0 for both
+    // cameras, which is false — playback provably needs a 90° hint (T1 device probe + acceptance).
+    // Reading the characteristic silently flipped orientationHint/JPEG_ORIENTATION to 0 for every
+    // session after the first camera open (first session kept this default and looked fine).
+    private val sensorOrientation = 90
     @Volatile private var torchOn = false
     @Volatile private var activeSpec: VideoSpec? = null
     @Volatile private var photoInFlight = false
@@ -85,7 +89,6 @@ class Camera2Pipeline(
     private suspend fun openCameraIfNeeded(): CameraDevice {
         camera?.let { return it }
         val id = backId()
-        sensorOrientation = cm().getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         val cam: CameraDevice = suspendCancellableCoroutine { cont ->
             cm().openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(c: CameraDevice) { cont.resume(c) }
