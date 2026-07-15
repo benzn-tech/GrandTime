@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.media.ExifInterface
 import android.media.MediaScannerConnection
 import android.os.Environment
@@ -259,25 +260,32 @@ class CaptureManager(
             pipeline.setWatermarkBitmap(null)
             return
         }
-        val noFixText = if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) "Locating…" else "No location permission"
         watermarkTimer = scope.launch {
             while (true) {
-                val name = (AppState.loginState.value as? LoginState.LoggedIn)?.displayName
-                val fix = gps.latestFix
-                val content = Watermark.build(
-                    userName = name,
-                    epochMillis = System.currentTimeMillis(),
-                    lat = fix?.first,
-                    lon = fix?.second,
-                    address = null, // P3:地址栏预留,不填
-                    zone = ZoneId.systemDefault(),
-                    noFixText = noFixText,
-                )
-                val bmp = WatermarkRenderer.render(content, widthPx = 640)
+                val bmp = WatermarkRenderer.render(currentWatermarkContent(), widthPx = 640)
                 pipeline.setWatermarkBitmap(bmp)
                 delay(1000)
             }
         }
+    }
+
+    /**
+     * 当前水印内容:用户名(有才加)+ 时间戳 + 当前 gps.latestFix(无定位区分"未授权"/"定位中…")。
+     * 录像 1Hz 刷新(startWatermarkTimer)与单拍水印(stampPhotoWatermark)共用同一套构造逻辑。
+     */
+    private fun currentWatermarkContent(): WatermarkContent {
+        val name = (AppState.loginState.value as? LoginState.LoggedIn)?.displayName
+        val fix = gps.latestFix
+        val noFixText = if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) "Locating…" else "No location permission"
+        return Watermark.build(
+            userName = name,
+            epochMillis = System.currentTimeMillis(),
+            lat = fix?.first,
+            lon = fix?.second,
+            address = null, // P3:地址栏预留,不填
+            zone = ZoneId.systemDefault(),
+            noFixText = noFixText,
+        )
     }
 
     /** 停水印刷新定时器 + 清空叠加位图(pipeline 相机丢失→重连会粘住 pendingWatermark,不清会重新冒出来)。 */
@@ -339,6 +347,8 @@ class CaptureManager(
         if (ok) {
             // 照片精度设置:满 4:3 JPEG 落盘后按目标像素降采样(MAX=不降)。
             settings.photoResolution.targetPixels()?.let { downscaleJpeg(file, it, jpegQuality(settings.photoQuality)) }
+            // 水印开关:降采样之后叠加(带宽按最终落盘图片宽走),赶在 DB 插入(记录最终 sizeBytes)和入队上传之前完成。
+            if (settings.watermarkEnabled) stampPhotoWatermark(file, jpegQuality(settings.photoQuality))
             dao.insert(
                 CaptureRecord(
                     id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
@@ -384,6 +394,31 @@ class CaptureManager(
                 }
             }
         }
+    }
+
+    /**
+     * 照片水印:解码 → Canvas 底部叠 WatermarkRenderer.render 出的水印带(按图片宽)→ 重压 JPEG
+     * (质量与拍照/降采样同一档)→ 保 EXIF orientation(套路同 downscaleJpeg)。IO 线程。
+     * 失败整体吞掉(runCatching):没水印的照片也比丢照片强,留探针日志便于真机排查。
+     */
+    private suspend fun stampPhotoWatermark(file: File, quality: Int) = withContext(Dispatchers.IO) {
+        runCatching {
+            val orientation = runCatching { ExifInterface(file.absolutePath).getAttribute(ExifInterface.TAG_ORIENTATION) }.getOrNull()
+            val src = BitmapFactory.decodeFile(file.absolutePath) ?: return@runCatching
+            val out = src.copy(Bitmap.Config.ARGB_8888, true)
+            val wm = WatermarkRenderer.render(currentWatermarkContent(), out.width)
+            Canvas(out).drawBitmap(wm, 0f, (out.height - wm.height).toFloat(), null)
+            FileOutputStream(file).use { out.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+            if (out != src) src.recycle()
+            out.recycle()
+            wm.recycle()
+            if (orientation != null) runCatching {
+                ExifInterface(file.absolutePath).apply {
+                    setAttribute(ExifInterface.TAG_ORIENTATION, orientation)
+                    saveAttributes()
+                }
+            }
+        }.onFailure { probe("photo watermark failed: ${it.message}") }
     }
 
     private suspend fun startAudio(cmd: CaptureCommand.StartAudio): Boolean {
