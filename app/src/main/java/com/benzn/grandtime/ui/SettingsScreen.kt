@@ -46,7 +46,7 @@ import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import kotlinx.coroutines.launch
 
-private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, SCREEN_OFF }
+private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, WATERMARK, SCREEN_OFF }
 
 @Composable
 fun SettingsScreen(onOpen: (Screen) -> Unit) {
@@ -78,6 +78,8 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             SettingRow("Photo quality", settings.photoQuality.label) { dialog = SettingDialog.PHOTO_QUALITY }
             RowDivider()
             SettingRow("Photo resolution", settings.photoResolution.label) { dialog = SettingDialog.PHOTO_RESOLUTION }
+            RowDivider()
+            SettingRow("Watermark", if (settings.watermarkEnabled) "On" else "Off") { dialog = SettingDialog.WATERMARK }
             RowDivider()
             SettingRow(
                 "Auto screen-off",
@@ -149,6 +151,14 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             selected = settings.photoResolution,
             label = { it.label },
             onSelect = { scope.launch { store.setPhotoResolution(it) } },
+            onDismiss = { dialog = null },
+        )
+        SettingDialog.WATERMARK -> RadioDialog(
+            title = "Watermark",
+            options = listOf(true, false),
+            selected = settings.watermarkEnabled,
+            label = { if (it) "On" else "Off" },
+            onSelect = { scope.launch { store.setWatermarkEnabled(it) } },
             onDismiss = { dialog = null },
         )
         SettingDialog.SCREEN_OFF -> RadioDialog(
