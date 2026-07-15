@@ -179,11 +179,11 @@ class GlRecordPipeline {
         hasWatermark = true
     }
 
-    /** 相机帧画完后叠水印:底部条,按 WM_ROTATION_DEG 预旋,alpha 混合。 */
+    /** 相机帧画完后叠水印:底部条,按 WM_ROTATION_DEG 预旋,预乘 alpha 混合(texImage2D 上传即预乘)。 */
     private fun drawWatermark() {
         if (!hasWatermark || wmProgram == 0) return
         GLES20.glEnable(GLES20.GL_BLEND)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glUseProgram(wmProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wmTexId)
