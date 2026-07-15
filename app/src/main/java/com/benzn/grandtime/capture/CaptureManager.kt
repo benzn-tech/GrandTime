@@ -195,7 +195,7 @@ class CaptureManager(
             aspect = settings.aspectRatio,
             quality = settings.videoQuality,
             hevcPreferred = true,
-            location = gps.latestFix?.let { it.first.toFloat() to it.second.toFloat() },
+            location = gps.freshFix()?.let { it.first.toFloat() to it.second.toFloat() },
         ) { error, message ->
             scope.launch {
                 val finalizedId = finalizeVideoDbRow()
@@ -270,16 +270,18 @@ class CaptureManager(
     }
 
     /**
-     * 当前水印内容:用户名(有才加)+ 时间戳 + 当前 gps.latestFix(无定位区分"未授权"/"定位中…")。
-     * 录像 1Hz 刷新(startWatermarkTimer)与单拍水印(stampPhotoWatermark)共用同一套构造逻辑。
+     * 当前水印内容:用户名(有才加)+ 时间戳 + gps.freshFix()(超 30s 未刷新视为丢定位,降级占位——
+     * 隧道/遮挡场景不拿冻结坐标配当下时间冒充实时位置;无定位区分"未授权"/"定位中…")。
+     * epochMillis 默认戳章此刻(录像 1Hz 刷新用);单拍水印(stampPhotoWatermark)传快门时刻,
+     * 保证证据时间戳=按下快门那刻而非之后解码/叠加处理的耗时之后。
      */
-    private fun currentWatermarkContent(): WatermarkContent {
+    private fun currentWatermarkContent(epochMillis: Long = System.currentTimeMillis()): WatermarkContent {
         val name = (AppState.loginState.value as? LoginState.LoggedIn)?.displayName
-        val fix = gps.latestFix
+        val fix = gps.freshFix()
         val noFixText = if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) "Locating…" else "No location permission"
         return Watermark.build(
             userName = name,
-            epochMillis = System.currentTimeMillis(),
+            epochMillis = epochMillis,
             lat = fix?.first,
             lon = fix?.second,
             address = null, // P3:地址栏预留,不填
@@ -341,6 +343,7 @@ class CaptureManager(
                 .onFailure { execute(core.onFailure("Camera unavailable")); return }
         }
         val file = storage.newFile(MediaStorage.Kind.PHOTO)
+        // startedAt 紧邻 pipeline.takePhoto 前取——即快门时刻;水印证据时间戳用它而非之后戳章处理的耗时点。
         val startedAt = System.currentTimeMillis()
         val recordId = UUID.randomUUID().toString()
         val ok = pipeline.takePhoto(file, jpegQuality(settings.photoQuality))
@@ -348,7 +351,7 @@ class CaptureManager(
             // 照片精度设置:满 4:3 JPEG 落盘后按目标像素降采样(MAX=不降)。
             settings.photoResolution.targetPixels()?.let { downscaleJpeg(file, it, jpegQuality(settings.photoQuality)) }
             // 水印开关:降采样之后叠加(带宽按最终落盘图片宽走),赶在 DB 插入(记录最终 sizeBytes)和入队上传之前完成。
-            if (settings.watermarkEnabled) stampPhotoWatermark(file, jpegQuality(settings.photoQuality))
+            if (settings.watermarkEnabled) stampPhotoWatermark(file, jpegQuality(settings.photoQuality), startedAt)
             dao.insert(
                 CaptureRecord(
                     id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
@@ -397,28 +400,50 @@ class CaptureManager(
     }
 
     /**
-     * 照片水印:解码 → Canvas 底部叠 WatermarkRenderer.render 出的水印带(按图片宽)→ 重压 JPEG
-     * (质量与拍照/降采样同一档)→ 保 EXIF orientation(套路同 downscaleJpeg)。IO 线程。
-     * 失败整体吞掉(runCatching):没水印的照片也比丢照片强,留探针日志便于真机排查。
+     * 照片水印:解码 → 若 EXIF orientation 隐含旋转(本机 takePhoto 写 JPEG_ORIENTATION=sensorOrientation,
+     * 像素不转、tag 转,查看器里才正立)则先转正(Matrix.postRotate,90/180/270;镜像变体按其旋转分量处理,
+     * 本机不镜像)→ Canvas 底部叠 WatermarkRenderer.render 出的水印带(按图片宽,此时"底部"=转正后真底部)
+     * → 重压 JPEG(质量与拍照/降采样同一档)。转正过的图 tag 写回 NORMAL(1,像素已正);未转正维持原
+     * 行为(原样回写 tag,absent 则不写)。IO 线程。失败整体吞掉(runCatching):没水印的照片也比丢照片强。
      */
-    private suspend fun stampPhotoWatermark(file: File, quality: Int) = withContext(Dispatchers.IO) {
+    private suspend fun stampPhotoWatermark(file: File, quality: Int, epochMillis: Long) = withContext(Dispatchers.IO) {
         runCatching {
-            val orientation = runCatching { ExifInterface(file.absolutePath).getAttribute(ExifInterface.TAG_ORIENTATION) }.getOrNull()
-            val src = BitmapFactory.decodeFile(file.absolutePath) ?: return@runCatching
+            val orientationStr = runCatching { ExifInterface(file.absolutePath).getAttribute(ExifInterface.TAG_ORIENTATION) }.getOrNull()
+            val rotationDeg = exifRotationDeg(orientationStr?.toIntOrNull() ?: ExifInterface.ORIENTATION_NORMAL)
+            val decoded = BitmapFactory.decodeFile(file.absolutePath) ?: return@runCatching
+            val src = if (rotationDeg != 0) {
+                val m = android.graphics.Matrix().apply { postRotate(rotationDeg.toFloat()) }
+                val upright = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, m, true)
+                decoded.recycle() // 转正即产生第二张全尺寸位图——转正前那张立即回收
+                upright
+            } else decoded
             val out = src.copy(Bitmap.Config.ARGB_8888, true)
-            val wm = WatermarkRenderer.render(currentWatermarkContent(), out.width)
+            val wm = WatermarkRenderer.render(currentWatermarkContent(epochMillis), out.width)
             Canvas(out).drawBitmap(wm, 0f, (out.height - wm.height).toFloat(), null)
             FileOutputStream(file).use { out.compress(Bitmap.CompressFormat.JPEG, quality, it) }
             if (out != src) src.recycle()
             out.recycle()
             wm.recycle()
-            if (orientation != null) runCatching {
+            val writeBack = if (rotationDeg != 0) "1" else orientationStr
+            if (writeBack != null) runCatching {
                 ExifInterface(file.absolutePath).apply {
-                    setAttribute(ExifInterface.TAG_ORIENTATION, orientation)
+                    setAttribute(ExifInterface.TAG_ORIENTATION, writeBack)
                     saveAttributes()
                 }
             }
         }.onFailure { probe("photo watermark failed: ${it.message}") }
+    }
+
+    /**
+     * EXIF orientation tag → 需顺时针转正的角度(0/90/180/270)。TRANSPOSE/TRANSVERSE(镜像+旋转)
+     * 按其旋转分量近似处理;纯镜像(FLIP_HORIZONTAL/FLIP_VERTICAL,无旋转分量)不属于本修复范围,
+     * 落 else 走原行为——本机 takePhoto 只产生 ROTATE_90/180/270,不产生任何镜像 tag。
+     */
+    private fun exifRotationDeg(orientation: Int): Int = when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90, ExifInterface.ORIENTATION_TRANSPOSE -> 90
+        ExifInterface.ORIENTATION_ROTATE_180 -> 180
+        ExifInterface.ORIENTATION_ROTATE_270, ExifInterface.ORIENTATION_TRANSVERSE -> 270
+        else -> 0
     }
 
     private suspend fun startAudio(cmd: CaptureCommand.StartAudio): Boolean {
