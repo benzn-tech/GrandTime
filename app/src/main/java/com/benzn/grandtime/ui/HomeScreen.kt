@@ -20,6 +20,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -101,12 +106,24 @@ fun HomeScreen() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (login is LoginState.LoggedIn) {
-                Text(
-                    "Site: ${site?.name?.takeIf { it.isNotBlank() } ?: "Not selected"}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.clickable { showSitePicker = true },
-                )
+                Spacer(Modifier.height(8.dp))
+                val siteName = site?.name?.takeIf { it.isNotBlank() }
+                Button(
+                    onClick = { showSitePicker = true },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = MaterialTheme.shapes.small,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                ) {
+                    Text(
+                        if (siteName != null) "Site: $siteName" else "Select site",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
+                }
             }
         }
         if (showSitePicker) {
