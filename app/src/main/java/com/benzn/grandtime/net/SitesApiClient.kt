@@ -42,7 +42,7 @@ class SitesApiClient(
     private val baseUrl: String,
     private val http: SitesHttpFns = RealSitesHttp(),
 ) {
-    data class SiteOption(val id: String, val slug: String, val name: String)
+    data class SiteOption(val id: String, val slug: String, val name: String, val address: String? = null)
 
     fun listSites(idToken: String): List<SiteOption> {
         val result = runCatching { http.getJson("$baseUrl/org/sites", idToken) }
@@ -63,6 +63,7 @@ class SitesApiClient(
                         id = id,
                         slug = o.optString("slug"),
                         name = o.optString("name"),
+                        address = o.optString("address").takeIf { it.isNotBlank() },
                     )
                 }
             }.getOrElse { emptyList() }

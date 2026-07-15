@@ -143,7 +143,7 @@ fun SitePickerDialog(onDismiss: () -> Unit) {
                                         .clickable {
                                             scope.launch {
                                                 SiteStore(context.siteDataStore).set(
-                                                    SelectedSite(site.id, site.slug, site.name),
+                                                    SelectedSite(site.id, site.slug, site.name, site.address),
                                                 )
                                             }
                                             onDismiss()

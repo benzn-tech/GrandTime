@@ -33,6 +33,20 @@ class SitesApiClientTest {
         assertEquals("u2", result[0].id)
     }
 
+    @Test fun `address is parsed when present`() {
+        val b = """{"sites":[{"id":"u1","slug":"north","name":"North Wharf","address":"123 Dock Rd"}]}"""
+        val result = SitesApiClient.parseSites(HttpResult(200, b))
+        assertEquals(1, result.size)
+        assertEquals("123 Dock Rd", result[0].address)
+    }
+
+    @Test fun `address is null when absent`() {
+        val b = """{"sites":[{"id":"u1","slug":"north","name":"North Wharf"}]}"""
+        val result = SitesApiClient.parseSites(HttpResult(200, b))
+        assertEquals(1, result.size)
+        assertEquals(null, result[0].address)
+    }
+
     @Test fun `listSites wires injected http to parsed list`() {
         val fake = object : SitesHttpFns {
             override fun getJson(url: String, authToken: String): HttpResult {

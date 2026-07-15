@@ -279,12 +279,16 @@ class CaptureManager(
         val name = (AppState.loginState.value as? LoginState.LoggedIn)?.displayName
         val fix = gps.freshFix()
         val noFixText = if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) "Locating…" else "No location permission"
+        val site = AppState.selectedSite.value
+        // Line 4 prefers the site's street address (indoor location anchor); falls back to the
+        // site name when no address is on file, so existing sites without an address keep working.
+        val siteLine = site?.address?.takeIf { it.isNotBlank() } ?: site?.name?.takeIf { it.isNotBlank() }
         return Watermark.build(
             userName = name,
             epochMillis = epochMillis,
             lat = fix?.first,
             lon = fix?.second,
-            address = AppState.selectedSite.value?.name?.takeIf { it.isNotBlank() }, // site name doubles as indoor location anchor
+            address = siteLine,
             zone = ZoneId.systemDefault(),
             noFixText = noFixText,
         )

@@ -14,7 +14,7 @@ import org.json.JSONObject
 
 val Context.siteDataStore: DataStore<Preferences> by preferencesDataStore(name = "site")
 
-data class SelectedSite(val id: String, val slug: String, val name: String)
+data class SelectedSite(val id: String, val slug: String, val name: String, val address: String? = null)
 
 class SiteStore(private val dataStore: DataStore<Preferences>) {
 
@@ -22,6 +22,7 @@ class SiteStore(private val dataStore: DataStore<Preferences>) {
         private val KEY_SITE_ID = stringPreferencesKey("site_id")
         private val KEY_SITE_SLUG = stringPreferencesKey("site_slug")
         private val KEY_SITE_NAME = stringPreferencesKey("site_name")
+        private val KEY_SITE_ADDRESS = stringPreferencesKey("site_address")
         private val KEY_SITE_LIST_JSON = stringPreferencesKey("site_list_json")
 
         private fun encodeSiteList(sites: List<SitesApiClient.SiteOption>): String {
@@ -32,6 +33,7 @@ class SiteStore(private val dataStore: DataStore<Preferences>) {
                         put("id", site.id)
                         put("slug", site.slug)
                         put("name", site.name)
+                        if (site.address != null) put("address", site.address)
                     },
                 )
             }
@@ -49,6 +51,7 @@ class SiteStore(private val dataStore: DataStore<Preferences>) {
                         id = id,
                         slug = o.optString("slug"),
                         name = o.optString("name"),
+                        address = o.optString("address").takeIf { it.isNotBlank() },
                     )
                 }
             }.getOrElse { emptyList() }
@@ -64,6 +67,7 @@ class SiteStore(private val dataStore: DataStore<Preferences>) {
                 id = id,
                 slug = prefs[KEY_SITE_SLUG].orEmpty(),
                 name = prefs[KEY_SITE_NAME].orEmpty(),
+                address = prefs[KEY_SITE_ADDRESS],
             )
         }
     }
@@ -79,10 +83,12 @@ class SiteStore(private val dataStore: DataStore<Preferences>) {
                 it.remove(KEY_SITE_ID)
                 it.remove(KEY_SITE_SLUG)
                 it.remove(KEY_SITE_NAME)
+                it.remove(KEY_SITE_ADDRESS)
             } else {
                 it[KEY_SITE_ID] = s.id
                 it[KEY_SITE_SLUG] = s.slug
                 it[KEY_SITE_NAME] = s.name
+                if (s.address == null) it.remove(KEY_SITE_ADDRESS) else it[KEY_SITE_ADDRESS] = s.address
             }
         }
     }
