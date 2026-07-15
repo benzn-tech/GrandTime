@@ -26,5 +26,6 @@ data class CaptureRecord(
     val siteId: String? = null,
     val uploadStatus: String = "pending",
     val createdAt: Long,
+    val gpsTrack: String? = null,
     val missing: Boolean = false,
 )
