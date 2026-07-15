@@ -102,7 +102,7 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                     // backend row stays pending, and nothing ever retries). The whole flow is
                     // idempotent (upload-url on clientUuid, re-PUT overwrites the same S3 key,
                     // complete is idempotent), so retrying complete is safe; bounded by #2's cap.
-                    val done = client.complete(idToken, urlResult.recordingId, file.length())
+                    val done = client.complete(idToken, urlResult.recordingId, file.length(), gpsTrack = record.gpsTrack)
                     if (!done) {
                         dao.markUploadStatus(recordId, "failed")
                         return Result.retry()

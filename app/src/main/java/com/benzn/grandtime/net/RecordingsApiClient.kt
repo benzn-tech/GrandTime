@@ -103,9 +103,16 @@ class RecordingsApiClient(
         return code in 200..299
     }
 
-    fun complete(idToken: String, recordingId: String, sizeBytes: Long?): Boolean {
+    fun complete(idToken: String, recordingId: String, sizeBytes: Long?, gpsTrack: String? = null): Boolean {
         val body = JSONObject()
         sizeBytes?.let { body.put("sizeBytes", it) }
+        // T13: gpsTrack 是 DB 里存的 JSON 数组字符串(GpsTracker.snapshotTrackJson),这里还原成
+        // JSONArray 塞进 body,后端才能拿到真正的 list,而不是一个二次转义的字符串。
+        // 脏数据防御:行里字符串万一不是合法 JSON(损坏),parse 失败就整体丢弃该字段,
+        // 不能让 complete() 因此失败——降级为"不带轨迹地 complete"。
+        gpsTrack?.let { track ->
+            runCatching { org.json.JSONArray(track) }.getOrNull()?.let { body.put("gpsTrack", it) }
+        }
         val result = runCatching {
             http.postJson("$baseUrl/org/recordings/$recordingId/complete", idToken, body.toString())
         }.getOrElse { return false }
