@@ -167,7 +167,9 @@ class GlRecordPipeline {
     }
 
     // ==== 水印叠加(P3-T1)====
-    companion object { val WM_ROTATION_DEG = 90 } // 播放 setOrientationHint(90) 对应的 GL 预旋;真机验证下的固定值(探针已移除,无写者)
+    // GL pre-rotation matching the muxer's setOrientationHint(90); device-calibrated fixed value.
+    // MUST stay equal to Camera2Pipeline.sensorOrientation — that hint is what this pre-rotation cancels.
+    companion object { val WM_ROTATION_DEG = 90 }
     private var wmTexId = 0
     private var wmProgram = 0
     private var wmAPos = 0

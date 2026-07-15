@@ -43,6 +43,8 @@ class Camera2Pipeline(
     // cameras, which is false — playback provably needs a 90° hint (T1 device probe + acceptance).
     // Reading the characteristic silently flipped orientationHint/JPEG_ORIENTATION to 0 for every
     // session after the first camera open (first session kept this default and looked fine).
+    // MUST stay equal to GlRecordPipeline.WM_ROTATION_DEG — the watermark pre-rotation cancels
+    // exactly this playback rotation; change one and the other must follow.
     private val sensorOrientation = 90
     @Volatile private var torchOn = false
     @Volatile private var activeSpec: VideoSpec? = null
