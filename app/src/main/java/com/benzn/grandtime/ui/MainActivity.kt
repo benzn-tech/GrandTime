@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.POST_NOTIFICATIONS,
             Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.ACCESS_FINE_LOCATION,
         ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
 
         if (required.isEmpty()) {
