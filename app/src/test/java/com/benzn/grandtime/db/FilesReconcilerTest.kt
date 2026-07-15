@@ -25,6 +25,10 @@ private class FakeDao : CaptureRecordDao {
         val idx = rows.indexOfFirst { it.filePath == oldPath }
         if (idx >= 0) rows[idx] = rows[idx].copy(filePath = newPath)
     }
+    override suspend fun updateGpsTrack(id: String, json: String) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(gpsTrack = json)
+    }
     override suspend fun backfillAuthorSub(sub: String) {
         for (i in rows.indices) {
             if (rows[i].authorSub == null) rows[i] = rows[i].copy(authorSub = sub)

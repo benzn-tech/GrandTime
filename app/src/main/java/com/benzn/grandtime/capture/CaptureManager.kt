@@ -12,9 +12,12 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.core.content.ContextCompat
 import com.benzn.grandtime.capture.camera2.Camera2Pipeline
+import com.benzn.grandtime.capture.camera2.WatermarkRenderer
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.PhotoQuality
 import com.benzn.grandtime.core.PhotoResolution
+import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.CaptureRecordDao
@@ -22,6 +25,7 @@ import com.benzn.grandtime.keymap.KeyAction
 import com.benzn.grandtime.upload.UploadEnqueuer
 import java.io.File
 import java.io.FileOutputStream
+import java.time.ZoneId
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,9 +59,11 @@ class CaptureManager(
     private val volume = VolumeCycler(context)
     private val storage = MediaStorage({ MediaStorage.publicRoot(context) }, scopeProvider = { AppState.mediaScope.value })
     private val sounds = CaptureSounds()
+    private val gps = GpsTracker(context)
 
     private var segmentTimer: Job? = null
     private var screenOffTimer: Job? = null
+    private var watermarkTimer: Job? = null
     private var pendingRoll = false
     private var currentVideoRecordId: String? = null
     private var currentVideoFile: File? = null
@@ -72,6 +78,8 @@ class CaptureManager(
                 if (core.state is CaptureState.RecordingVideo) {
                     finalizeVideoDbRow()?.let { uploadEnqueuer.enqueue(it) }
                     stopScreenOffTimer()
+                    stopWatermarkTimer()
+                    gps.stop()
                     sounds.stopRecording()
                     execute(core.onFailure("Camera lost — recording stopped"))
                 }
@@ -112,6 +120,8 @@ class CaptureManager(
     fun shutdown() {
         segmentTimer?.cancel()
         screenOffTimer?.cancel()
+        stopWatermarkTimer()
+        gps.stop()
         if (pipeline.isRecording) pipeline.stopSegment()
         if (audio.isRecording) audio.stop()
         sounds.release()
@@ -174,17 +184,24 @@ class CaptureManager(
         val file = storage.newFile(MediaStorage.Kind.VIDEO)
         val startedAt = System.currentTimeMillis()
         val recordId = UUID.randomUUID().toString()
+        // 段 1:按权限起 GPS(未授权 GpsTracker.start() 自己 no-op),并按设置起水印刷新定时器。
+        if (cmd.segmentIndex == 1) {
+            if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) gps.start()
+            startWatermarkTimer(settings)
+        }
         val result = pipeline.startSegment(
             file = file,
             aspect = settings.aspectRatio,
             quality = settings.videoQuality,
             hevcPreferred = true,
-            location = null, // GPS 起点写入留 P3
+            location = gps.latestFix?.let { it.first.toFloat() to it.second.toFloat() },
         ) { error, message ->
             scope.launch {
                 val finalizedId = finalizeVideoDbRow()
                 if (error) {
                     stopScreenOffTimer()
+                    stopWatermarkTimer()
+                    gps.stop()
                     execute(core.onFailure(message ?: "Video error"))
                     pipeline.release()
                 } else {
@@ -195,6 +212,8 @@ class CaptureManager(
                     if (core.state is CaptureState.Idle) {
                         sounds.stopRecording()
                         stopScreenOffTimer()
+                        stopWatermarkTimer()
+                        gps.stop()
                         pipeline.release()
                     }
                 }
@@ -202,6 +221,9 @@ class CaptureManager(
         }
         if (result == null) {
             stopScreenOffTimer()
+            // 段起动失败也是终态(core.onFailure 一律回 Idle)——不管是不是段 1,都要收尾计时器/GPS。
+            stopWatermarkTimer()
+            gps.stop()
             sounds.stopRecording()
             execute(core.onFailure("Camera unavailable"))
             pipeline.release()
@@ -225,6 +247,44 @@ class CaptureManager(
         }
         probe("video segment ${cmd.segmentIndex} started: ${file.name}")
         return true
+    }
+
+    /**
+     * ~1Hz 刷水印:段 1 起,按当前设置读一次决定开关。关闭时直接清空叠加位图并不起定时器
+     * (行为与 P2 完全一致——不叠加任何东西)。开启则每秒重建内容(用户名/时间/定位)→渲染→下发。
+     */
+    private fun startWatermarkTimer(settings: RecordingSettings) {
+        watermarkTimer?.cancel()
+        if (!settings.watermarkEnabled) {
+            pipeline.setWatermarkBitmap(null)
+            return
+        }
+        val noFixText = if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) "Locating…" else "No location permission"
+        watermarkTimer = scope.launch {
+            while (true) {
+                val name = (AppState.loginState.value as? LoginState.LoggedIn)?.displayName
+                val fix = gps.latestFix
+                val content = Watermark.build(
+                    userName = name,
+                    epochMillis = System.currentTimeMillis(),
+                    lat = fix?.first,
+                    lon = fix?.second,
+                    address = null, // P3:地址栏预留,不填
+                    zone = ZoneId.systemDefault(),
+                    noFixText = noFixText,
+                )
+                val bmp = WatermarkRenderer.render(content, widthPx = 640)
+                pipeline.setWatermarkBitmap(bmp)
+                delay(1000)
+            }
+        }
+    }
+
+    /** 停水印刷新定时器 + 清空叠加位图(pipeline 相机丢失→重连会粘住 pendingWatermark,不清会重新冒出来)。 */
+    private fun stopWatermarkTimer() {
+        watermarkTimer?.cancel()
+        watermarkTimer = null
+        pipeline.setWatermarkBitmap(null)
     }
 
     private fun startScreenOffTimer(minutes: Int) {
@@ -255,6 +315,8 @@ class CaptureManager(
         val file = currentVideoFile ?: return null
         val ended = System.currentTimeMillis()
         dao.finalize(id, ended, ended - currentVideoStartedAt, file.length())
+        // GPS 轨迹落到这一段视频行;stop() 不清 track,即便本方法在 gps.stop() 之后跑也拿得到。
+        gps.snapshotTrackJson()?.let { dao.updateGpsTrack(id, it) }
         scan(file.absolutePath)
         probe("video segment saved: ${file.name} (${file.length()} bytes)")
         currentVideoRecordId = null
