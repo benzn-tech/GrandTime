@@ -199,24 +199,24 @@ class GlRecordPipeline {
     }
 
     /**
-     * 叠加 quad 的 NDC 顶点(TRIANGLE_STRIP 4 点)。编码帧是横向,播放靠 orientationHint 旋 90°。
-     * rotationDeg=90:水印占编码帧"右侧一条竖带",播放旋正后成为底部横条。Task1 探针据实测改此角。
-     * 各角度返回对应的 4 顶点(左下、右下、左上、右上顺序,配合 wmTexCoord)。
+     * 叠加 quad 的 NDC 顶点(TRIANGLE_STRIP 4 点,顺序=位图左下/右下/左上/右上,配合 wmTexCoord)。
+     * 顶点顺序同时完成选带与内容预旋:在编码帧空间把位图预旋到与 orientationHint 相反的方向,
+     * 播放端 orientationHint 旋转后内容正立于底部。rotationDeg=90 已真机定标验证(Task1 探针)。
      */
     private fun watermarkQuadPositions(rotationDeg: Int): FloatBuffer {
-        // band = 播放画面底部 22% 高;在编码帧(横)里,rotation=90 → 该带位于编码帧右侧(x∈[0.78,1.0])
+        // band = 播放画面底部 22% 高;rotation=90 → 带位于编码帧右侧竖列(x∈[0.78,1.0])
         val b = 0.22f
         val v = when (((rotationDeg % 360) + 360) % 360) {
-            90 -> floatArrayOf( // 右侧竖带,纹理顺时针 90°(播放后底部水平)
-                1f - 2f * b, -1f,  1f, -1f,  1f - 2f * b, 1f,  1f, 1f,
+            90 -> floatArrayOf( // 右侧竖带,内容在编码空间逆时针预旋 90°(播放顺旋 90° 后正立)
+                1f, -1f,  1f, 1f,  1f - 2f * b, -1f,  1f - 2f * b, 1f,
             )
-            270 -> floatArrayOf(
-                -1f, -1f,  -1f + 2f * b, -1f,  -1f, 1f,  -1f + 2f * b, 1f,
+            270 -> floatArrayOf( // 左侧竖带,内容顺时针预旋 90°(播放逆旋后正立)
+                -1f, 1f,  -1f, -1f,  -1f + 2f * b, 1f,  -1f + 2f * b, -1f,
             )
-            180 -> floatArrayOf( // 顶部带(播放旋 180)
-                -1f, 1f - 2f * b,  1f, 1f - 2f * b,  -1f, 1f,  1f, 1f,
+            180 -> floatArrayOf( // 顶部带,内容预旋 180°(播放旋 180 后正立于底部)
+                1f, 1f,  -1f, 1f,  1f, 1f - 2f * b,  -1f, 1f - 2f * b,
             )
-            else -> floatArrayOf( // 0:底部带(无旋转设备)
+            else -> floatArrayOf( // 0:底部带,内容不旋(无播放旋转设备)
                 -1f, -1f,  1f, -1f,  -1f, -1f + 2f * b,  1f, -1f + 2f * b,
             )
         }
