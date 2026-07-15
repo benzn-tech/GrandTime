@@ -121,4 +121,17 @@ class SettingsStoreTest {
         ds.edit { it[stringPreferencesKey("aspect_ratio")] = "RATIO_99_9" }
         assertEquals(AspectRatio.RATIO_4_3, store.settings.first().aspectRatio)
     }
+
+    @Test
+    fun `watermark defaults to enabled`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        assertEquals(true, store.settings.first().watermarkEnabled)
+    }
+
+    @Test
+    fun `watermark toggle roundtrips`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        store.setWatermarkEnabled(false)
+        assertEquals(false, store.settings.first().watermarkEnabled)
+    }
 }

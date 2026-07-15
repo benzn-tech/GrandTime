@@ -3,6 +3,7 @@ package com.benzn.grandtime.core
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -28,6 +29,7 @@ data class RecordingSettings(
     val photoResolution: PhotoResolution = PhotoResolution.MAX,
     val screenOffMinutes: Int = 3,
     val aspectRatio: AspectRatio = AspectRatio.RATIO_4_3,
+    val watermarkEnabled: Boolean = true,
 )
 
 class SettingsStore(private val dataStore: DataStore<Preferences>) {
@@ -41,6 +43,7 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
         private val KEY_PHOTO_RESOLUTION = stringPreferencesKey("photo_resolution")
         private val KEY_SCREEN_OFF_MINUTES = intPreferencesKey("screen_off_minutes")
         private val KEY_ASPECT_RATIO = stringPreferencesKey("aspect_ratio")
+        private val KEY_WATERMARK = booleanPreferencesKey("watermark_enabled")
     }
 
     val settings: Flow<RecordingSettings> = dataStore.data.map { prefs ->
@@ -59,6 +62,7 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
             aspectRatio = prefs[KEY_ASPECT_RATIO]
                 ?.let { name -> AspectRatio.entries.firstOrNull { it.name == name } }
                 ?: AspectRatio.RATIO_4_3,
+            watermarkEnabled = prefs[KEY_WATERMARK] ?: true,
         )
     }
 
@@ -86,5 +90,9 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
 
     suspend fun setAspectRatio(value: AspectRatio) {
         dataStore.edit { it[KEY_ASPECT_RATIO] = value.name }
+    }
+
+    suspend fun setWatermarkEnabled(value: Boolean) {
+        dataStore.edit { it[KEY_WATERMARK] = value }
     }
 }
