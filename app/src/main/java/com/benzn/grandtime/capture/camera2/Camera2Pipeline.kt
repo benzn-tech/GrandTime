@@ -43,6 +43,7 @@ class Camera2Pipeline(
     @Volatile private var torchOn = false
     @Volatile private var activeSpec: VideoSpec? = null
     @Volatile private var photoInFlight = false
+    @Volatile private var pendingWatermark: android.graphics.Bitmap? = null
 
     /** 相机死亡(被抢占/热降频/HAL 错)通知上层,便于状态机退出录像态。 */
     @Volatile var onCameraLost: (() -> Unit)? = null
@@ -116,6 +117,7 @@ class Camera2Pipeline(
         gl = glp
         val stDeferred = kotlinx.coroutines.CompletableDeferred<android.graphics.SurfaceTexture>()
         glp.start(spec.width, spec.height) { stDeferred.complete(it) }
+        if (pendingWatermark != null) glp.setWatermarkBitmap(pendingWatermark)
         val camTex = stDeferred.await()
         val camSurface = Surface(camTex)
         cameraSurface = camSurface
@@ -267,6 +269,12 @@ class Camera2Pipeline(
         return if (session != null) { applyRepeating(); true } else false
     }
 
+    /** 水印位图转发给 GL 叠加层;会话未建时记住,ensureSession 里补设。null=不叠。 */
+    fun setWatermarkBitmap(bmp: android.graphics.Bitmap?) {
+        pendingWatermark = bmp
+        gl?.setWatermarkBitmap(bmp)
+    }
+
     suspend fun release() {
         val rec = segment
         val enc = currentEncSurface
@@ -282,5 +290,6 @@ class Camera2Pipeline(
         runCatching { cameraSurface?.release() }; cameraSurface = null
         previewSurface = null; torchOn = false
         activeSpec = null
+        pendingWatermark = null
     }
 }
