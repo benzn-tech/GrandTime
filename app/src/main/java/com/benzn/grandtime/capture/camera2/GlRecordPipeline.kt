@@ -46,6 +46,7 @@ class GlRecordPipeline {
         thread = HandlerThread("gl-record").apply { start() }
         handler = Handler(thread.looper)
         handler.post {
+            encW = cameraW; encH = cameraH
             initEgl()
             oesTexId = createOesTexture()
             program = buildProgram()
@@ -155,7 +156,7 @@ class GlRecordPipeline {
     }
 
     // ==== 水印叠加(P3-T1)====
-    companion object { var WM_ROTATION_DEG = 90 } // 播放 setOrientationHint(90) 对应的 GL 预旋;Task1 探针定标
+    companion object { val WM_ROTATION_DEG = 90 } // 播放 setOrientationHint(90) 对应的 GL 预旋;真机验证下的固定值(探针已移除,无写者)
     private var wmTexId = 0
     private var wmProgram = 0
     private var wmAPos = 0
@@ -164,6 +165,14 @@ class GlRecordPipeline {
     private val wmTexCoord: FloatBuffer = ByteBuffer.allocateDirect(8 * 4)
         .order(ByteOrder.nativeOrder()).asFloatBuffer()
         .apply { put(floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)); position(0) } // 位图正立采样
+
+    // 编码帧尺寸(start() 时记,GL 线程限定);F3 用来把位图纵横比换算成播放空间里的带高比例。
+    private var encW = 0
+    private var encH = 0
+    // F3+F4:quad 顶点缓存——仅在带比例(=位图纵横比,随水印内容行数变化)真变化时才重建 FloatBuffer,
+    // drawFrame 热循环(~60/s)只读缓存,不再每帧 allocateDirect。GL 线程限定,无需 volatile。
+    private var cachedBandFraction = -1f
+    private var cachedQuad: FloatBuffer? = null
 
     /** 叠加位图上传为 GL_TEXTURE_2D(GL 线程);null=停止叠加。位图生命周期由调用方管。 */
     fun setWatermarkBitmap(bmp: Bitmap?) = handler.post {
@@ -177,17 +186,23 @@ class GlRecordPipeline {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
         hasWatermark = true
+        // F3:带高度按位图纵横比算(等比缩放,不再固定 22% 造成拉伸)。只有比例真变化时才重建 quad(F4)。
+        val fraction = WatermarkGeometry.bandFraction(bmp.width, bmp.height, encW, encH, WM_ROTATION_DEG)
+        if (cachedQuad == null || fraction != cachedBandFraction) {
+            cachedBandFraction = fraction
+            cachedQuad = buildWatermarkQuadPositions(WM_ROTATION_DEG, fraction)
+        }
     }
 
     /** 相机帧画完后叠水印:底部条,按 WM_ROTATION_DEG 预旋,预乘 alpha 混合(texImage2D 上传即预乘)。 */
     private fun drawWatermark() {
         if (!hasWatermark || wmProgram == 0) return
+        val pos = cachedQuad ?: return // 尚无 setWatermarkBitmap 建过 quad(理论不该发生:hasWatermark 与其同批置位)
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glUseProgram(wmProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, wmTexId)
-        val pos = watermarkQuadPositions(WM_ROTATION_DEG) // NDC 顶点:占"播放底部条"
         GLES20.glEnableVertexAttribArray(wmAPos)
         GLES20.glVertexAttribPointer(wmAPos, 2, GLES20.GL_FLOAT, false, 0, pos)
         GLES20.glEnableVertexAttribArray(wmATex)
@@ -201,11 +216,12 @@ class GlRecordPipeline {
     /**
      * 叠加 quad 的 NDC 顶点(TRIANGLE_STRIP 4 点,顺序=位图左下/右下/左上/右上,配合 wmTexCoord)。
      * 顶点顺序同时完成选带与内容预旋:在编码帧空间把位图预旋到与 orientationHint 相反的方向,
-     * 播放端 orientationHint 旋转后内容正立于底部。rotationDeg=90 已真机定标验证(Task1 探针)。
+     * 播放端 orientationHint 旋转后内容正立于底部。rotationDeg=90 已真机验证。
+     * b = 带高度占播放画面高度的比例(WatermarkGeometry.bandFraction 算出,F3:按位图纵横比反推,
+     * 保证横纵轴缩放系数相等,不再固定 22% 造成拉伸变形)。只在 (rotation, b) 变化时调用(F4 缓存)。
      */
-    private fun watermarkQuadPositions(rotationDeg: Int): FloatBuffer {
-        // band = 播放画面底部 22% 高;rotation=90 → 带位于编码帧右侧竖列(x∈[0.78,1.0])
-        val b = 0.22f
+    private fun buildWatermarkQuadPositions(rotationDeg: Int, b: Float): FloatBuffer {
+        // rotation=90 → 带位于编码帧右侧竖列(x∈[1-2b,1])
         val v = when (((rotationDeg % 360) + 360) % 360) {
             90 -> floatArrayOf( // 右侧竖带,内容在编码空间逆时针预旋 90°(播放顺旋 90° 后正立)
                 1f, -1f,  1f, 1f,  1f - 2f * b, -1f,  1f - 2f * b, 1f,
@@ -251,6 +267,8 @@ class GlRecordPipeline {
             cameraTexture?.release(); cameraTexture = null
             if (wmTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(wmTexId), 0); wmTexId = 0 }
             hasWatermark = false
+            cachedQuad = null
+            cachedBandFraction = -1f
             if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
                 EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                 if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, pbuffer)
