@@ -172,7 +172,7 @@ class Camera2Pipeline(
             val recorder = SegmentRecorder(probe)
             rec = recorder
             val encSurface = recorder.prepare(file, spec, hevcPreferred, location, recordAudio = true)
-            gl!!.addTarget(encSurface); addedEnc = encSurface
+            gl!!.addTarget(encSurface, prerotate = true); addedEnc = encSurface
             recorder.start()
             segment = recorder
             onFinalizedCb = onFinalized
@@ -260,7 +260,7 @@ class Camera2Pipeline(
         previewSurface = surface
         if (glp == null) return
         if (old != null && old != surface) glp.removeTarget(old)
-        if (surface != null) glp.addTarget(surface)
+        if (surface != null) glp.addTarget(surface, prerotate = false)
     }
 
     /** 会话活时经 repeating 请求切手电;返回是否已处理(false=调用方走 CameraManager)。 */

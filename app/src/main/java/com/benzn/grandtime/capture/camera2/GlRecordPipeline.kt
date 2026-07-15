@@ -35,7 +35,9 @@ class GlRecordPipeline {
     private var aTexCoord = 0
     private var cameraTexture: SurfaceTexture? = null
     private val stMatrix = FloatArray(16)
-    private val targets = LinkedHashMap<Surface, EGLSurface>()
+    /** Target entry: win = EGL window surface; prerotate = whether the watermark is pre-rotated by WM_ROTATION_DEG (encoder surface true, preview surface false — see drawWatermark). */
+    private data class TargetEntry(val win: EGLSurface, val prerotate: Boolean)
+    private val targets = LinkedHashMap<Surface, TargetEntry>()
 
     private val quad: FloatBuffer = ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder())
         .asFloatBuffer().apply { put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)); position(0) }
@@ -59,22 +61,31 @@ class GlRecordPipeline {
         }
     }
 
-    fun addTarget(surface: Surface) = handler.post {
+    /**
+     * @param prerotate whether the watermark is pre-rotated by WM_ROTATION_DEG. The encoder surface
+     * needs true: the recorded file is turned upright at playback by the muxer's orientationHint, so
+     * the watermark must be pre-rotated the opposite way to land upright at the bottom after that
+     * rotation. The preview surface is displayed directly — no playback rotation ever happens — so
+     * pre-rotating there strips the watermark down the side (seen on device); pass false to draw it
+     * upright at the bottom as-is.
+     */
+    fun addTarget(surface: Surface, prerotate: Boolean) = handler.post {
         if (targets.containsKey(surface)) return@post
         val attribs = intArrayOf(EGL14.EGL_NONE)
         val win = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, attribs, 0)
-        targets[surface] = win
+        targets[surface] = TargetEntry(win, prerotate)
     }
 
     fun removeTarget(surface: Surface) = handler.post {
-        targets.remove(surface)?.let { EGL14.eglDestroySurface(eglDisplay, it) }
+        targets.remove(surface)?.let { EGL14.eglDestroySurface(eglDisplay, it.win) }
     }
 
     private fun drawFrame() {
         val st = cameraTexture ?: return
         runCatching { st.updateTexImage() }
         st.getTransformMatrix(stMatrix)
-        for ((_, win) in targets) {
+        for ((_, entry) in targets) {
+            val win = entry.win
             if (win == EGL14.EGL_NO_SURFACE) continue
             EGL14.eglMakeCurrent(eglDisplay, win, win, eglContext)
             val ww = IntArray(1); EGL14.eglQuerySurface(eglDisplay, win, EGL14.EGL_WIDTH, ww, 0)
@@ -92,7 +103,7 @@ class GlRecordPipeline {
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             GLES20.glDisableVertexAttribArray(aPosition)
             GLES20.glDisableVertexAttribArray(aTexCoord)
-            drawWatermark()
+            drawWatermark(entry.prerotate)
             EGL14.eglSwapBuffers(eglDisplay, win)
         }
     }
@@ -171,8 +182,13 @@ class GlRecordPipeline {
     private var encH = 0
     // F3+F4:quad 顶点缓存——仅在带比例(=位图纵横比,随水印内容行数变化)真变化时才重建 FloatBuffer,
     // drawFrame 热循环(~60/s)只读缓存,不再每帧 allocateDirect。GL 线程限定,无需 volatile。
-    private var cachedBandFraction = -1f
-    private var cachedQuad: FloatBuffer? = null
+    // Preview and encoder surfaces need different pre-rotations (see addTarget KDoc), so two quads
+    // are cached: Enc = pre-rotated by WM_ROTATION_DEG (orientationHint re-uprights it at playback),
+    // Preview = unrotated (displayed directly).
+    private var cachedBandFractionEnc = -1f
+    private var cachedQuadEnc: FloatBuffer? = null
+    private var cachedBandFractionPreview = -1f
+    private var cachedQuadPreview: FloatBuffer? = null
 
     /** 叠加位图上传为 GL_TEXTURE_2D(GL 线程);null=停止叠加。位图生命周期由调用方管。 */
     fun setWatermarkBitmap(bmp: Bitmap?) = handler.post {
@@ -187,17 +203,30 @@ class GlRecordPipeline {
         android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
         hasWatermark = true
         // F3:带高度按位图纵横比算(等比缩放,不再固定 22% 造成拉伸)。只有比例真变化时才重建 quad(F4)。
-        val fraction = WatermarkGeometry.bandFraction(bmp.width, bmp.height, encW, encH, WM_ROTATION_DEG)
-        if (cachedQuad == null || fraction != cachedBandFraction) {
-            cachedBandFraction = fraction
-            cachedQuad = buildWatermarkQuadPositions(WM_ROTATION_DEG, fraction)
+        // Encoder and preview each compute their own fraction (playback dims swap when rotationDeg differs — see WatermarkGeometry.bandFraction).
+        val fractionEnc = WatermarkGeometry.bandFraction(bmp.width, bmp.height, encW, encH, WM_ROTATION_DEG)
+        if (cachedQuadEnc == null || fractionEnc != cachedBandFractionEnc) {
+            cachedBandFractionEnc = fractionEnc
+            cachedQuadEnc = buildWatermarkQuadPositions(WM_ROTATION_DEG, fractionEnc)
+        }
+        val fractionPreview = WatermarkGeometry.bandFraction(bmp.width, bmp.height, encW, encH, 0)
+        if (cachedQuadPreview == null || fractionPreview != cachedBandFractionPreview) {
+            cachedBandFractionPreview = fractionPreview
+            cachedQuadPreview = buildWatermarkQuadPositions(0, fractionPreview)
         }
     }
 
-    /** 相机帧画完后叠水印:底部条,按 WM_ROTATION_DEG 预旋,预乘 alpha 混合(texImage2D 上传即预乘)。 */
-    private fun drawWatermark() {
+    /**
+     * Overlays the watermark after the camera frame: bottom band, premultiplied-alpha blending
+     * (texImage2D uploads premultiplied pixels).
+     * @param prerotate true = encoder surface, pre-rotated by WM_ROTATION_DEG (orientationHint
+     * re-uprights it at playback); false = preview surface, unrotated — the preview is displayed
+     * directly with no playback rotation, pre-rotating would strip the watermark down the side.
+     */
+    private fun drawWatermark(prerotate: Boolean) {
         if (!hasWatermark || wmProgram == 0) return
-        val pos = cachedQuad ?: return // 尚无 setWatermarkBitmap 建过 quad(理论不该发生:hasWatermark 与其同批置位)
+        val pos = (if (prerotate) cachedQuadEnc else cachedQuadPreview)
+            ?: return // 尚无 setWatermarkBitmap 建过 quad(理论不该发生:hasWatermark 与其同批置位)
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glUseProgram(wmProgram)
@@ -262,13 +291,15 @@ class GlRecordPipeline {
 
     fun release() {
         handler.post {
-            for ((_, win) in targets) EGL14.eglDestroySurface(eglDisplay, win)
+            for ((_, entry) in targets) EGL14.eglDestroySurface(eglDisplay, entry.win)
             targets.clear()
             cameraTexture?.release(); cameraTexture = null
             if (wmTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(wmTexId), 0); wmTexId = 0 }
             hasWatermark = false
-            cachedQuad = null
-            cachedBandFraction = -1f
+            cachedQuadEnc = null
+            cachedBandFractionEnc = -1f
+            cachedQuadPreview = null
+            cachedBandFractionPreview = -1f
             if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
                 EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                 if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, pbuffer)
