@@ -72,4 +72,25 @@ class AskCoreTest {
         assertEquals(emptyList<AskCommand>(), c.onPttDown(false))
         assertEquals(AskState.Listening, c.state)
     }
+
+    // Serialization invariant AskManager relies on: once the first event moves
+    // out of Listening -> Thinking, the second (near-simultaneous) event no-ops
+    // and does NOT emit a second SendClip. On AskManager's single-thread
+    // dispatcher, onPttUp/onCapReached run atomically, so exactly one wins.
+
+    @Test fun cap_after_pttUp_does_not_second_send() {
+        val c = core().apply { onPttDown(false); onPttUp() } // now Thinking
+        val cmds = c.onCapReached()
+        assertEquals(emptyList<AskCommand>(), cmds)
+        assertTrue(!cmds.contains(AskCommand.SendClip))
+        assertEquals(AskState.Thinking, c.state)
+    }
+
+    @Test fun pttUp_after_cap_does_not_second_send() {
+        val c = core().apply { onPttDown(false); onCapReached() } // now Thinking
+        val cmds = c.onPttUp()
+        assertEquals(emptyList<AskCommand>(), cmds)
+        assertTrue(!cmds.contains(AskCommand.SendClip))
+        assertEquals(AskState.Thinking, c.state)
+    }
 }

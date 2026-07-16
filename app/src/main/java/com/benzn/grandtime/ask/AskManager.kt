@@ -41,13 +41,24 @@ class AskManager(
 
     val handledActions: Set<KeyAction> = setOf(KeyAction.ASK_AGENT)
 
-    fun onPttDown() = run { core.onPttDown(videoRecording) }
-    fun onPttUp() = run { core.onPttUp() }
+    fun onPttDown() = dispatch { core.onPttDown(videoRecording) }
+    fun onPttUp() = dispatch { core.onPttUp() }
     /** Keymap-routed discrete tap (Task 13). */
-    fun onDiscreteAsk() = run { core.onDiscreteAsk(videoRecording) }
+    fun onDiscreteAsk() = dispatch { core.onDiscreteAsk(videoRecording) }
 
-    private fun run(commands: List<AskCommand>) {
-        scope.launch { execute(commands) }
+    /**
+     * Serialize the AskCore mutation AND its command execution on [scope]'s
+     * single dispatcher — [decide] (which reads [videoRecording] and mutates
+     * [core].state) runs INSIDE the launch, not on the caller's thread. Mirrors
+     * [com.benzn.grandtime.capture.CaptureManager.handle]. The cap-timer fire in
+     * [armCap] mutates core from the same dispatcher, so a PTT event and the
+     * cap fire can never both observe Listening and double-send (SendClip).
+     * REQUIRES [scope] be confined to one thread (CoreService passes
+     * lifecycleScope = Dispatchers.Main.immediate); AskCore.onXxx() are
+     * non-suspending, so on a single-thread dispatcher they run atomically.
+     */
+    private fun dispatch(decide: () -> List<AskCommand>) {
+        scope.launch { execute(decide()) }
     }
 
     private suspend fun execute(commands: List<AskCommand>) {
@@ -56,7 +67,7 @@ class AskManager(
             AskCommand.PlayThinkingCue -> sounds.thinking()
             AskCommand.PlayBusyCue -> { probe("ask: busy (video active)"); sounds.error() }
             AskCommand.PlayErrorCue -> { probe("ask: error"); sounds.error() }
-            AskCommand.StartRecording -> if (!recorder.start()) fail()
+            AskCommand.StartRecording -> if (!recorder.start()) { fail(); return }  // short-circuit: skip stray ArmCapTimer
             AskCommand.StopRecording -> { /* clip read in SendClip */ }
             AskCommand.ArmCapTimer -> armCap()
             AskCommand.CancelCapTimer -> { capTimer?.cancel(); capTimer = null }
