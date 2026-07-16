@@ -24,6 +24,7 @@ android {
     productFlavors {
         create("prod") {
             dimension = "env"
+            isDefault = true // default-selected variant; keeps assembleRelease/Android Studio from picking dev
             // Production org gateway — the customer lake. Shipping/release build.
             buildConfigField("String", "ORG_API_BASE_URL", "\"https://ys94qy2tk0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
         }

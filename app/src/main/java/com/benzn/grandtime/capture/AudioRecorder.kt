@@ -45,8 +45,10 @@ class AudioRecorder(private val context: Context) {
                         }
                     }
                 }
-            } catch (e: IOException) {
-                // Storage full / removed mid-write: fail closed instead of silently truncating.
+            } catch (e: Throwable) {
+                // Storage full / removed mid-write / OEM read() throwing an unchecked error:
+                // fail closed instead of silently truncating. Superset of IOException by design —
+                // scoped to this worker loop only, not a blanket catch-all elsewhere.
                 captureFailed = true
                 running = false
             }

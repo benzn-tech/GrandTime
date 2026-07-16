@@ -462,7 +462,7 @@ class CaptureManager(
         dao.insert(
             CaptureRecord(
                 id = recordId, kind = "audio", filePath = file.absolutePath, fileName = file.name,
-                startedAt = startedAt, codec = "aac", sessionId = cmd.sessionId, createdAt = startedAt,
+                startedAt = startedAt, codec = "wav", sessionId = cmd.sessionId, createdAt = startedAt,
                 siteId = AppState.selectedSite.value?.id,
             )
         )
