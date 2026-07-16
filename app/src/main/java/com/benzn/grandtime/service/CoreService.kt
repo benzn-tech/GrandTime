@@ -37,6 +37,7 @@ import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import com.benzn.grandtime.util.ProbeLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
@@ -97,6 +98,13 @@ class CoreService : LifecycleService() {
         // MainActivity.onResume 会重踢 startForegroundService 触发这里——
         // show() 内部对"已显示"或"SAW 未授权"均 no-op,重复调用无害。
         overlayGuard.show()
+        // Re-apply the screen-off timeout on every start command. onResume re-kicks
+        // startForegroundService, so this fires when the user returns from granting WRITE_SETTINGS
+        // (the startPipeline collector already fired-and-suppressed while it was still ungranted).
+        lifecycleScope.launch {
+            val minutes = SettingsStore(applicationContext.settingsDataStore).settings.first().screenOffMinutes
+            ScreenTimeoutController.apply(applicationContext, minutes)
+        }
         if (!pipelineStarted) {
             pipelineStarted = true
             startPipeline()
@@ -183,7 +191,7 @@ class CoreService : LifecycleService() {
             SettingsStore(applicationContext.settingsDataStore).settings
                 .map { it.screenOffMinutes }
                 .distinctUntilChanged()
-                .collect { ScreenTimeoutController.apply(applicationContext, it) }
+                .collect { if (!ScreenTimeoutController.apply(applicationContext, it)) probe("screen-off timeout not applied (WRITE_SETTINGS not granted)") }
         }
         // Keep the CPU awake only while a capture is active, so recording survives the screen sleeping.
         lifecycleScope.launch {
