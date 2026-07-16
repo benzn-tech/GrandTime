@@ -44,7 +44,14 @@ class RealHttp : HttpFns {
     }
 
     companion object {
+        // OkHttp's per-operation read/write timeouts default to 10s. The SP-Ask voice
+        // endpoint does STT + RAG + realtime TTS server-side before responding (well over
+        // 10s), so a 10s read timeout severed the call with a spurious network error; raise
+        // read/write above APIGW's 29s ceiling. Also protects large S3 uploads (write).
         private val OK_HTTP = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(35, TimeUnit.SECONDS)
+            .writeTimeout(35, TimeUnit.SECONDS)
             .callTimeout(60, TimeUnit.SECONDS)
             .build()
     }
