@@ -13,6 +13,8 @@ import com.benzn.grandtime.ui.MainActivity
 import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.R
+import com.benzn.grandtime.ask.AskManager
+import com.benzn.grandtime.ask.PttDirection
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureManager
 import com.benzn.grandtime.core.AppState
@@ -56,6 +58,8 @@ class CoreService : LifecycleService() {
     private var bootLaunchDone = false
     private var f2spSource: F2spKeyEventSource? = null
     private var captureManager: CaptureManager? = null
+    private var askManager: AskManager? = null
+    private var pttSource: com.benzn.grandtime.ask.PttKeySource? = null
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
     private val led = com.benzn.grandtime.hardware.LedController()
@@ -201,6 +205,26 @@ class CoreService : LifecycleService() {
             uploadEnqueuer = WorkManagerUploadEnqueuer(applicationContext),
         )
 
+        val ask = AskManager(
+            context = this,
+            scope = lifecycleScope,
+            auth = auth,
+            apiBaseUrl = BuildConfig.ORG_API_BASE_URL,
+            probe = ::probe,
+        )
+        askManager = ask
+        val ptt = com.benzn.grandtime.ask.PttKeySource(this)
+        pttSource = ptt
+        lifecycleScope.launch {
+            ptt.events.collect { dir ->
+                probe("ptt ${dir.name}")
+                when (dir) {
+                    PttDirection.DOWN -> ask.onPttDown()
+                    PttDirection.UP -> ask.onPttUp()
+                }
+            }
+        }
+
         val dispatcher = KeyActionDispatcher({ AppState.overrides.value }, ::handleAction)
         lifecycleScope.launch {
             merge(f2sp.keyPresses, onScreen.keyPresses).collect { press ->
@@ -214,6 +238,7 @@ class CoreService : LifecycleService() {
 
         // 所有收集协程已挂上订阅,现在才 start() 广播接收器,避免早期事件被 replay=0 丢弃。
         f2sp.start()
+        ptt.start()
 
         AppState.serviceRunning.value = true
         probe("service started")
@@ -224,11 +249,10 @@ class CoreService : LifecycleService() {
         val manager = captureManager
         if (manager != null && action in manager.handledActions) {
             manager.handle(action)
+        } else if (action == KeyAction.ASK_AGENT) {
+            askManager?.onDiscreteAsk()
         } else {
-            val text = when (action) {
-                KeyAction.ASK_AGENT -> "Ask agent coming soon"
-                else -> "[stub] ${actionLabel(action)}"
-            }
+            val text = "[stub] ${actionLabel(action)}"
             AppState.lastAction.value = text
             notifyStatus(text)
         }
@@ -263,6 +287,8 @@ class CoreService : LifecycleService() {
         AppState.serviceRunning.value = false
         captureManager?.shutdown()
         f2spSource?.stop()
+        pttSource?.stop()
+        askManager?.shutdown()
         overlayGuard.hide()
         super.onDestroy()
     }
