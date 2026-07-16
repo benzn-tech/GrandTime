@@ -17,7 +17,7 @@ class MediaStorage(
 ) {
     enum class Kind(val dir: String, val prefix: String, val ext: String) {
         VIDEO("video", "VID", "mp4"),
-        AUDIO("audio", "AUD", "m4a"),
+        AUDIO("audio", "AUD", "wav"),
         PHOTO("photo", "IMG", "jpg"),
     }
 

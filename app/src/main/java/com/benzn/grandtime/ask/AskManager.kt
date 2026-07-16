@@ -93,7 +93,7 @@ class AskManager(
         val token = auth.freshIdToken()
         if (token == null) { fail(); return }
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        val result = withContext(Dispatchers.IO) { api.ask(token, b64, "m4a") }
+        val result = withContext(Dispatchers.IO) { api.ask(token, b64, "wav") }
         when (result) {
             is AskApiClient.AskResult.Ok -> execute(core.onAnswer(result.audioBase64))
             else -> { probe("ask: send failed ($result)"); fail() }
