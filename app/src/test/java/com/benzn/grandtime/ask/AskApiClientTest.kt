@@ -33,12 +33,12 @@ class AskApiClientTest {
 
     @Test fun builds_request_to_ask_voice_with_mode_voice() {
         val http = FakeHttp(HttpResult(200, okBody()))
-        AskApiClient("https://h/prod/api", http).ask("ID", "QUJD", "m4a")
+        AskApiClient("https://h/prod/api", http).ask("ID", "QUJD", "wav")
         assertEquals("https://h/prod/api/ask/voice", http.lastUrl)
         assertEquals("ID", http.lastToken)
         val body = JSONObject(http.lastBody!!)
         assertEquals("QUJD", body.getString("audio"))
-        assertEquals("m4a", body.getString("format"))
+        assertEquals("wav", body.getString("format"))
         assertEquals("voice", body.getString("mode"))
     }
 

@@ -17,7 +17,7 @@ class MediaStorage(
 ) {
     enum class Kind(val dir: String, val prefix: String, val ext: String) {
         VIDEO("video", "VID", "mp4"),
-        AUDIO("audio", "AUD", "m4a"),
+        AUDIO("audio", "AUD", "wav"),
         PHOTO("photo", "IMG", "jpg"),
     }
 
@@ -25,7 +25,9 @@ class MediaStorage(
         mediaSubdir(rootProvider(), scopeProvider().folder, kind.dir).apply { mkdirs() }
 
     fun newFile(kind: Kind, startMillis: Long = clock()): File {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(startMillis))
+        // Dashed so the pipeline BUG-01 regex \d{4}-\d{2}-\d{2}_(\d{2})-(\d{2})-(\d{2}) parses the
+        // time out of the filename (G4); device-local timezone stays — already NZ.
+        val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date(startMillis))
         val dir = mediaDir(kind)
         val prefix = scopeProvider().namePrefix ?: kind.prefix
         var candidate = File(dir, "${prefix}_$stamp.${kind.ext}")

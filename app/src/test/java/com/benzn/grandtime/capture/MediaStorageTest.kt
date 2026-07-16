@@ -24,7 +24,7 @@ class MediaStorageTest {
         val root = tmp.newFolder("root")
         val storage = MediaStorage({ root })
         val f = storage.newFile(MediaStorage.Kind.VIDEO, millis(2026, 7, 11, 16, 2, 46))
-        assertEquals("VID_20260711_160246.mp4", f.name)
+        assertEquals("VID_2026-07-11_16-02-46.mp4", f.name)
         assertEquals(File(File(File(root, "FieldSight"), "device"), "video"), f.parentFile)
     }
 
@@ -35,7 +35,15 @@ class MediaStorageTest {
         val t = millis(2026, 7, 11, 8, 0, 0)
         val first = storage.newFile(MediaStorage.Kind.PHOTO, t)
         first.parentFile!!.mkdirs(); first.createNewFile()
-        assertEquals("IMG_20260711_080000_1.jpg", storage.newFile(MediaStorage.Kind.PHOTO, t).name)
+        assertEquals("IMG_2026-07-11_08-00-00_1.jpg", storage.newFile(MediaStorage.Kind.PHOTO, t).name)
+    }
+
+    @Test
+    fun `newFile name matches the pipeline-parseable dashed timestamp format`() {
+        val root = tmp.newFolder("root4")
+        val storage = MediaStorage({ root })
+        val f = storage.newFile(MediaStorage.Kind.VIDEO, millis(2026, 7, 11, 16, 2, 46))
+        assertTrue(f.name, Regex("""^.+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\w+$""").matches(f.name))
     }
 
     @Test

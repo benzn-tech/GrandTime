@@ -31,7 +31,7 @@ class AskApiClient(
         data class Error(val message: String) : AskResult
     }
 
-    fun ask(idToken: String, audioBase64: String, format: String = "m4a"): AskResult {
+    fun ask(idToken: String, audioBase64: String, format: String = "wav"): AskResult {
         val body = JSONObject()
             .put("audio", audioBase64)
             .put("format", format)

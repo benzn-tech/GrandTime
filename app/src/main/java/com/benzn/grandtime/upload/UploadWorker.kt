@@ -128,5 +128,10 @@ internal fun contentTypeFor(record: CaptureRecord): String = when (record.kind) 
     else -> "application/octet-stream"
 }
 
-/** UTC 'Z' instant, e.g. "2026-07-13T02:34:56.789Z" — minSdk 33 so java.time is fine. */
-internal fun iso8601(epochMillis: Long): String = Instant.ofEpochMilli(epochMillis).toString()
+// NZ-local ISO so the server derives the date folder (startedAt[:10]) in NZ, not UTC — a UTC
+// evening is already the next NZ day; a UTC-based folder was off by one (G3).
+internal fun iso8601(epochMillis: Long): String =
+    java.time.OffsetDateTime.ofInstant(
+        Instant.ofEpochMilli(epochMillis),
+        java.time.ZoneId.of("Pacific/Auckland"),
+    ).toString()
