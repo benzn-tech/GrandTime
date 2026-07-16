@@ -18,7 +18,21 @@ android {
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
-        buildConfigField("String", "ORG_API_BASE_URL", "\"https://wdsgobb7b0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
+    }
+
+    flavorDimensions += "env"
+    productFlavors {
+        create("prod") {
+            dimension = "env"
+            // Production org gateway — the customer lake. Shipping/release build.
+            buildConfigField("String", "ORG_API_BASE_URL", "\"https://ys94qy2tk0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
+        }
+        create("dev") {
+            dimension = "env"
+            applicationIdSuffix = ".dev"   // dev installs side-by-side, never overwrites the prod app
+            // Test gateway (fieldsight-test) — safe testing + SP-Ask voice endpoint.
+            buildConfigField("String", "ORG_API_BASE_URL", "\"https://wdsgobb7b0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
+        }
     }
 
     compileOptions {
