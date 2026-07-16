@@ -2,7 +2,6 @@ package com.benzn.grandtime.ui
 
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -31,16 +30,14 @@ import kotlinx.coroutines.delay
 fun RecordingScreen(onStop: () -> Unit) {
     val context = LocalContext.current
     val capture by AppState.captureState.collectAsStateWithLifecycle()
-    val screenOff by AppState.screenOffRequest.collectAsStateWithLifecycle()
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { nowMillis = System.currentTimeMillis(); delay(1000) } }
 
-    // 预览 surface 交给 CaptureManager;熄屏请求未到时保持屏幕常亮。
+    // 预览 surface 交给 CaptureManager。
     // FIT_CENTER(非默认 FILL_CENTER):录制帧是 16:9/4:3 横向,屏幕是竖屏容器,
     // 填满竖屏会裁掉画面两端 → 看起来"比例不对"/像被放大裁切。
     // FIT_CENTER 完整显示录制帧(上下留黑边),做到"所见即所录"——
     // 参见 Goal A 结论:实际录制并未裁横向 FOV,裁的只是竖直方向,问题出在预览的裁切显示上。
-    val activity = remember(context) { context as? android.app.Activity }
     val surfaceView = remember {
         SurfaceView(context).apply {
             holder.addCallback(object : SurfaceHolder.Callback {
@@ -53,15 +50,7 @@ fun RecordingScreen(onStop: () -> Unit) {
     DisposableEffect(Unit) {
         onDispose {
             AppState.previewSurface.value = null
-            // 安全网:离开录像屏时兜底清掉常亮标志,防止 LaunchedEffect(screenOff) 的
-            // 常规路径因某种原因未执行(如页面被直接销毁)而漏清,导致标志泄漏到其他页面。
-            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
-    }
-    LaunchedEffect(screenOff) {
-        val w = activity?.window ?: return@LaunchedEffect
-        if (screenOff) w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        else w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     val settingsStore = remember { SettingsStore(context.settingsDataStore) }

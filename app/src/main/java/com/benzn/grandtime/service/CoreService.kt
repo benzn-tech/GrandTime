@@ -64,6 +64,7 @@ class CoreService : LifecycleService() {
     private var pttSource: com.benzn.grandtime.ask.PttKeySource? = null
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
+    private lateinit var captureWakeLock: CaptureWakeLock
     private val led = com.benzn.grandtime.hardware.LedController()
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
@@ -75,6 +76,7 @@ class CoreService : LifecycleService() {
         probeLog = ProbeLog(File(filesDir, "probe"))
         // 息屏/后台相机访问需要 overlay 窗口维持进程可见态,见 OverlayGuard 注释
         overlayGuard = OverlayGuard(this)
+        captureWakeLock = CaptureWakeLock(this)
         overlayGuard.show()
         // 开机自启路径:BOOT_COMPLETED 拉起的 FGS 在 Android 12+ 拿不到相机/麦克风
         // while-in-use 权限(allowWhileInUsePermissionInFgs=false,UID capability 缺 C/M,
@@ -182,6 +184,14 @@ class CoreService : LifecycleService() {
                 .map { it.screenOffMinutes }
                 .distinctUntilChanged()
                 .collect { ScreenTimeoutController.apply(applicationContext, it) }
+        }
+        // Keep the CPU awake only while a capture is active, so recording survives the screen sleeping.
+        lifecycleScope.launch {
+            AppState.captureState.collect { state ->
+                val recording = state is com.benzn.grandtime.capture.CaptureState.RecordingVideo ||
+                    state is com.benzn.grandtime.capture.CaptureState.RecordingAudio
+                if (recording) captureWakeLock.acquire() else captureWakeLock.release()
+            }
         }
         // SP3b 物理灯(2 号灯,sysfs)1Hz 闪:录像红 > 录音黄 > 待机蓝。节点不可写则不启。
         if (led.available) {
@@ -301,6 +311,7 @@ class CoreService : LifecycleService() {
         pttSource?.stop()
         askManager?.shutdown()
         overlayGuard.hide()
+        captureWakeLock.release()
         super.onDestroy()
     }
 }
