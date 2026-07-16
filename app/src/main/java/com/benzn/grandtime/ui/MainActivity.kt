@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
             startCore()
             maybeRequestOverlay()
             maybeRequestAllFiles()
+            maybeRequestWriteSettings()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,6 +85,7 @@ class MainActivity : ComponentActivity() {
             startCore()
             maybeRequestOverlay()
             maybeRequestAllFiles()
+            maybeRequestWriteSettings()
         } else {
             permissionLauncher.launch(required.toTypedArray())
         }
@@ -119,6 +121,19 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Allow \"All files access\" so recordings save to a browsable folder", Toast.LENGTH_LONG).show()
             startActivity(
                 Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
+            )
+        }
+    }
+
+    private fun maybeRequestWriteSettings() {
+        if (!Settings.System.canWrite(this)) {
+            Toast.makeText(
+                this,
+                "Allow \"Modify system settings\" so the screen can auto-sleep at your chosen time",
+                Toast.LENGTH_LONG,
+            ).show()
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName"))
             )
         }
     }

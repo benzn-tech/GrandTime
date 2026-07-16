@@ -36,6 +36,8 @@ import com.benzn.grandtime.ui.actionLabel
 import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import com.benzn.grandtime.util.ProbeLog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -171,6 +173,15 @@ class CoreService : LifecycleService() {
         }
         lifecycleScope.launch {
             SiteStore(applicationContext.siteDataStore).site.collect { AppState.selectedSite.value = it }
+        }
+        // Drive the system screen-off timeout from the app setting so the display sleeps at the
+        // chosen minutes (recording and idle). No-op until WRITE_SETTINGS is granted; re-applied on
+        // every change and on start (the setting is global and may have drifted).
+        lifecycleScope.launch {
+            SettingsStore(applicationContext.settingsDataStore).settings
+                .map { it.screenOffMinutes }
+                .distinctUntilChanged()
+                .collect { ScreenTimeoutController.apply(applicationContext, it) }
         }
         // SP3b 物理灯(2 号灯,sysfs)1Hz 闪:录像红 > 录音黄 > 待机蓝。节点不可写则不启。
         if (led.available) {
