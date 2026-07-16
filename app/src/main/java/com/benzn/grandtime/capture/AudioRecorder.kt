@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import java.io.File
+import java.io.IOException
 import kotlin.concurrent.thread
 
 /** Standalone recorder: WAV 16 kHz mono 16-bit PCM (the pipeline ingests .wav). Public
@@ -12,6 +13,7 @@ import kotlin.concurrent.thread
 class AudioRecorder(private val context: Context) {
     private var record: AudioRecord? = null
     @Volatile private var running = false
+    @Volatile private var captureFailed = false
     private var worker: Thread? = null
     private var pcmTmp: File? = null
     private var target: File? = null
@@ -24,17 +26,29 @@ class AudioRecorder(private val context: Context) {
         val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val buf = maxOf(minBuf, sr * 2) // >= 1s
         val rec = AudioRecord(MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, buf)
+        // Assign before the init check so a failed AudioRecord is still released by cleanup().
+        record = rec
         check(rec.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord not initialized" }
         val tmp = File(file.parentFile, file.nameWithoutExtension + ".pcm")
-        record = rec; target = file; pcmTmp = tmp; running = true
+        target = file; pcmTmp = tmp; running = true; captureFailed = false
         rec.startRecording()
         worker = thread(name = "audio-pcm") {
-            tmp.outputStream().buffered().use { out ->
-                val b = ByteArray(buf)
-                while (running) {
-                    val n = rec.read(b, 0, b.size)
-                    if (n > 0) out.write(b, 0, n)
+            try {
+                tmp.outputStream().buffered().use { out ->
+                    val b = ByteArray(buf)
+                    while (running) {
+                        val n = rec.read(b, 0, b.size)
+                        when {
+                            n > 0 -> out.write(b, 0, n) // data
+                            n == 0 -> Unit // no data yet, keep polling
+                            else -> { captureFailed = true; running = false } // negative = AudioRecord error code
+                        }
+                    }
                 }
+            } catch (e: IOException) {
+                // Storage full / removed mid-write: fail closed instead of silently truncating.
+                captureFailed = true
+                running = false
             }
         }
         true
@@ -42,24 +56,20 @@ class AudioRecorder(private val context: Context) {
         cleanup(); false
     }
 
-    /** Stops capture and writes the WAV (header + PCM) to the target file. */
+    /** Stops capture and writes the WAV (header + PCM) to the target file.
+     *  Returns false (and deletes the temp PCM) if the capture failed mid-recording. */
     fun stop(): Boolean = try {
         running = false
         worker?.join(2000)
         record?.apply { stop(); release() }
         record = null
         val tmp = pcmTmp; val out = target
-        var ok = false
-        if (tmp != null && out != null && tmp.exists()) {
-            val pcmLen = tmp.length().toInt()
-            out.outputStream().buffered().use { o ->
-                o.write(WavHeader.riffWav(pcmLen))
-                tmp.inputStream().buffered().use { it.copyTo(o) }
-            }
-            ok = out.length() > 44
+        val ok = if (tmp != null && out != null) {
+            AudioAssembly.finish(tmp, out, captureFailed)
+        } else {
+            false
         }
-        tmp?.delete()
-        pcmTmp = null; target = null
+        pcmTmp = null; target = null; captureFailed = false
         ok
     } catch (e: Exception) {
         cleanup(); false
@@ -72,6 +82,26 @@ class AudioRecorder(private val context: Context) {
         runCatching { record?.release() }
         record = null
         runCatching { pcmTmp?.delete() }
-        pcmTmp = null; target = null
+        pcmTmp = null; target = null; captureFailed = false
+    }
+}
+
+/** Pure file-assembly decision, factored out of [AudioRecorder] so it is JVM-testable
+ *  without a real AudioRecord: given the temp PCM file and whether capture failed,
+ *  either build the target WAV (happy path) or fail closed and delete the temp. */
+internal object AudioAssembly {
+    fun finish(tmp: File, target: File, captureFailed: Boolean): Boolean {
+        val ok = if (!captureFailed && tmp.exists()) {
+            val pcmLen = tmp.length().toInt()
+            target.outputStream().buffered().use { o ->
+                o.write(WavHeader.riffWav(pcmLen))
+                tmp.inputStream().buffered().use { it.copyTo(o) }
+            }
+            target.length() > 44
+        } else {
+            false
+        }
+        tmp.delete()
+        return ok
     }
 }
