@@ -12,9 +12,11 @@ fun classifyOrphanPcm(siblingWavExists: Boolean, pcmLength: Long): PcmAction =
 
 /** Crash recovery for [AudioRecorder]: if the process is killed mid-recording, the streaming
  *  .pcm temp survives on disk but AudioRecorder.stop() never ran, so the target .wav was never
- *  assembled and the DB row (inserted up front by CaptureManager.startAudio) points at a file
- *  that doesn't exist. Run once at startup, before the upload rescan, to turn any such orphan
- *  .pcm back into its .wav so the rescan finds it and enqueues the upload. */
+ *  assembled. Segmented recording only inserts a `capture_records` row when a segment
+ *  *finalizes* (`onAudioSegmentFinalized`), so the in-flight final segment interrupted by the
+ *  crash has no DB row at all yet — [recover] only rebuilds the .wav on disk. Run once at
+ *  startup, before the upload rescan, so the disk-reconcile step (CoreService.startPipeline)
+ *  can insert the missing row for the recovered .wav and the rescan then enqueues it. */
 object AudioRecoverer {
 
     /** Scans [root] recursively for orphan .pcm temps and assembles each recoverable one into

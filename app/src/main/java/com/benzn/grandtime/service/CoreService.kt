@@ -24,6 +24,7 @@ import com.benzn.grandtime.core.SiteStore
 import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.core.siteDataStore
 import com.benzn.grandtime.db.CaptureDb
+import com.benzn.grandtime.db.FilesReconciler
 import com.benzn.grandtime.hardware.F2spKeyEventSource
 import com.benzn.grandtime.hardware.KeyPress
 import com.benzn.grandtime.hardware.OnScreenKeyEventSource
@@ -33,6 +34,8 @@ import com.benzn.grandtime.keymap.KeyMapStore
 import com.benzn.grandtime.keymap.keymapDataStore
 import com.benzn.grandtime.net.SitesApiClient
 import com.benzn.grandtime.ui.actionLabel
+import com.benzn.grandtime.ui.readDurationMillis
+import com.benzn.grandtime.ui.scanDisk
 import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import com.benzn.grandtime.upload.uploadRequiresUnmetered
 import com.benzn.grandtime.util.ProbeLog
@@ -177,6 +180,28 @@ class CoreService : LifecycleService() {
                 }
                 if (recovered > 0) probe("recovered $recovered interrupted audio recording(s)")
                 val dao = CaptureDb.get(applicationContext).captureRecords()
+                // Segmented recording only inserts a capture_records row when a segment
+                // *finalizes* — a crash mid-final-segment leaves the recovered .wav above
+                // on disk with NO row, so the listByUploadStatus rescan below (which only
+                // walks existing rows) would never see it. Reuse the same disk-reconcile
+                // FilesScreen runs (scanDisk + FilesReconciler: disk file, no row → insert
+                // pending row) here at startup so it runs before the rescan and the new
+                // row gets picked up by it. Must stay in this same coroutine, after recover()
+                // and before the rescan loop, so ordering is sequential (no race).
+                // Known limitation: the reconciled row has no siteId (the never-finalized
+                // segment's site was never persisted) — the recording's other segments do
+                // carry siteId, so backend can associate this one by session/time. Rare
+                // crash edge; not solving siteId persistence here.
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        FilesReconciler(dao, durationReader = ::readDurationMillis)
+                            .reconcile(scanDisk(applicationContext))
+                    }
+                }.onSuccess {
+                    probe("reconciled disk media (crash-recovered segments included)")
+                }.onFailure {
+                    Log.w(TAG, "startup disk reconcile failed", it)
+                }
                 val enq = WorkManagerUploadEnqueuer(applicationContext)
                 // Read once — the rescan is a single pass, no need to react to a mid-scan setting change.
                 val wifiOnly = SettingsStore(applicationContext.settingsDataStore).settings.first().videoUploadWifiOnly
