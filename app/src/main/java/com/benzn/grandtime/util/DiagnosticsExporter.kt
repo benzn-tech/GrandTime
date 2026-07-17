@@ -13,8 +13,9 @@ object DiagnosticsExporter {
 
     private const val TAIL_LINES = 500
 
-    /** Builds the diagnostics text (header + recent probe-log tail), writes it to
-     *  <publicRoot>/diagnostics/diag_<epochMillis>.txt, and returns that File (or null on failure). */
+    /** Builds the diagnostics text (header + recent probe-log tail), writes it to the same
+     *  user-visible <root>/FieldSight folder recordings live under —
+     *  FieldSight/diagnostics/diag_<epochMillis>.txt — and returns that File (or null on failure). */
     fun export(context: Context, nowMs: Long = System.currentTimeMillis()): File? {
         val appVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
@@ -25,7 +26,7 @@ object DiagnosticsExporter {
         val text = header + body
 
         return runCatching {
-            val dir = File(MediaStorage.publicRoot(context), "diagnostics").apply { mkdirs() }
+            val dir = File(MediaStorage.fieldSightRoot(context), "diagnostics").apply { mkdirs() }
             val file = File(dir, "diag_$nowMs.txt")
             file.writeText(text)
             file

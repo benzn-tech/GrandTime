@@ -110,14 +110,17 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
                 scope.launch {
                     val file = withContext(Dispatchers.IO) { DiagnosticsExporter.export(context) }
                     if (file != null) {
-                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                        val send = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_STREAM, uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        runCatching {
+                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Send diagnostics"))
                         }
-                        runCatching { context.startActivity(Intent.createChooser(send, "Send diagnostics")) }
-                        Toast.makeText(context, "Saved to FieldSight/diagnostics", Toast.LENGTH_SHORT).show()
+                        val location = "${file.parentFile?.name}/${file.name}"
+                        Toast.makeText(context, "Saved to $location", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "Could not export diagnostics", Toast.LENGTH_SHORT).show()
                     }

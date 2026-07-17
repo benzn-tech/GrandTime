@@ -55,5 +55,9 @@ class MediaStorage(
         /** 集中 <root>/FieldSight/<folder>/<kindDir> 拼路径的唯一出处(登出=device,登录=<user>_<sub>)。 */
         fun mediaSubdir(root: File, folder: String, kindDir: String): File =
             File(File(File(root, "FieldSight"), folder), kindDir)
+
+        /** The user-visible <root>/FieldSight folder recordings live under (mediaSubdir's base,
+         *  before the <folder> segment) — non-recording exports (e.g. diagnostics) belong here too. */
+        fun fieldSightRoot(context: Context): File = File(publicRoot(context), "FieldSight")
     }
 }
