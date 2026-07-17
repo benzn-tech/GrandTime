@@ -321,6 +321,7 @@ class CoreService : LifecycleService() {
         probe("${press.key.name} ${press.pressType.name} → ${action.name}")
         val manager = captureManager
         if (manager != null && action in manager.handledActions) {
+            bringAppToForeground()
             manager.handle(action)
         } else if (action == KeyAction.ASK_AGENT) {
             askManager?.onDiscreteAsk()
@@ -328,6 +329,20 @@ class CoreService : LifecycleService() {
             val text = "[stub] ${actionLabel(action)}"
             AppState.lastAction.value = text
             notifyStatus(text)
+        }
+    }
+
+    /** Bring the app UI to the foreground on a physical-key capture action, so the operator sees
+     *  the app even if it wasn't on screen. Uses the SYSTEM_ALERT_WINDOW background-activity-start
+     *  exemption (same as the boot launch); a no-op when the overlay permission isn't granted
+     *  (can't start an activity from the background without it) or when the app is already foreground. */
+    private fun bringAppToForeground() {
+        if (Settings.canDrawOverlays(this)) {
+            runCatching {
+                startActivity(
+                    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
         }
     }
 
