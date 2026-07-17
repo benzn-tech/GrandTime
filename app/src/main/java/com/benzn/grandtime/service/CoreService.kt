@@ -34,6 +34,7 @@ import com.benzn.grandtime.keymap.keymapDataStore
 import com.benzn.grandtime.net.SitesApiClient
 import com.benzn.grandtime.ui.actionLabel
 import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
+import com.benzn.grandtime.upload.uploadRequiresUnmetered
 import com.benzn.grandtime.util.ProbeLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -167,6 +168,8 @@ class CoreService : LifecycleService() {
                 // 仅补扫带 20s 初始延迟,避免占满网络挤掉前台;实时上传仍 delay=0 不受影响。
                 val dao = CaptureDb.get(applicationContext).captureRecords()
                 val enq = WorkManagerUploadEnqueuer(applicationContext)
+                // Read once — the rescan is a single pass, no need to react to a mid-scan setting change.
+                val wifiOnly = SettingsStore(applicationContext.settingsDataStore).settings.first().videoUploadWifiOnly
                 val onDisk = mutableListOf<com.benzn.grandtime.db.CaptureRecord>()
                 for (rec in dao.listByUploadStatus(listOf("pending", "failed", "uploading"))) {
                     if (java.io.File(rec.filePath).exists()) onDisk.add(rec)
@@ -175,7 +178,13 @@ class CoreService : LifecycleService() {
                 // **封顶补扫**:只补最近 10 条磁盘存在的,避免大 backlog 灌爆 WorkManager/网络栈、
                 // 拖垮实时上传;更旧的留给用户在 Files 里手动点角标补传。实时上传仍 delay=0。
                 onDisk.sortedByDescending { it.startedAt }.take(10)
-                    .forEach { enq.enqueue(it.id, initialDelaySeconds = 20) }
+                    .forEach {
+                        enq.enqueue(
+                            it.id,
+                            initialDelaySeconds = 20,
+                            requireUnmetered = uploadRequiresUnmetered(it.kind, wifiOnly),
+                        )
+                    }
             }
         }
         lifecycleScope.launch {

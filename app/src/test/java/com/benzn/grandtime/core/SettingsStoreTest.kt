@@ -134,4 +134,17 @@ class SettingsStoreTest {
         store.setWatermarkEnabled(false)
         assertEquals(false, store.settings.first().watermarkEnabled)
     }
+
+    @Test
+    fun `video upload wifi only defaults to enabled`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        assertEquals(true, store.settings.first().videoUploadWifiOnly)
+    }
+
+    @Test
+    fun `video upload wifi only toggle roundtrips`() = runTest(UnconfinedTestDispatcher()) {
+        val (store, _) = newStore()
+        store.setVideoUploadWifiOnly(false)
+        assertEquals(false, store.settings.first().videoUploadWifiOnly)
+    }
 }
