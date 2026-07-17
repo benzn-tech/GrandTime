@@ -3,12 +3,16 @@ package com.benzn.grandtime.ui
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Environment
+import android.os.StatFs
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,8 +52,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.capture.CaptureState
+import com.benzn.grandtime.capture.MediaStorage
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.LoginState
+import com.benzn.grandtime.core.ResourceStatus
+import com.benzn.grandtime.core.WarnLevel
+import com.benzn.grandtime.core.assessResources
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
@@ -79,16 +87,30 @@ fun HomeScreen() {
     }
 
     var setupComplete by remember { mutableStateOf(isSetupComplete(context)) }
+    var resourceStatus by remember { mutableStateOf(readResourceStatus(context)) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) setupComplete = isSetupComplete(context)
+            if (event == Lifecycle.Event.ON_RESUME) {
+                setupComplete = isSetupComplete(context)
+                resourceStatus = readResourceStatus(context)
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15_000)
+            resourceStatus = readResourceStatus(context)
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (resourceStatus.hasWarning) {
+            ResourceWarningBanner(resourceStatus)
+            Spacer(Modifier.height(12.dp))
+        }
         FsCard {
             FsCardTitle("Device")
             val (dotColor, statusText) = when (val s = capture) {
@@ -222,6 +244,67 @@ fun HomeScreen() {
             }
         }
     }
+}
+
+/** Prominent top-of-screen banner shown only while [status] has an active storage or battery warning. */
+@Composable
+private fun ResourceWarningBanner(status: ResourceStatus) {
+    val fs = LocalFsColors.current
+    val worst = if (status.storage == WarnLevel.CRITICAL || status.battery == WarnLevel.CRITICAL) {
+        WarnLevel.CRITICAL
+    } else {
+        WarnLevel.WARNING
+    }
+    val tint = if (worst == WarnLevel.CRITICAL) MaterialTheme.colorScheme.error else fs.warningText
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(tint.copy(alpha = 0.10f))
+            .border(1.dp, tint, MaterialTheme.shapes.medium)
+            .padding(16.dp),
+    ) {
+        if (status.storage != WarnLevel.NONE) {
+            val freeGb = "%.1f".format(status.freeBytes / (1024.0 * 1024 * 1024)) // GiB, matching the binary thresholds
+            Text(
+                if (status.storage == WarnLevel.CRITICAL) {
+                    "Storage critical — $freeGb GB left, recording may stop"
+                } else {
+                    "Low storage — $freeGb GB left"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = tint,
+            )
+        }
+        if (status.battery != WarnLevel.NONE) {
+            if (status.storage != WarnLevel.NONE) Spacer(Modifier.height(4.dp))
+            Text(
+                if (status.battery == WarnLevel.CRITICAL) {
+                    "Battery critical — ${status.batteryPct}%"
+                } else {
+                    "Low battery — ${status.batteryPct}%"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = tint,
+            )
+        }
+    }
+}
+
+/** Live storage (StatFs) + battery (sticky intent) read. Storage read failure never false-alarms. */
+private fun readResourceStatus(context: Context): ResourceStatus {
+    val freeBytes = runCatching {
+        StatFs(MediaStorage.publicRoot(context).path).availableBytes
+    }.getOrDefault(Long.MAX_VALUE)
+    val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    val level = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+    val scale = batteryIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+    val pct = if (level >= 0 && scale > 0) (level * 100) / scale else 100
+    val status = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+    val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+    return assessResources(freeBytes, pct, charging)
 }
 
 private fun mmss(elapsedMillis: Long): String {
