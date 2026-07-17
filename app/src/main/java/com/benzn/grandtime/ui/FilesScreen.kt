@@ -78,6 +78,7 @@ fun FilesScreen() {
     val context = LocalContext.current
     val dao = remember { CaptureDb.get(context.applicationContext).captureRecords() }
     var filter by rememberSaveable { mutableStateOf(MediaFilter.ALL) }
+    var playingAudio by remember { mutableStateOf<CaptureRecord?>(null) }
     val records by dao.observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
     val fs = LocalFsColors.current
 
@@ -148,11 +149,17 @@ fun FilesScreen() {
                         )
                     }
                     items(dayItems, key = { it.id }) { record ->
-                        MediaCell(record) { openFile(context, record) }
+                        MediaCell(record) {
+                            if (record.kind == "audio") playingAudio = record else openFile(context, record)
+                        }
                     }
                 }
             }
         }
+    }
+
+    playingAudio?.let { record ->
+        AudioPlayerSheet(record) { playingAudio = null }
     }
 }
 
