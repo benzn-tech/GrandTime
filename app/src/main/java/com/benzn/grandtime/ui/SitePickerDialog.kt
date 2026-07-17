@@ -141,7 +141,13 @@ fun SitePickerDialog(onDismiss: () -> Unit) {
                                         .fillMaxWidth()
                                         .heightIn(min = 56.dp)
                                         .clickable {
-                                            scope.launch {
+                                            // Persist on the application scope, not this dialog's
+                                            // composition scope: onDismiss() tears the dialog out of
+                                            // composition and would cancel a rememberCoroutineScope
+                                            // job mid-write, so the DataStore.edit could be cancelled
+                                            // before it commits — the selection silently didn't stick
+                                            // (button stayed "Select site", new recordings lost siteId).
+                                            (context.applicationContext as GrandTimeApp).applicationScope.launch {
                                                 SiteStore(context.siteDataStore).set(
                                                     SelectedSite(site.id, site.slug, site.name, site.address),
                                                 )
