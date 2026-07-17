@@ -24,16 +24,21 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,6 +71,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class MediaFilter(val label: String, val kind: String?) {
@@ -75,12 +81,16 @@ enum class MediaFilter(val label: String, val kind: String?) {
     PHOTO("Photo", "photo"),
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilesScreen() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val dao = remember { CaptureDb.get(context.applicationContext).captureRecords() }
     var filter by rememberSaveable { mutableStateOf(MediaFilter.ALL) }
     var playingAudio by remember { mutableStateOf<CaptureRecord?>(null) }
+    var menuRecord by remember { mutableStateOf<CaptureRecord?>(null) }
+    var deleteRecord by remember { mutableStateOf<CaptureRecord?>(null) }
     val records by dao.observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
     val fs = LocalFsColors.current
 
@@ -156,14 +166,7 @@ fun FilesScreen() {
                             onClick = {
                                 if (record.kind == "audio") playingAudio = record else openFile(context, record)
                             },
-                            onLongClick = {
-                                if (record.uploadStatus == "uploaded") {
-                                    Toast.makeText(context, "Already uploaded", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    WorkManagerUploadEnqueuer(context).enqueue(record.id)
-                                    Toast.makeText(context, "Re-uploading ${record.fileName}", Toast.LENGTH_SHORT).show()
-                                }
-                            },
+                            onLongClick = { menuRecord = record },
                         )
                     }
                 }
@@ -173,6 +176,69 @@ fun FilesScreen() {
 
     playingAudio?.let { record ->
         AudioPlayerSheet(record) { playingAudio = null }
+    }
+
+    menuRecord?.let { record ->
+        ModalBottomSheet(onDismissRequest = { menuRecord = null }) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                Text(
+                    "Re-upload",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (record.uploadStatus == "uploaded") {
+                                Toast.makeText(context, "Already uploaded", Toast.LENGTH_SHORT).show()
+                            } else {
+                                WorkManagerUploadEnqueuer(context).enqueue(record.id)
+                                Toast.makeText(context, "Re-uploading ${record.fileName}", Toast.LENGTH_SHORT).show()
+                            }
+                            menuRecord = null
+                        }
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                )
+                Text(
+                    "Delete",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            deleteRecord = record
+                            menuRecord = null
+                        }
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                )
+            }
+        }
+    }
+
+    deleteRecord?.let { record ->
+        AlertDialog(
+            onDismissRequest = { deleteRecord = null },
+            title = { Text("Delete recording") },
+            text = { Text(deleteConfirmMessage(record.uploadStatus)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val rec = record
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            runCatching { File(rec.filePath).delete() }
+                            dao.markMissing(listOf(rec.id))
+                        }
+                    }
+                    Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
+                    deleteRecord = null
+                }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteRecord = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 }
 
