@@ -16,6 +16,10 @@ object Watermark {
      * address-or-site line. The address/site line is appended whenever non-blank, independent of
      * fix availability (indoor anchor) — indoors with no GPS fix it is the only location evidence;
      * outdoors it complements the coordinates.
+     *
+     * fixAgeLabel: when non-null, the coords are a stale fallback fix (indoor GPS fallback) and
+     * the label ("~Nm ago") is appended in parentheses so a stale fix is never mistaken for a
+     * current one — evidence integrity for the watermark.
      */
     fun build(
         userName: String?,
@@ -25,12 +29,14 @@ object Watermark {
         address: String?,
         zone: ZoneId,
         noFixText: String = "Locating…",
+        fixAgeLabel: String? = null,
     ): WatermarkContent {
         val lines = ArrayList<String>(4)
         if (!userName.isNullOrBlank()) lines += userName
         lines += TIME_FMT.format(Instant.ofEpochMilli(epochMillis).atZone(zone))
         if (lat != null && lon != null) {
-            lines += "%.4f, %.4f".format(Locale.US, lat, lon)
+            val coords = "%.4f, %.4f".format(Locale.US, lat, lon)
+            lines += if (fixAgeLabel != null) "$coords ($fixAgeLabel)" else coords
         } else {
             lines += noFixText
         }

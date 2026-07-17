@@ -34,4 +34,9 @@ class WatermarkContentTest {
         val c = Watermark.build(null, 0L, null, null, null, utc, noFixText = "No location permission")
         assertEquals(listOf("1970-01-01 00:00:00", "No location permission"), c.lines)
     }
+
+    @Test fun `fix age label is appended to the gps line when present`() {
+        val c = Watermark.build(null, 0L, 1.0, 2.0, null, utc, fixAgeLabel = "~5m ago")
+        assertEquals(listOf("1970-01-01 00:00:00", "1.0000, 2.0000 (~5m ago)"), c.lines)
+    }
 }

@@ -267,14 +267,15 @@ class CaptureManager(
     }
 
     /**
-     * 当前水印内容:用户名(有才加)+ 时间戳 + gps.freshFix()(超 30s 未刷新视为丢定位,降级占位——
-     * 隧道/遮挡场景不拿冻结坐标配当下时间冒充实时位置;无定位区分"未授权"/"定位中…")。
-     * epochMillis 默认戳章此刻(录像 1Hz 刷新用);单拍水印(stampPhotoWatermark)传快门时刻,
-     * 保证证据时间戳=按下快门那刻而非之后解码/叠加处理的耗时之后。
+     * 当前水印内容:用户名(有才加)+ 时间戳 + GPS 坐标行(优先 gps.freshFix(),超 30s 未刷新则回退到
+     * gps.agedFix() 在 GPS_FALLBACK_WINDOW_MS 内的最后一次定位并标注age——室内常见:GNSS 弱信号+ROM
+     * 无网络定位,不这样会一直挂"Locating…";回退坐标必标 age,绝不冒充实时位置)+无定位区分
+     * "未授权"/"定位中…"。epochMillis 默认戳章此刻(录像 1Hz 刷新用);单拍水印(stampPhotoWatermark)
+     * 传快门时刻,保证证据时间戳=按下快门那刻而非之后解码/叠加处理的耗时之后。
      */
     private fun currentWatermarkContent(epochMillis: Long = System.currentTimeMillis()): WatermarkContent {
         val name = (AppState.loginState.value as? LoginState.LoggedIn)?.displayName
-        val fix = gps.freshFix()
+        val g = gpsWatermark(gps.freshFix(), gps.agedFix())
         val noFixText = if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) "Locating…" else "No location permission"
         val site = AppState.selectedSite.value
         // Line 4 prefers the site's street address (indoor location anchor); falls back to the
@@ -283,11 +284,12 @@ class CaptureManager(
         return Watermark.build(
             userName = name,
             epochMillis = epochMillis,
-            lat = fix?.first,
-            lon = fix?.second,
+            lat = g.lat,
+            lon = g.lon,
             address = siteLine,
             zone = ZoneId.systemDefault(),
             noFixText = noFixText,
+            fixAgeLabel = g.ageLabel,
         )
     }
 
