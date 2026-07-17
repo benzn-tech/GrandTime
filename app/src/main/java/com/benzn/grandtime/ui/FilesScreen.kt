@@ -4,8 +4,10 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -149,9 +151,20 @@ fun FilesScreen() {
                         )
                     }
                     items(dayItems, key = { it.id }) { record ->
-                        MediaCell(record) {
-                            if (record.kind == "audio") playingAudio = record else openFile(context, record)
-                        }
+                        MediaCell(
+                            record = record,
+                            onClick = {
+                                if (record.kind == "audio") playingAudio = record else openFile(context, record)
+                            },
+                            onLongClick = {
+                                if (record.uploadStatus == "uploaded") {
+                                    Toast.makeText(context, "Already uploaded", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    WorkManagerUploadEnqueuer(context).enqueue(record.id)
+                                    Toast.makeText(context, "Re-uploading ${record.fileName}", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                        )
                     }
                 }
             }
@@ -163,11 +176,12 @@ fun FilesScreen() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MediaCell(record: CaptureRecord, onClick: () -> Unit) {
+private fun MediaCell(record: CaptureRecord, onClick: () -> Unit, onLongClick: () -> Unit) {
     val context = LocalContext.current
     val fs = LocalFsColors.current
-    Column(Modifier.clickable(onClick = onClick)) {
+    Column(Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)) {
         Box(
             Modifier
                 .fillMaxWidth()
