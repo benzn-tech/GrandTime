@@ -1,5 +1,7 @@
 package com.benzn.grandtime.ui
 
+import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -32,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.core.AppState
@@ -44,7 +47,10 @@ import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.VideoQuality
 import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.ui.theme.LocalFsColors
+import com.benzn.grandtime.util.DiagnosticsExporter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, WATERMARK, SCREEN_OFF, VIDEO_UPLOAD }
 
@@ -57,6 +63,7 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
     val login by AppState.loginState.collectAsStateWithLifecycle()
     val auth = remember { (context.applicationContext as GrandTimeApp).authManager }
     var dialog by remember { mutableStateOf<SettingDialog?>(null) }
+    var confirmSignOut by remember { mutableStateOf(false) }
     val versionName = remember {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
     }
@@ -99,6 +106,24 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
         FsCard(contentPadding = 0.dp) {
             SettingRow("Diagnostics", null) { onOpen(Screen.DIAGNOSTICS) }
             RowDivider()
+            SettingRow("Export diagnostics", null) {
+                scope.launch {
+                    val file = withContext(Dispatchers.IO) { DiagnosticsExporter.export(context) }
+                    if (file != null) {
+                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        runCatching { context.startActivity(Intent.createChooser(send, "Send diagnostics")) }
+                        Toast.makeText(context, "Saved to FieldSight/diagnostics", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Could not export diagnostics", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            RowDivider()
             SettingRow("About", versionName, onClick = null)
         }
         GroupHeader("Account")
@@ -112,7 +137,7 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
                 onClick = null,
             )
             RowDivider()
-            SettingRow("Sign out", null, enabled = true, onClick = { scope.launch { auth.signOut() } })
+            SettingRow("Sign out", null, enabled = true, onClick = { confirmSignOut = true })
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -183,6 +208,23 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             onDismiss = { dialog = null },
         )
         null -> {}
+    }
+
+    if (confirmSignOut) {
+        AlertDialog(
+            onDismissRequest = { confirmSignOut = false },
+            title = { Text("Sign out?") },
+            text = { Text("You'll need to sign in again to record and upload.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { auth.signOut() }
+                    confirmSignOut = false
+                }) { Text("Sign out") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 
