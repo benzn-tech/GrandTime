@@ -46,7 +46,7 @@ import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import kotlinx.coroutines.launch
 
-private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, WATERMARK, SCREEN_OFF }
+private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, WATERMARK, SCREEN_OFF, VIDEO_UPLOAD }
 
 @Composable
 fun SettingsScreen(onOpen: (Screen) -> Unit) {
@@ -85,6 +85,11 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
                 "Auto screen-off",
                 if (settings.screenOffMinutes == 0) "Never" else "${settings.screenOffMinutes} min",
             ) { dialog = SettingDialog.SCREEN_OFF }
+            RowDivider()
+            SettingRow(
+                "Video upload",
+                if (settings.videoUploadWifiOnly) "Wi-Fi only" else "Any network",
+            ) { dialog = SettingDialog.VIDEO_UPLOAD }
         }
         GroupHeader("Keys")
         FsCard(contentPadding = 0.dp) {
@@ -167,6 +172,14 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             selected = settings.screenOffMinutes,
             label = { if (it == 0) "Never" else "$it min" },
             onSelect = { scope.launch { store.setScreenOffMinutes(it) } },
+            onDismiss = { dialog = null },
+        )
+        SettingDialog.VIDEO_UPLOAD -> RadioDialog(
+            title = "Video upload",
+            options = listOf(true, false),
+            selected = settings.videoUploadWifiOnly,
+            label = { if (it) "Wi-Fi only" else "Any network" },
+            onSelect = { scope.launch { store.setVideoUploadWifiOnly(it) } },
             onDismiss = { dialog = null },
         )
         null -> {}

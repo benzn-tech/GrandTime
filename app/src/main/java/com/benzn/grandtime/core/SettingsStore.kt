@@ -30,6 +30,7 @@ data class RecordingSettings(
     val screenOffMinutes: Int = 3,
     val aspectRatio: AspectRatio = AspectRatio.RATIO_4_3,
     val watermarkEnabled: Boolean = true,
+    val videoUploadWifiOnly: Boolean = true,
 )
 
 class SettingsStore(private val dataStore: DataStore<Preferences>) {
@@ -44,6 +45,7 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
         private val KEY_SCREEN_OFF_MINUTES = intPreferencesKey("screen_off_minutes")
         private val KEY_ASPECT_RATIO = stringPreferencesKey("aspect_ratio")
         private val KEY_WATERMARK = booleanPreferencesKey("watermark_enabled")
+        private val KEY_VIDEO_UPLOAD_WIFI_ONLY = booleanPreferencesKey("video_upload_wifi_only")
     }
 
     val settings: Flow<RecordingSettings> = dataStore.data.map { prefs ->
@@ -63,6 +65,7 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
                 ?.let { name -> AspectRatio.entries.firstOrNull { it.name == name } }
                 ?: AspectRatio.RATIO_4_3,
             watermarkEnabled = prefs[KEY_WATERMARK] ?: true,
+            videoUploadWifiOnly = prefs[KEY_VIDEO_UPLOAD_WIFI_ONLY] ?: true,
         )
     }
 
@@ -94,5 +97,9 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
 
     suspend fun setWatermarkEnabled(value: Boolean) {
         dataStore.edit { it[KEY_WATERMARK] = value }
+    }
+
+    suspend fun setVideoUploadWifiOnly(value: Boolean) {
+        dataStore.edit { it[KEY_VIDEO_UPLOAD_WIFI_ONLY] = value }
     }
 }

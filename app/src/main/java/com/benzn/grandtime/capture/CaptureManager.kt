@@ -24,6 +24,7 @@ import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.CaptureRecordDao
 import com.benzn.grandtime.keymap.KeyAction
 import com.benzn.grandtime.upload.UploadEnqueuer
+import com.benzn.grandtime.upload.uploadRequiresUnmetered
 import java.io.File
 import java.io.FileOutputStream
 import java.time.ZoneId
@@ -50,7 +51,7 @@ class CaptureManager(
     private val notify: (String) -> Unit,
     private val probe: (String) -> Unit,
     private val uploadEnqueuer: UploadEnqueuer = object : UploadEnqueuer {
-        override fun enqueue(recordId: String, initialDelaySeconds: Long) {}
+        override fun enqueue(recordId: String, initialDelaySeconds: Long, requireUnmetered: Boolean) {}
     },
 ) {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { UUID.randomUUID().toString() })
@@ -76,7 +77,10 @@ class CaptureManager(
         pipeline.onCameraLost = {
             scope.launch {
                 if (core.state is CaptureState.RecordingVideo) {
-                    finalizeVideoDbRow()?.let { uploadEnqueuer.enqueue(it) }
+                    val wifiOnly = settingsStore.settings.first().videoUploadWifiOnly
+                    finalizeVideoDbRow()?.let {
+                        uploadEnqueuer.enqueue(it, requireUnmetered = uploadRequiresUnmetered("video", wifiOnly))
+                    }
                     stopWatermarkTimer()
                     gps.stop()
                     sounds.stopRecording()
@@ -201,7 +205,10 @@ class CaptureManager(
                     execute(core.onFailure(message ?: "Video error"))
                     pipeline.release()
                 } else {
-                    if (finalizedId != null) uploadEnqueuer.enqueue(finalizedId)
+                    if (finalizedId != null) {
+                        val wifiOnly = settingsStore.settings.first().videoUploadWifiOnly
+                        uploadEnqueuer.enqueue(finalizedId, requireUnmetered = uploadRequiresUnmetered("video", wifiOnly))
+                    }
                     val roll = pendingRoll
                     pendingRoll = false
                     execute(core.onVideoFinalized(roll))
