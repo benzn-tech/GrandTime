@@ -166,6 +166,16 @@ class CoreService : LifecycleService() {
                 // 过滤排除,不再每次开机重扫。否则几十条缺失行会灌爆 WorkManager 的 worker
                 // 池(撞并发上限/10分钟窗口→取消→failed→再扫),把实时拍摄/录制上传饿死。
                 // 仅补扫带 20s 初始延迟,避免占满网络挤掉前台;实时上传仍 delay=0 不受影响。
+                // Crash recovery: turn any orphan .pcm temp (process killed mid-recording, so
+                // AudioRecorder.stop() never ran and the target .wav was never assembled) back
+                // into its .wav. Must run before the rescan loop below so the now-present file
+                // passes the File(rec.filePath).exists() check and gets enqueued.
+                val recovered = withContext(Dispatchers.IO) {
+                    com.benzn.grandtime.capture.AudioRecoverer.recover(
+                        com.benzn.grandtime.capture.MediaStorage.publicRoot(applicationContext),
+                    )
+                }
+                if (recovered > 0) probe("recovered $recovered interrupted audio recording(s)")
                 val dao = CaptureDb.get(applicationContext).captureRecords()
                 val enq = WorkManagerUploadEnqueuer(applicationContext)
                 // Read once — the rescan is a single pass, no need to react to a mid-scan setting change.
