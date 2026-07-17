@@ -69,8 +69,6 @@ class CaptureManager(
     private var currentVideoRecordId: String? = null
     private var currentVideoFile: File? = null
     private var currentVideoStartedAt: Long = 0
-    private var currentAudioRecordId: String? = null
-    private var currentAudioFile: File? = null
 
     init {
         // 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
@@ -434,41 +432,58 @@ class CaptureManager(
         else -> 0
     }
 
+    /**
+     * Rolling audio segments (like video): AudioRecorder self-rolls on its worker thread into
+     * fixed-length segment files without ever stopping the mic, seeding each new segment with the
+     * last ~2s of the previous one (overlapBytesFor) so a sentence crossing a boundary lands in
+     * both files. Every finalized segment surfaces via onSegment (worker thread) — this closure
+     * only does scope.launch{...} and storage.newFile(...), both safe off the main thread — and
+     * gets its own DB row + upload enqueue at finalization time (see onAudioSegmentFinalized),
+     * unlike the old single-file path that pre-inserted one row upfront.
+     */
     private suspend fun startAudio(cmd: CaptureCommand.StartAudio): Boolean {
-        val file = storage.newFile(MediaStorage.Kind.AUDIO)
-        val startedAt = System.currentTimeMillis()
-        if (!audio.start(file)) {
+        val settings = settingsStore.settings.first()
+        val segBytes = segmentBytesFor(settings.segmentMinutes)
+        val overlap = overlapBytesFor(2)
+        val first = storage.newFile(MediaStorage.Kind.AUDIO)
+        val sessionId = cmd.sessionId
+        val started = audio.start(
+            file = first,
+            segmentBytes = segBytes,
+            overlapBytes = overlap,
+            nextFile = { storage.newFile(MediaStorage.Kind.AUDIO) },
+            onSegment = { seg -> scope.launch { onAudioSegmentFinalized(seg, sessionId) } },
+        )
+        if (!started) {
             execute(core.onFailure("Audio recorder unavailable")); return false
         }
-        val recordId = UUID.randomUUID().toString()
-        currentAudioRecordId = recordId
-        currentAudioFile = file
-        dao.insert(
-            CaptureRecord(
-                id = recordId, kind = "audio", filePath = file.absolutePath, fileName = file.name,
-                startedAt = startedAt, codec = "wav", sessionId = cmd.sessionId, createdAt = startedAt,
-                siteId = AppState.selectedSite.value?.id,
-            )
-        )
         sounds.startRecording()
-        probe("audio started: ${file.name}")
+        probe("audio started: ${first.name}")
         return true
     }
 
+    /** Runs on [scope] (not the AudioRecorder worker thread — the onSegment closure only hops
+     *  here via scope.launch, per the worker-thread-safety contract). Inserts a complete DB row
+     *  for the just-finalized segment (kept out of startAudio so crash recovery still applies:
+     *  an interrupted final segment leaves an orphan .pcm that AudioRecoverer/FilesReconciler
+     *  turns into a row on next launch, same as before) and enqueues its upload. */
+    private suspend fun onAudioSegmentFinalized(seg: AudioSegment, sessionId: String) {
+        val id = UUID.randomUUID().toString()
+        dao.insert(
+            CaptureRecord(
+                id = id, kind = "audio", filePath = seg.file.absolutePath, fileName = seg.file.name,
+                startedAt = seg.startedAtMs, endedAt = seg.endedAtMs, durationMs = seg.endedAtMs - seg.startedAtMs,
+                sizeBytes = seg.file.length(), codec = "wav", segmentIndex = seg.index, sessionId = sessionId,
+                siteId = AppState.selectedSite.value?.id, createdAt = seg.startedAtMs,
+            )
+        )
+        uploadEnqueuer.enqueue(id)
+        scan(seg.file.absolutePath)
+        probe("audio segment ${seg.index} saved: ${seg.file.name} (${seg.file.length()} bytes)")
+    }
+
     private suspend fun stopAudio() {
-        val startedAt = (core.state as? CaptureState.RecordingAudio)?.startedAtMillis
         val stoppedCleanly = audio.stop()
-        val id = currentAudioRecordId
-        val file = currentAudioFile
-        if (id != null && file != null) {
-            val ended = System.currentTimeMillis()
-            dao.finalize(id, ended, if (startedAt != null) ended - startedAt else 0L, file.length())
-            if (stoppedCleanly) uploadEnqueuer.enqueue(id)
-            scan(file.absolutePath)
-            probe("audio saved: ${file.name}")
-        }
-        currentAudioRecordId = null
-        currentAudioFile = null
         if (!stoppedCleanly) probe("audio stop reported error")
         // 录音期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
         if (!pipeline.isRecording) pipeline.release()
