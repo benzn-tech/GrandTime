@@ -67,7 +67,7 @@ fun AudioPlayerSheet(record: CaptureRecord, onDismiss: () -> Unit) {
                 isPlaying = true
             }
             mediaPlayer.setOnCompletionListener { mp ->
-                mp.seekTo(0)
+                runCatching { mp.seekTo(0) }
                 isPlaying = false
                 positionMs = 0f
             }
