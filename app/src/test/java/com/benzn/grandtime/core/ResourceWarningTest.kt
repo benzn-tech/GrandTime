@@ -56,7 +56,7 @@ class ResourceWarningTest {
         assertEquals(WarnLevel.WARNING, status.storage)
     }
 
-    @Test fun `exactly 512MB free IS critical (boundary, less-than only excludes it)`() {
+    @Test fun `exactly 512MB free is WARNING not critical (less-than excludes the exact boundary)`() {
         val status = assessResources(512L * 1024 * 1024, plentyPct, charging = false)
         assertEquals(WarnLevel.WARNING, status.storage)
     }

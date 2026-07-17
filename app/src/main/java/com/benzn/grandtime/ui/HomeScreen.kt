@@ -265,7 +265,7 @@ private fun ResourceWarningBanner(status: ResourceStatus) {
             .padding(16.dp),
     ) {
         if (status.storage != WarnLevel.NONE) {
-            val freeGb = "%.1f".format(status.freeBytes / 1e9)
+            val freeGb = "%.1f".format(status.freeBytes / (1024.0 * 1024 * 1024)) // GiB, matching the binary thresholds
             Text(
                 if (status.storage == WarnLevel.CRITICAL) {
                     "Storage critical — $freeGb GB left, recording may stop"
