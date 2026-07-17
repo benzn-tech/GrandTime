@@ -36,6 +36,9 @@ import com.benzn.grandtime.ui.actionLabel
 import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import com.benzn.grandtime.util.ProbeLog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,6 +65,7 @@ class CoreService : LifecycleService() {
     private var pttSource: com.benzn.grandtime.ask.PttKeySource? = null
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
+    private lateinit var captureWakeLock: CaptureWakeLock
     private val led = com.benzn.grandtime.hardware.LedController()
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
@@ -73,6 +77,7 @@ class CoreService : LifecycleService() {
         probeLog = ProbeLog(File(filesDir, "probe"))
         // 息屏/后台相机访问需要 overlay 窗口维持进程可见态,见 OverlayGuard 注释
         overlayGuard = OverlayGuard(this)
+        captureWakeLock = CaptureWakeLock(this)
         overlayGuard.show()
         // 开机自启路径:BOOT_COMPLETED 拉起的 FGS 在 Android 12+ 拿不到相机/麦克风
         // while-in-use 权限(allowWhileInUsePermissionInFgs=false,UID capability 缺 C/M,
@@ -93,6 +98,13 @@ class CoreService : LifecycleService() {
         // MainActivity.onResume 会重踢 startForegroundService 触发这里——
         // show() 内部对"已显示"或"SAW 未授权"均 no-op,重复调用无害。
         overlayGuard.show()
+        // Re-apply the screen-off timeout on every start command. onResume re-kicks
+        // startForegroundService, so this fires when the user returns from granting WRITE_SETTINGS
+        // (the startPipeline collector already fired-and-suppressed while it was still ungranted).
+        lifecycleScope.launch {
+            val minutes = SettingsStore(applicationContext.settingsDataStore).settings.first().screenOffMinutes
+            ScreenTimeoutController.apply(applicationContext, minutes)
+        }
         if (!pipelineStarted) {
             pipelineStarted = true
             startPipeline()
@@ -171,6 +183,23 @@ class CoreService : LifecycleService() {
         }
         lifecycleScope.launch {
             SiteStore(applicationContext.siteDataStore).site.collect { AppState.selectedSite.value = it }
+        }
+        // Drive the system screen-off timeout from the app setting so the display sleeps at the
+        // chosen minutes (recording and idle). No-op until WRITE_SETTINGS is granted; re-applied on
+        // every change and on start (the setting is global and may have drifted).
+        lifecycleScope.launch {
+            SettingsStore(applicationContext.settingsDataStore).settings
+                .map { it.screenOffMinutes }
+                .distinctUntilChanged()
+                .collect { if (!ScreenTimeoutController.apply(applicationContext, it)) probe("screen-off timeout not applied (WRITE_SETTINGS not granted)") }
+        }
+        // Keep the CPU awake only while a capture is active, so recording survives the screen sleeping.
+        lifecycleScope.launch {
+            AppState.captureState.collect { state ->
+                val recording = state is com.benzn.grandtime.capture.CaptureState.RecordingVideo ||
+                    state is com.benzn.grandtime.capture.CaptureState.RecordingAudio
+                if (recording) captureWakeLock.acquire() else captureWakeLock.release()
+            }
         }
         // SP3b 物理灯(2 号灯,sysfs)1Hz 闪:录像红 > 录音黄 > 待机蓝。节点不可写则不启。
         if (led.available) {
@@ -290,6 +319,7 @@ class CoreService : LifecycleService() {
         pttSource?.stop()
         askManager?.shutdown()
         overlayGuard.hide()
+        captureWakeLock.release()
         super.onDestroy()
     }
 }

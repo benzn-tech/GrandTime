@@ -1,7 +1,7 @@
 # Auto screen-off (honor app-set timeout) — design
 
 **Date:** 2026-07-17
-**Status:** design approved (verbal 2026-07-16/17), probe-gated before plan
+**Status:** design approved + **probe PASSED** (2026-07-17, F2S202503103054): recording survived 90 s screen-off (mWakefulness=Asleep) — a 227 s HEVC+AAC segment grew 114 MB during the off-window, finalized valid/playable, no wakelock present. Screen-off recording is viable on this ROM. Proceed to plan; keep PARTIAL_WAKE_LOCK as cheap insurance (audio-only / segment-rollover gaps).
 **Repo:** GrandTime (FieldSight mobile app), `com.benzn.grandtime`
 
 ## Problem

@@ -63,7 +63,6 @@ class CaptureManager(
     private val gps = GpsTracker(context)
 
     private var segmentTimer: Job? = null
-    private var screenOffTimer: Job? = null
     private var watermarkTimer: Job? = null
     private var pendingRoll = false
     private var currentVideoRecordId: String? = null
@@ -78,7 +77,6 @@ class CaptureManager(
             scope.launch {
                 if (core.state is CaptureState.RecordingVideo) {
                     finalizeVideoDbRow()?.let { uploadEnqueuer.enqueue(it) }
-                    stopScreenOffTimer()
                     stopWatermarkTimer()
                     gps.stop()
                     sounds.stopRecording()
@@ -120,14 +118,12 @@ class CaptureManager(
 
     fun shutdown() {
         segmentTimer?.cancel()
-        screenOffTimer?.cancel()
         stopWatermarkTimer()
         gps.stop()
         if (pipeline.isRecording) pipeline.stopSegment()
         if (audio.isRecording) audio.stop()
         sounds.release()
         scope.launch { pipeline.release() }
-        AppState.screenOffRequest.value = false
     }
 
     private fun granted(permission: String): Boolean =
@@ -200,7 +196,6 @@ class CaptureManager(
             scope.launch {
                 val finalizedId = finalizeVideoDbRow()
                 if (error) {
-                    stopScreenOffTimer()
                     stopWatermarkTimer()
                     gps.stop()
                     execute(core.onFailure(message ?: "Video error"))
@@ -212,7 +207,6 @@ class CaptureManager(
                     execute(core.onVideoFinalized(roll))
                     if (core.state is CaptureState.Idle) {
                         sounds.stopRecording()
-                        stopScreenOffTimer()
                         stopWatermarkTimer()
                         gps.stop()
                         pipeline.release()
@@ -221,7 +215,6 @@ class CaptureManager(
             }
         }
         if (result == null) {
-            stopScreenOffTimer()
             // 段起动失败也是终态(core.onFailure 一律回 Idle)——不管是不是段 1,都要收尾计时器/GPS。
             stopWatermarkTimer()
             gps.stop()
@@ -244,7 +237,6 @@ class CaptureManager(
         startSegmentTimer(settings.segmentMinutes)
         if (cmd.segmentIndex == 1) {
             sounds.startRecording()
-            startScreenOffTimer(settings.screenOffMinutes)
         }
         probe("video segment ${cmd.segmentIndex} started: ${file.name}")
         return true
@@ -299,21 +291,6 @@ class CaptureManager(
         watermarkTimer?.cancel()
         watermarkTimer = null
         pipeline.setWatermarkBitmap(null)
-    }
-
-    private fun startScreenOffTimer(minutes: Int) {
-        screenOffTimer?.cancel()
-        if (minutes <= 0) return
-        screenOffTimer = scope.launch {
-            delay(minutes * 60_000L)
-            AppState.screenOffRequest.value = true
-        }
-    }
-
-    private fun stopScreenOffTimer() {
-        screenOffTimer?.cancel()
-        screenOffTimer = null
-        AppState.screenOffRequest.value = false
     }
 
     private fun startSegmentTimer(minutes: Int) {
