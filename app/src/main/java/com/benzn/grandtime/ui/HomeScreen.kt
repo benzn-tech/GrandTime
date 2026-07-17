@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Environment
 import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,8 +50,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.LoginState
+import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.ui.theme.LocalFsColors
+import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen() {
@@ -59,7 +64,11 @@ fun HomeScreen() {
     val site by AppState.selectedSite.collectAsStateWithLifecycle()
     val fs = LocalFsColors.current
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var showSitePicker by remember { mutableStateOf(false) }
+    val uploadCounts by remember { CaptureDb.get(context).captureRecords().observeUploadStatusCounts() }
+        .collectAsStateWithLifecycle(initialValue = emptyList())
+    val uploadSummary = summarizeUploads(uploadCounts)
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(capture) {
@@ -123,6 +132,71 @@ fun HomeScreen() {
                     )
                     Spacer(Modifier.width(6.dp))
                     Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
+                }
+            }
+        }
+        if (login is LoginState.LoggedIn) {
+            Spacer(Modifier.height(12.dp))
+            FsCard {
+                FsCardTitle("Uploads")
+                if (uploadSummary.total == 0) {
+                    Text(
+                        "No recordings yet",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "✓ ${uploadSummary.uploaded}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = fs.successDot,
+                        )
+                        Spacer(Modifier.width(16.dp))
+                        Text(
+                            "↑ ${uploadSummary.inProgress}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(16.dp))
+                        Text(
+                            "! ${uploadSummary.failed}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    if (uploadSummary.allDone) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "All uploaded ✓",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = fs.successDot,
+                        )
+                    }
+                    if (uploadSummary.failed > 0) {
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    val failedRecs = CaptureDb.get(context).captureRecords()
+                                        .listByUploadStatus(listOf("failed"))
+                                    failedRecs.forEach { WorkManagerUploadEnqueuer(context).enqueue(it.id) }
+                                    Toast.makeText(
+                                        context,
+                                        "Retrying ${failedRecs.size} uploads",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) {
+                            Text("Retry failed (${uploadSummary.failed})")
+                        }
+                    }
                 }
             }
         }

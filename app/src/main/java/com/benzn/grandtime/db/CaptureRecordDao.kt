@@ -43,4 +43,10 @@ interface CaptureRecordDao {
 
     @Query("SELECT * FROM capture_records WHERE uploadStatus IN (:statuses) AND missing = 0")
     suspend fun listByUploadStatus(statuses: List<String>): List<CaptureRecord>
+
+    @Query("SELECT uploadStatus AS status, COUNT(*) AS n FROM capture_records WHERE missing = 0 GROUP BY uploadStatus")
+    fun observeUploadStatusCounts(): Flow<List<UploadStatusCount>>
+
+    /** Projection for [observeUploadStatusCounts]: one row per distinct uploadStatus value. */
+    data class UploadStatusCount(val status: String, val n: Int)
 }
