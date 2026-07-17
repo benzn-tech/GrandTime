@@ -43,9 +43,14 @@ class Camera2Pipeline(
     // cameras, which is false — playback provably needs a 90° hint (T1 device probe + acceptance).
     // Reading the characteristic silently flipped orientationHint/JPEG_ORIENTATION to 0 for every
     // session after the first camera open (first session kept this default and looked fine).
-    // MUST stay equal to GlRecordPipeline.WM_ROTATION_DEG — the watermark pre-rotation cancels
-    // exactly this playback rotation; change one and the other must follow.
+    // Photo JPEG orientation hint (camera HAL writes EXIF rotation for stills).
     private val sensorOrientation = 90
+    // Video needs NO playback rotation: the GL pipeline already renders camera frames upright
+    // (verified on device — raw 960x720 frames are upright landscape). So the muxer orientationHint
+    // is 0 and the encoder watermark is drawn un-prerotated (prerotate=false), making the recorded
+    // MP4 match the live preview (WYSIWYG). Previously hint=90 + a prerotated watermark rotated the
+    // already-upright content into sideways portrait at playback (bug: 4:3 preview -> 3:4 rotated).
+    private val videoOrientationHint = 0
     @Volatile private var torchOn = false
     @Volatile private var activeSpec: VideoSpec? = null
     @Volatile private var photoInFlight = false
@@ -170,14 +175,14 @@ class Camera2Pipeline(
         return try {
             val spec = activeSpec ?: run {
                 val size = VideoSizeSelector.pickSize(aspect, quality, supportedVideoSizes(backId()))
-                VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), sensorOrientation)
+                VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), videoOrientationHint)
             }
             ensureSession(spec)
             activeSpec = spec
             val recorder = SegmentRecorder(probe)
             rec = recorder
             val encSurface = recorder.prepare(file, spec, hevcPreferred, location, recordAudio = true)
-            gl!!.addTarget(encSurface, prerotate = true); addedEnc = encSurface
+            gl!!.addTarget(encSurface, prerotate = false); addedEnc = encSurface
             recorder.start()
             segment = recorder
             onFinalizedCb = onFinalized
@@ -211,7 +216,7 @@ class Camera2Pipeline(
     suspend fun prepareForPhoto(aspect: AspectRatio, quality: VideoQuality) {
         if (session != null) return
         val size = VideoSizeSelector.pickSize(aspect, quality, supportedVideoSizes(backId()))
-        ensureSession(VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), sensorOrientation))
+        ensureSession(VideoSpec(size.width, size.height, VideoSizeSelector.bitRateFor(quality), videoOrientationHint))
         kotlinx.coroutines.delay(400) // 让 AE/AF 收敛,避免首帧过暗/失焦
     }
 
