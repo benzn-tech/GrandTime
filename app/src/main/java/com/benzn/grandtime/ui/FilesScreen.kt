@@ -295,8 +295,9 @@ private fun openFile(context: Context, record: CaptureRecord) {
     }
 }
 
-/** 公共根 FieldSight/device/{video,audio,photo} 扫盘,供对账补插磁盘上有而 DB 无的文件。 */
-private fun scanDisk(context: Context): List<FilesReconciler.DiskFile> {
+/** 公共根 FieldSight/device/{video,audio,photo} 扫盘,供对账补插磁盘上有而 DB 无的文件。
+ *  internal (not private): reused by CoreService's startup reconcile, see startPipeline(). */
+internal fun scanDisk(context: Context): List<FilesReconciler.DiskFile> {
     val root = MediaStorage.publicRoot(context)
     val kinds = listOf("video", "audio", "photo")
     return kinds.flatMap { kind ->
@@ -306,7 +307,7 @@ private fun scanDisk(context: Context): List<FilesReconciler.DiskFile> {
     }
 }
 
-private fun readDurationMillis(path: String): Long? = try {
+internal fun readDurationMillis(path: String): Long? = try {
     android.media.MediaMetadataRetriever().use { r ->
         r.setDataSource(path)
         r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()

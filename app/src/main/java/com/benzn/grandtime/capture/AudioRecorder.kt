@@ -181,7 +181,11 @@ class AudioRecorder(private val context: Context) {
      *  return value reflects whether that final segment assembled cleanly. */
     fun stop(): Boolean = try {
         running = false
-        worker?.join(2000)
+        // 2000ms was too tight in a pathological case: the worker's read() blocks for up to
+        // ~1s, so a slow final iteration could let join() return before the worker wrote the
+        // final-segment hand-off fields (pcmTmp/target/lastSegmentStart/...), silently dropping
+        // the last segment. 3000ms stays safely above that ~1s bound.
+        worker?.join(3000)
         record?.apply { stop(); release() }
         record = null
         val tmp = pcmTmp; val out = target
