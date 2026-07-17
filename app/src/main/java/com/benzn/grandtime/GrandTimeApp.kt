@@ -24,6 +24,13 @@ class GrandTimeApp : Application(), ImageLoaderFactory {
         )
     }
 
+    /**
+     * Process-lifetime scope for fire-and-forget persistence that must outlive a screen or dialog.
+     * The site picker writes the selected site to DataStore here instead of a composition
+     * `rememberCoroutineScope`, which onDismiss() would cancel mid-write (dropping the selection).
+     */
+    val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .components { add(VideoFrameDecoder.Factory()) }
         .build()
