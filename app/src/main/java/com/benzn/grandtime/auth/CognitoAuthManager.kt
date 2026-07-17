@@ -75,7 +75,10 @@ class CognitoAuthManager(
     }
 
     override suspend fun freshIdToken(): String? {
-        idTokenCache?.let { return it }
+        // Reuse the cached idToken only while it's still valid; a Cognito idToken lasts ~1h and
+        // the cache is otherwise held for the whole session, so without this check every call
+        // after the first hour ships an expired token (401 -> ask/sites fail). Expired -> refresh.
+        idTokenCache?.let { if (!JwtDecoder.isExpired(it)) return it }
         val session = tokenStore.load() ?: return null
         return when (val r = withContext(Dispatchers.IO) { client.refresh(session.refreshToken) }) {
             is AuthOutcome.Tokens -> r.idToken.also { idTokenCache = it }
