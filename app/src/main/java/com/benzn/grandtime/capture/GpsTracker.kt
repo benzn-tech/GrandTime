@@ -27,6 +27,13 @@ class GpsTracker(private val context: Context) {
         return if (System.currentTimeMillis() - f.atMillis <= maxAgeMs) f.lat to f.lon else null
     }
 
+    /** Last known fix WITH its age (indoor fallback): lets the caller show a labelled stale fix
+     * instead of a bare "Locating…" placeholder, without hiding how old the coords are. */
+    data class AgedFix(val lat: Double, val lon: Double, val ageMs: Long)
+
+    fun agedFix(nowMs: Long = System.currentTimeMillis()): AgedFix? =
+        fix?.let { AgedFix(it.lat, it.lon, (nowMs - it.atMillis).coerceAtLeast(0)) }
+
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
             fix = Fix(loc.latitude, loc.longitude, System.currentTimeMillis())
