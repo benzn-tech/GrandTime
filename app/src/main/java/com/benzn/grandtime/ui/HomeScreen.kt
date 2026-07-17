@@ -63,6 +63,7 @@ import com.benzn.grandtime.core.assessResources
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.ui.theme.LocalFsColors
 import com.benzn.grandtime.upload.WorkManagerUploadEnqueuer
+import java.time.ZoneId
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -76,8 +77,11 @@ fun HomeScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var showSitePicker by remember { mutableStateOf(false) }
-    val uploadCounts by remember { CaptureDb.get(context).captureRecords().observeUploadStatusCounts() }
-        .collectAsStateWithLifecycle(initialValue = emptyList())
+    val zone = remember { ZoneId.systemDefault() }
+    val startOfDay = startOfDayMillis(System.currentTimeMillis(), zone)
+    val uploadCounts by remember(startOfDay) {
+        CaptureDb.get(context).captureRecords().observeUploadStatusCountsSince(startOfDay)
+    }.collectAsStateWithLifecycle(initialValue = emptyList())
     val uploadSummary = summarizeUploads(uploadCounts)
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -167,29 +171,27 @@ fun HomeScreen() {
         if (login is LoginState.LoggedIn) {
             Spacer(Modifier.height(12.dp))
             FsCard {
-                FsCardTitle("Uploads")
+                FsCardTitle("Today's uploads")
                 if (uploadSummary.total == 0) {
                     Text(
-                        "No recordings yet",
+                        "No recordings today",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column {
                         Text(
-                            "✓ ${uploadSummary.uploaded}",
+                            "Uploaded ${uploadSummary.uploaded}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = fs.successDot,
                         )
-                        Spacer(Modifier.width(16.dp))
                         Text(
-                            "↑ ${uploadSummary.inProgress}",
+                            "Waiting ${uploadSummary.inProgress}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Spacer(Modifier.width(16.dp))
                         Text(
-                            "! ${uploadSummary.failed}",
+                            "Failed ${uploadSummary.failed}",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -197,7 +199,7 @@ fun HomeScreen() {
                     if (uploadSummary.allDone) {
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "All uploaded ✓",
+                            "All uploaded",
                             style = MaterialTheme.typography.bodyMedium,
                             color = fs.successDot,
                         )

@@ -47,6 +47,9 @@ interface CaptureRecordDao {
     @Query("SELECT uploadStatus AS status, COUNT(*) AS n FROM capture_records WHERE missing = 0 GROUP BY uploadStatus")
     fun observeUploadStatusCounts(): Flow<List<UploadStatusCount>>
 
+    @Query("SELECT uploadStatus AS status, COUNT(*) AS n FROM capture_records WHERE missing = 0 AND createdAt >= :sinceMs GROUP BY uploadStatus")
+    fun observeUploadStatusCountsSince(sinceMs: Long): Flow<List<UploadStatusCount>>
+
     /** Projection for [observeUploadStatusCounts]: one row per distinct uploadStatus value. */
     data class UploadStatusCount(val status: String, val n: Int)
 }

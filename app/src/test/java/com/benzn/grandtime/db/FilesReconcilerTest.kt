@@ -51,6 +51,13 @@ private class FakeDao : CaptureRecordDao {
                 .eachCount()
                 .map { (status, n) -> CaptureRecordDao.UploadStatusCount(status, n) }
         )
+    override fun observeUploadStatusCountsSince(sinceMs: Long): Flow<List<CaptureRecordDao.UploadStatusCount>> =
+        flowOf(
+            rows.filter { !it.missing && it.createdAt >= sinceMs }
+                .groupingBy { it.uploadStatus }
+                .eachCount()
+                .map { (status, n) -> CaptureRecordDao.UploadStatusCount(status, n) }
+        )
 }
 
 class FilesReconcilerTest {
