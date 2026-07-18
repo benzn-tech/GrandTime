@@ -97,6 +97,10 @@ class SiteVoiceManager(
             SiteVoiceCommand.PlayTalkStartCue -> { probe("site-voice: talk"); sounds.listening() }
             SiteVoiceCommand.PlayBusyCue -> { probe("site-voice: busy"); sounds.error() }
             SiteVoiceCommand.PlayErrorCue -> { probe("site-voice: error"); sounds.error() }
+            // TODO(Task 4 of docs/superpowers/plans/2026-07-19-site-voice-mic-handover.md): wire to
+            // MicHandover.begin()/end() once SiteVoiceManager gains that constructor param.
+            SiteVoiceCommand.AcquireMicFromCapture -> {}
+            SiteVoiceCommand.ReleaseMicToCapture -> {}
             SiteVoiceCommand.StartRecording -> if (!recorder.start()) { fail(); return }
             SiteVoiceCommand.StopRecording -> { /* clip read in UploadAndSend */ }
             SiteVoiceCommand.ArmCapTimer -> armCap()
