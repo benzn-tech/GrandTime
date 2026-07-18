@@ -27,7 +27,11 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
 
     // 音频
     private var audioEnabled = false
-    private var audioRecord: AudioRecord? = null
+    // @Volatile: swapped between null / a fresh handle by pauseAudioForHandover()/resumeAudio() on the
+    // Main thread, and read fresh each iteration by the audio loop — the barrier makes the loop observe
+    // a release/reopen promptly so the pause/resume race is self-evidently safe (no reliance on the
+    // read backstop alone). Still single-writer (Main/CaptureManager) by design.
+    @Volatile private var audioRecord: AudioRecord? = null
     private var audioCodec: MediaCodec? = null
     private var audioThread: Thread? = null
     @Volatile private var audioStopRequested = false
