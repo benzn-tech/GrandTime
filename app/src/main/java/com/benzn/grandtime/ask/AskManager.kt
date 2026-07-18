@@ -38,13 +38,15 @@ class AskManager(
 
     private val videoRecording: Boolean
         get() = AppState.captureState.value is CaptureState.RecordingVideo
+    private val siteVoiceActive: Boolean
+        get() = AppState.siteVoiceActive.value
 
     val handledActions: Set<KeyAction> = setOf(KeyAction.ASK_AGENT)
 
-    fun onPttDown() = dispatch { core.onPttDown(videoRecording) }
+    fun onPttDown() = dispatch { core.onPttDown(videoRecording, siteVoiceActive) }
     fun onPttUp() = dispatch { core.onPttUp() }
     /** Keymap-routed discrete tap (Task 13). */
-    fun onDiscreteAsk() = dispatch { core.onDiscreteAsk(videoRecording) }
+    fun onDiscreteAsk() = dispatch { core.onDiscreteAsk(videoRecording, siteVoiceActive) }
 
     /**
      * Serialize the AskCore mutation AND its command execution on [scope]'s
@@ -65,7 +67,7 @@ class AskManager(
         for (cmd in commands) when (cmd) {
             AskCommand.PlayListeningCue -> { probe("ask: listening"); sounds.listening() }
             AskCommand.PlayThinkingCue -> sounds.thinking()
-            AskCommand.PlayBusyCue -> { probe("ask: busy (video active)"); sounds.error() }
+            AskCommand.PlayBusyCue -> { probe("ask: busy (mic busy)"); sounds.error() }
             AskCommand.PlayErrorCue -> { probe("ask: error"); sounds.error() }
             AskCommand.StartRecording -> if (!recorder.start()) { fail(); return }  // short-circuit: skip stray ArmCapTimer
             AskCommand.StopRecording -> { /* clip read in SendClip */ }
