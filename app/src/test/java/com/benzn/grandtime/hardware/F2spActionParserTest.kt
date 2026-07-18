@@ -12,7 +12,6 @@ class F2spActionParserTest {
         assertEquals(HardKey.VIDEO to RawDirection.UP, F2spKeyEventSource.parse("lolaage.video1.up"))
         assertEquals(HardKey.PHOTO to RawDirection.DOWN, F2spKeyEventSource.parse("lolaage.take.picture.down"))
         assertEquals(HardKey.AUDIO to RawDirection.UP, F2spKeyEventSource.parse("lolaage.audio.up"))
-        assertEquals(HardKey.SOS to RawDirection.DOWN, F2spKeyEventSource.parse("lolaage.sos.down"))
     }
 
     @Test
@@ -20,5 +19,6 @@ class F2spActionParserTest {
         assertNull(F2spKeyEventSource.parse("lolaage.ptt.down"))
         assertNull(F2spKeyEventSource.parse("lolaage.light"))
         assertNull(F2spKeyEventSource.parse("whatever.else"))
+        assertNull(F2spKeyEventSource.parse("lolaage.sos.down"))
     }
 }
