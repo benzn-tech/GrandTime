@@ -21,6 +21,11 @@ class WsMessagesTest {
         assertEquals(7, WsMessages.parseInbound(text)!!.durationS)
     }
 
+    @Test fun inbound_null_duration_is_null_not_zero() {
+        val text = """{"s3Key":"k","senderUserId":"u","createdAt":"t","durationS":null}"""
+        assertNull(WsMessages.parseInbound(text)!!.durationS)
+    }
+
     @Test fun inbound_missing_s3key_is_null() {
         assertNull(WsMessages.parseInbound("""{"senderUserId":"u","createdAt":"t"}"""))
     }

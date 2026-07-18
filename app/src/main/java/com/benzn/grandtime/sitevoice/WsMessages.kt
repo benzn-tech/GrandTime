@@ -30,7 +30,7 @@ object WsMessages {
             senderUserId = o.optString("senderUserId"),
             siteId = o.optString("siteId").takeIf { it.isNotBlank() },
             createdAt = o.optString("createdAt"),
-            durationS = if (o.has("durationS")) o.optInt("durationS") else null,
+            durationS = if (o.has("durationS") && !o.isNull("durationS")) o.optInt("durationS") else null,
         )
     }.getOrNull()
 
