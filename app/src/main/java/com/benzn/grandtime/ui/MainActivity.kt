@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
             maybeRequestOverlay()
             maybeRequestAllFiles()
             maybeRequestWriteSettings()
+            maybeRequestBatteryExemption()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,6 +87,7 @@ class MainActivity : ComponentActivity() {
             maybeRequestOverlay()
             maybeRequestAllFiles()
             maybeRequestWriteSettings()
+            maybeRequestBatteryExemption()
         } else {
             permissionLauncher.launch(required.toTypedArray())
         }
@@ -135,6 +137,25 @@ class MainActivity : ComponentActivity() {
             startActivity(
                 Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName"))
             )
+        }
+    }
+
+    @android.annotation.SuppressLint("BatteryLife")
+    // Sideloaded enterprise app, not Play Store — the exemption is required for the FGS/keys
+    // to survive OEM (MediaTek) background-kill.
+    private fun maybeRequestBatteryExemption() {
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+            Toast.makeText(
+                this,
+                "Allow the app to run in the background so the physical keys keep working",
+                Toast.LENGTH_LONG,
+            ).show()
+            runCatching {
+                startActivity(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")),
+                )
+            }
         }
     }
 }

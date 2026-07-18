@@ -324,7 +324,9 @@ private fun mmss(elapsedMillis: Long): String {
 private fun isSetupComplete(context: Context): Boolean {
     val camera = context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
     val mic = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-    return camera && mic && Settings.canDrawOverlays(context) && Environment.isExternalStorageManager()
+    val pm = context.getSystemService(android.os.PowerManager::class.java)
+    val batteryExempt = pm != null && pm.isIgnoringBatteryOptimizations(context.packageName)
+    return camera && mic && Settings.canDrawOverlays(context) && Environment.isExternalStorageManager() && batteryExempt
 }
 
 private fun openSetup(context: Context) {
