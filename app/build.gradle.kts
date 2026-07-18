@@ -27,12 +27,18 @@ android {
             isDefault = true // default-selected variant; keeps assembleRelease/Android Studio from picking dev
             // Production org gateway — the customer lake. Shipping/release build.
             buildConfigField("String", "ORG_API_BASE_URL", "\"https://ys94qy2tk0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
+            // Site voice WebSocket API (prod). Dark-launched: disabled until PROD_ENABLE_SITE_VOICE flip.
+            buildConfigField("String", "SITE_VOICE_WS_URL", "\"wss://REPLACE_PROD_WS_ID.execute-api.ap-southeast-2.amazonaws.com/prod\"")
+            buildConfigField("boolean", "SITE_VOICE_ENABLED", "false")
         }
         create("dev") {
             dimension = "env"
             applicationIdSuffix = ".dev"   // dev installs side-by-side, never overwrites the prod app
             // Test gateway (fieldsight-test) — safe testing + SP-Ask voice endpoint.
             buildConfigField("String", "ORG_API_BASE_URL", "\"https://wdsgobb7b0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
+            // Site voice WebSocket API (fieldsight-test). Enabled for soak testing.
+            buildConfigField("String", "SITE_VOICE_WS_URL", "\"wss://i1r3tuv9bh.execute-api.ap-southeast-2.amazonaws.com/prod\"")
+            buildConfigField("boolean", "SITE_VOICE_ENABLED", "true")
         }
     }
 
