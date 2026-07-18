@@ -107,4 +107,39 @@ class SiteVoiceCoreTest {
         assertTrue(c.onCapReached().isEmpty())
         assertEquals(SiteVoiceState.Sending, c.state)
     }
+
+    @Test fun error_while_sending_drains_queued_clip_with_error_cue() {
+        val c = core().apply { onSosDown(false, false); onClipReady(clip("a")); onSosUp() } // Sending, a queued
+        val cmds = c.onError()
+        assertEquals(SiteVoiceState.Playing, c.state)
+        assertEquals(
+            listOf(
+                SiteVoiceCommand.CancelCapTimer,
+                SiteVoiceCommand.PlayErrorCue,
+                SiteVoiceCommand.PlayClip(clip("a")),
+            ),
+            cmds,
+        )
+        assertEquals(0, c.queueSize)
+    }
+
+    @Test fun error_while_idle_emits_cancel_and_error_cue_and_stays_idle() {
+        val c = core()
+        val cmds = c.onError()
+        assertEquals(SiteVoiceState.Idle, c.state)
+        assertEquals(
+            listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue),
+            cmds,
+        )
+    }
+
+    @Test fun send_failure_with_queued_clip_plays_it_after_error_cue() {
+        val c = core().apply { onSosDown(false, false); onClipReady(clip("a")); onSosUp() } // Sending, a queued
+        val cmds = c.onSendResult(ok = false)
+        assertEquals(SiteVoiceState.Playing, c.state)
+        assertEquals(
+            listOf(SiteVoiceCommand.PlayErrorCue, SiteVoiceCommand.PlayClip(clip("a"))),
+            cmds,
+        )
+    }
 }
