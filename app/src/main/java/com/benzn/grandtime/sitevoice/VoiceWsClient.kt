@@ -51,7 +51,9 @@ class VoiceWsClient(
     private var attempt = 0
     private var connectJob: Job? = null
     // Bumped on every new attempt and on stop(); a listener whose captured gen != this is stale.
-    private var generation = 0
+    // @Volatile: written on Main but read from each listener callback's gen-guard on the OkHttp
+    // reader thread, so a superseded attempt reliably observes the bump and invalidates itself.
+    @Volatile private var generation = 0
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
