@@ -52,6 +52,11 @@ class SiteVoiceManager(
 
     private var capTimer: Job? = null
 
+    /** The just-stopped outbound clip: set by StopRecording, consumed by UploadAndSend. Stashing it
+     *  lets StopRecording release the Site-voice mic BEFORE ReleaseMicToCapture reopens the capture
+     *  mic — the two AudioRecords must never hold the physical mic at once (single-capture ROM). */
+    private var pendingClip: File? = null
+
     /** Recently-processed inbound s3Keys, to drop duplicate fanouts and backfill/live overlaps.
      *  Bounded (oldest evicted). Main-confined: only [handleInbound] and [backfill] touch it, both
      *  on [scope]. [markProcessed] returns true the first time a key is seen, false thereafter. */
@@ -85,7 +90,11 @@ class SiteVoiceManager(
     fun onSosUp() = dispatch { core.onSosUp() }
 
     /** Serialize the SiteVoiceCore mutation AND its command execution on [scope]'s single
-     *  dispatcher — mirrors AskManager.dispatch (one talk at a time, no double-send). */
+     *  dispatcher — mirrors AskManager.dispatch (one talk at a time, no double-send).
+     *  Ask<->Site-voice mutual exclusion depends on the acquire-side commands (begin/listening/start)
+     *  NOT suspending before [AppState.siteVoiceActive] is published at the end of this launch: if
+     *  [MicHandover.begin] ever gains a real suspension point, a concurrent PTT could read a stale
+     *  siteVoiceActive=false and slip through the exclusion. Keep begin() non-suspending in practice. */
     private fun dispatch(decide: () -> List<SiteVoiceCommand>) {
         scope.launch {
             execute(decide())
@@ -101,7 +110,10 @@ class SiteVoiceManager(
             SiteVoiceCommand.AcquireMicFromCapture -> { probe("site-voice: borrow mic"); micHandover.begin() }
             SiteVoiceCommand.ReleaseMicToCapture -> { probe("site-voice: return mic"); micHandover.end() }
             SiteVoiceCommand.StartRecording -> if (!recorder.start()) { fail(); return }
-            SiteVoiceCommand.StopRecording -> { /* clip read in UploadAndSend */ }
+            // Release the Site-voice mic HERE — the FSM orders StopRecording -> ReleaseMicToCapture ->
+            // UploadAndSend, so stopping here (not deferring into UploadAndSend) guarantees the mic is
+            // freed BEFORE ReleaseMicToCapture reopens the capture mic. Stash the clip for UploadAndSend.
+            SiteVoiceCommand.StopRecording -> { pendingClip = recorder.stop() }
             SiteVoiceCommand.ArmCapTimer -> armCap()
             SiteVoiceCommand.CancelCapTimer -> { capTimer?.cancel(); capTimer = null }
             SiteVoiceCommand.UploadAndSend -> uploadAndSend()
@@ -119,7 +131,8 @@ class SiteVoiceManager(
     }
 
     private suspend fun uploadAndSend() {
-        val clip = recorder.stop()
+        val clip = pendingClip
+        pendingClip = null
         if (clip == null) { fail(); return }
         val siteId = AppState.selectedSite.value?.id
         val token = auth.freshIdToken()
