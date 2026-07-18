@@ -272,7 +272,7 @@ class CoreService : LifecycleService() {
             }
         }
 
-        captureManager = CaptureManager(
+        val capture = CaptureManager(
             context = this,
             scope = lifecycleScope,
             settingsStore = SettingsStore(applicationContext.settingsDataStore),
@@ -281,6 +281,7 @@ class CoreService : LifecycleService() {
             probe = ::probe,
             uploadEnqueuer = WorkManagerUploadEnqueuer(applicationContext),
         )
+        captureManager = capture
 
         val ask = AskManager(
             context = this,
@@ -312,6 +313,7 @@ class CoreService : LifecycleService() {
                     apiBaseUrl = BuildConfig.ORG_API_BASE_URL,
                     wsUrl = BuildConfig.SITE_VOICE_WS_URL,
                     connectivity = connectivity,
+                    micHandover = capture,
                     probe = ::probe,
                 )
                 siteVoiceManager = siteVoice

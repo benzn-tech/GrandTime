@@ -35,6 +35,7 @@ class SiteVoiceManager(
     apiBaseUrl: String,
     wsUrl: String,
     connectivity: ConnectivityManager,
+    private val micHandover: MicHandover,
     private val probe: (String) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -97,10 +98,8 @@ class SiteVoiceManager(
             SiteVoiceCommand.PlayTalkStartCue -> { probe("site-voice: talk"); sounds.listening() }
             SiteVoiceCommand.PlayBusyCue -> { probe("site-voice: busy"); sounds.error() }
             SiteVoiceCommand.PlayErrorCue -> { probe("site-voice: error"); sounds.error() }
-            // TODO(Task 4 of docs/superpowers/plans/2026-07-19-site-voice-mic-handover.md): wire to
-            // MicHandover.begin()/end() once SiteVoiceManager gains that constructor param.
-            SiteVoiceCommand.AcquireMicFromCapture -> {}
-            SiteVoiceCommand.ReleaseMicToCapture -> {}
+            SiteVoiceCommand.AcquireMicFromCapture -> { probe("site-voice: borrow mic"); micHandover.begin() }
+            SiteVoiceCommand.ReleaseMicToCapture -> { probe("site-voice: return mic"); micHandover.end() }
             SiteVoiceCommand.StartRecording -> if (!recorder.start()) { fail(); return }
             SiteVoiceCommand.StopRecording -> { /* clip read in UploadAndSend */ }
             SiteVoiceCommand.ArmCapTimer -> armCap()
@@ -230,6 +229,7 @@ class SiteVoiceManager(
     private suspend fun fail() {
         recorder.discard()
         capTimer?.cancel(); capTimer = null
+        micHandover.end() // restore video audio if we had borrowed the mic (idempotent no-op otherwise)
         execute(core.onError())
         AppState.siteVoiceActive.value = core.state != SiteVoiceState.Idle
     }
