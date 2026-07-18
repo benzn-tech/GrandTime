@@ -23,6 +23,7 @@ import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.CaptureRecordDao
 import com.benzn.grandtime.keymap.KeyAction
+import com.benzn.grandtime.sitevoice.MicHandover
 import com.benzn.grandtime.upload.UploadEnqueuer
 import com.benzn.grandtime.upload.uploadRequiresUnmetered
 import java.io.File
@@ -53,7 +54,7 @@ class CaptureManager(
     private val uploadEnqueuer: UploadEnqueuer = object : UploadEnqueuer {
         override fun enqueue(recordId: String, initialDelaySeconds: Long, requireUnmetered: Boolean) {}
     },
-) {
+) : MicHandover {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { UUID.randomUUID().toString() })
     private val pipeline = Camera2Pipeline(context, probe)
     private val audio = AudioRecorder(context)
@@ -66,6 +67,9 @@ class CaptureManager(
     private var segmentTimer: Job? = null
     private var watermarkTimer: Job? = null
     private var pendingRoll = false
+    /** True while Site-voice is borrowing the mic. Read by startVideoSegment so a segment rollover
+     *  during a handover starts the next segment with its audio paused (silent) until end(). */
+    @Volatile private var handoverActive = false
     private var currentVideoRecordId: String? = null
     private var currentVideoFile: File? = null
     private var currentVideoStartedAt: Long = 0
@@ -126,6 +130,21 @@ class CaptureManager(
         if (audio.isRecording) audio.stop()
         sounds.release()
         scope.launch { pipeline.release() }
+    }
+
+    override suspend fun begin(): Boolean {
+        // No video segment running → nothing to borrow; Site-voice records normally.
+        if (core.state !is CaptureState.RecordingVideo) return true
+        handoverActive = true
+        pipeline.pauseSegmentAudio()
+        return true
+    }
+
+    override suspend fun end() {
+        if (!handoverActive) return
+        handoverActive = false
+        val ok = pipeline.resumeSegmentAudio()
+        if (!ok) probe("mic handover: resume failed, segment audio stays silent")
     }
 
     private fun granted(permission: String): Boolean =
@@ -194,6 +213,7 @@ class CaptureManager(
             quality = settings.videoQuality,
             hevcPreferred = true,
             location = gps.freshFix()?.let { it.first.toFloat() to it.second.toFloat() },
+            startAudioPaused = handoverActive, // rollover mid-handover → new segment records silent
         ) { error, message ->
             scope.launch {
                 val finalizedId = finalizeVideoDbRow()

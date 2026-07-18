@@ -168,6 +168,7 @@ class Camera2Pipeline(
         quality: VideoQuality,
         hevcPreferred: Boolean,
         location: Pair<Float, Float>?,
+        startAudioPaused: Boolean = false,
         onFinalized: (error: Boolean, message: String?) -> Unit,
     ): SegmentResult? {
         var addedEnc: Surface? = null
@@ -183,7 +184,7 @@ class Camera2Pipeline(
             rec = recorder
             val encSurface = recorder.prepare(file, spec, hevcPreferred, location, recordAudio = true)
             gl!!.addTarget(encSurface, prerotate = false); addedEnc = encSurface
-            recorder.start()
+            recorder.start(startAudioPaused)
             segment = recorder
             onFinalizedCb = onFinalized
             currentEncSurface = encSurface
@@ -272,6 +273,13 @@ class Camera2Pipeline(
         if (old != null && old != surface) glp.removeTarget(old)
         if (surface != null) glp.addTarget(surface, prerotate = false)
     }
+
+    /** Handover: pause the live segment's mic (video audio goes silent). No-op if no live segment. */
+    fun pauseSegmentAudio() { segment?.pauseAudioForHandover() }
+
+    /** Handover end: reopen the live segment's mic. Returns true on success OR when there is no
+     *  live segment to resume (nothing to do). A failed reopen returns false (segment stays silent). */
+    fun resumeSegmentAudio(): Boolean = segment?.resumeAudio() ?: true
 
     /** 会话活时经 repeating 请求切手电;返回是否已处理(false=调用方走 CameraManager)。 */
     fun setTorch(on: Boolean): Boolean {
