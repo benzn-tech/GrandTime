@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -33,6 +34,7 @@ import com.benzn.grandtime.keymap.KeyActionDispatcher
 import com.benzn.grandtime.keymap.KeyMapStore
 import com.benzn.grandtime.keymap.keymapDataStore
 import com.benzn.grandtime.net.SitesApiClient
+import com.benzn.grandtime.sitevoice.SiteVoiceManager
 import com.benzn.grandtime.ui.actionLabel
 import com.benzn.grandtime.ui.readDurationMillis
 import com.benzn.grandtime.ui.scanDisk
@@ -67,6 +69,8 @@ class CoreService : LifecycleService() {
     private var captureManager: CaptureManager? = null
     private var askManager: AskManager? = null
     private var pttSource: com.benzn.grandtime.ask.PttKeySource? = null
+    private var siteVoiceManager: SiteVoiceManager? = null
+    private var sosSource: com.benzn.grandtime.sitevoice.SosKeySource? = null
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
     private lateinit var captureWakeLock: CaptureWakeLock
@@ -298,6 +302,39 @@ class CoreService : LifecycleService() {
             }
         }
 
+        if (BuildConfig.SITE_VOICE_ENABLED) {
+            val connectivity = getSystemService(ConnectivityManager::class.java)
+            if (connectivity != null) {
+                val siteVoice = SiteVoiceManager(
+                    context = this,
+                    scope = lifecycleScope,
+                    auth = auth,
+                    apiBaseUrl = BuildConfig.ORG_API_BASE_URL,
+                    wsUrl = BuildConfig.SITE_VOICE_WS_URL,
+                    connectivity = connectivity,
+                    probe = ::probe,
+                )
+                siteVoiceManager = siteVoice
+                val sos = com.benzn.grandtime.sitevoice.SosKeySource(this)
+                sosSource = sos
+                lifecycleScope.launch {
+                    sos.events.collect { dir ->
+                        probe("sos ${dir.name}")
+                        when (dir) {
+                            com.benzn.grandtime.sitevoice.SosDirection.DOWN -> siteVoice.onSosDown()
+                            com.benzn.grandtime.sitevoice.SosDirection.UP -> siteVoice.onSosUp()
+                        }
+                    }
+                }
+                lifecycleScope.launch {
+                    AppState.siteVoiceReplayRequests.collect { siteVoice.replay(it) }
+                }
+                siteVoice.start()  // opens the persistent WS
+            } else {
+                probe("site-voice: ConnectivityManager unavailable, not starting")
+            }
+        }
+
         val dispatcher = KeyActionDispatcher({ AppState.overrides.value }, ::handleAction)
         lifecycleScope.launch {
             merge(f2sp.keyPresses, onScreen.keyPresses).collect { press ->
@@ -312,6 +349,7 @@ class CoreService : LifecycleService() {
         // 所有收集协程已挂上订阅,现在才 start() 广播接收器,避免早期事件被 replay=0 丢弃。
         f2sp.start()
         ptt.start()
+        sosSource?.start()
 
         AppState.serviceRunning.value = true
         probe("service started")
@@ -377,6 +415,8 @@ class CoreService : LifecycleService() {
         f2spSource?.stop()
         pttSource?.stop()
         askManager?.shutdown()
+        sosSource?.stop()
+        siteVoiceManager?.shutdown()
         overlayGuard.hide()
         captureWakeLock.release()
         super.onDestroy()
