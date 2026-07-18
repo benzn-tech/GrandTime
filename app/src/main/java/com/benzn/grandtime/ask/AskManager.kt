@@ -74,6 +74,12 @@ class AskManager(
             AskCommand.SendClip -> sendClip()
             is AskCommand.PlayAnswer -> playAnswer(cmd.audioBase64)
         }
+        // Status mirror (additive, does not alter Ask's own command flow): every core.onXxx()
+        // result is executed through this function (dispatch, cap-timer fire, sendClip's
+        // nested onAnswer, playback-done callback, fail's onError), so this single point
+        // keeps AppState.askActive in sync with core.state after each FSM transition,
+        // including the async continuations a dispatch-only mirror would miss.
+        AppState.askActive.value = core.state != AskState.Idle
     }
 
     private fun armCap() {

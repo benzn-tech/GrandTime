@@ -43,6 +43,22 @@ object AppState {
     /** 工地列表缓存(启动时由 CoreService 在补扫前预取,SitePickerDialog 直接读,秒开)。 */
     val availableSites = MutableStateFlow<List<com.benzn.grandtime.net.SitesApiClient.SiteOption>>(emptyList())
 
+    /** Site voice: WS connected (UI status dot). */
+    val siteVoiceConnected = MutableStateFlow(false)
+
+    /** Site voice owns the mic/speaker right now (recording/sending/playing). */
+    val siteVoiceActive = MutableStateFlow(false)
+
+    /** Ask owns the mic/speaker right now — status mirror written by AskManager, read by
+     *  SiteVoiceCore for one-talk-at-a-time mutual exclusion. Ask's own behavior is unchanged. */
+    val askActive = MutableStateFlow(false)
+
+    /** Recent inbound Site-voice clips (last N, replayable). Written by SiteVoiceManager. */
+    val siteVoiceInbox = MutableStateFlow<List<com.benzn.grandtime.sitevoice.VoiceClip>>(emptyList())
+
+    /** UI → service: replay a recent inbox clip by its s3Key. */
+    val siteVoiceReplayRequests = MutableSharedFlow<String>(extraBufferCapacity = 8)
+
     /** 刚拍摄照片的绝对路径(#81 快门确认闪现);null=无待展示。写入方=CaptureManager,读取方=全局悬浮层。 */
     val lastPhotoFlash = MutableStateFlow<String?>(null)
 
