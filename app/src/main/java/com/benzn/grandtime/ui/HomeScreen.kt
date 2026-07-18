@@ -230,6 +230,48 @@ fun HomeScreen() {
                     }
                 }
             }
+            val connected by AppState.siteVoiceConnected.collectAsStateWithLifecycle()
+            val inbox by AppState.siteVoiceInbox.collectAsStateWithLifecycle()
+            Spacer(Modifier.height(12.dp))
+            FsCard {
+                FsCardTitle("Site voice")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(12.dp).clip(CircleShape)
+                            .background(if (connected) fs.successDot else MaterialTheme.colorScheme.outline),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        if (connected) "Connected" else "Offline",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                if (inbox.isEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "No recent messages",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    inbox.take(5).forEach { clip ->
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "From ${clip.senderUserId.take(8)} · ${clip.durationS}s",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Button(onClick = { AppState.siteVoiceReplayRequests.tryEmit(clip.s3Key) }) {
+                                Text("Replay")
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (showSitePicker) {
             SitePickerDialog(onDismiss = { showSitePicker = false })
