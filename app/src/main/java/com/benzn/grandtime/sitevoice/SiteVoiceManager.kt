@@ -10,6 +10,7 @@ import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
 import java.io.File
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -49,6 +50,19 @@ class SiteVoiceManager(
     private val downloadClient = OkHttpClient()
 
     private var capTimer: Job? = null
+
+    /** Recently-processed inbound s3Keys, to drop duplicate fanouts and backfill/live overlaps.
+     *  Bounded (oldest evicted). Main-confined: only [handleInbound] and [backfill] touch it, both
+     *  on [scope]. [markProcessed] returns true the first time a key is seen, false thereafter. */
+    private val processedKeys = LinkedHashSet<String>()
+
+    private fun markProcessed(s3Key: String): Boolean {
+        if (!processedKeys.add(s3Key)) return false
+        if (processedKeys.size > PROCESSED_KEYS_LIMIT) {
+            processedKeys.iterator().let { if (it.hasNext()) { it.next(); it.remove() } }
+        }
+        return true
+    }
 
     private val ws = VoiceWsClient(
         wsUrl = wsUrl,
@@ -129,10 +143,11 @@ class SiteVoiceManager(
     }
 
     private suspend fun handleInbound(inbound: InboundVoice) {
+        if (!markProcessed(inbound.s3Key)) { probe("site-voice: duplicate ${inbound.s3Key}"); return }
         val clip = download(inbound.s3Key, inbound.senderUserId, inbound.createdAt, inbound.durationS ?: 0)
         if (clip == null) { probe("site-voice: download failed"); return }
         addToInbox(clip)
-        inbound.createdAt.takeIf { it.isNotBlank() }?.let { lastSeenStore.set(it) }
+        inbound.createdAt.takeIf { it.isNotBlank() }?.let { runCatching { lastSeenStore.set(it) } }
         execute(core.onClipReady(clip))
         AppState.siteVoiceActive.value = core.state != SiteVoiceState.Idle
     }
@@ -143,9 +158,10 @@ class SiteVoiceManager(
         val since = lastSeenStore.lastSeen.firstOrNull()
         val items = withContext(Dispatchers.IO) { api.backfill(token, siteId, since) }
         for (it in items.sortedBy { it.createdAt }) {
+            if (!markProcessed(it.s3Key)) continue
             val clip = download(it.s3Key, it.senderUserId, it.createdAt, it.durationS ?: 0) ?: continue
             addToInbox(clip)
-            it.createdAt.takeIf { c -> c.isNotBlank() }?.let { c -> lastSeenStore.set(c) }
+            it.createdAt.takeIf { c -> c.isNotBlank() }?.let { c -> runCatching { lastSeenStore.set(c) } }
             execute(core.onClipReady(clip))
             AppState.siteVoiceActive.value = core.state != SiteVoiceState.Idle
         }
@@ -156,7 +172,9 @@ class SiteVoiceManager(
         val token = auth.freshIdToken() ?: return null
         return withContext(Dispatchers.IO) {
             val url = api.downloadUrl(token, s3Key) ?: return@withContext null
-            val file = File(cacheDir, "in_${System.currentTimeMillis()}.wav")
+            // Counter suffix so concurrent downloads (handleInbound + backfill, both on IO) in the
+            // same millisecond never pick the same temp path and clobber each other.
+            val file = File(cacheDir, "in_${System.currentTimeMillis()}_${dlCounter.incrementAndGet()}.wav")
             val ok = fetchToFile(url, file)
             if (ok && file.length() > 0) VoiceClip(file, s3Key, sender, createdAt, durationS) else { file.delete(); null }
         }
@@ -192,7 +210,17 @@ class SiteVoiceManager(
     }
 
     private fun addToInbox(clip: VoiceClip) {
-        AppState.siteVoiceInbox.value = (listOf(clip) + AppState.siteVoiceInbox.value).take(INBOX_LIMIT)
+        val old = AppState.siteVoiceInbox.value
+        val updated = (listOf(clip) + old).take(INBOX_LIMIT)
+        AppState.siteVoiceInbox.value = updated
+        // Delete cache files for clips evicted past INBOX_LIMIT so they don't leak for the process
+        // lifetime. Guard: never delete a file still referenced by a kept clip (by s3Key or path).
+        val keptKeys = updated.mapTo(HashSet()) { it.s3Key }
+        val keptPaths = updated.mapTo(HashSet()) { it.file.path }
+        for (evicted in old) {
+            if (evicted.s3Key in keptKeys || evicted.file.path in keptPaths) continue
+            runCatching { evicted.file.delete() }
+        }
     }
 
     private suspend fun fail() {
@@ -213,5 +241,9 @@ class SiteVoiceManager(
     companion object {
         const val CAP_MILLIS = 15_000L
         const val INBOX_LIMIT = 20
+        const val PROCESSED_KEYS_LIMIT = 64
+
+        /** Process-wide monotonic suffix for inbound temp filenames (see [download]). */
+        private val dlCounter = AtomicLong(0)
     }
 }
