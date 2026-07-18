@@ -35,8 +35,9 @@ enum class SiteVoiceState { Idle, Recording, Sending, Playing }
  * Pure decision core for Site voice. No Android deps; the caller (SiteVoiceManager) serializes
  * calls on one dispatcher and executes the commands. Owns:
  *  - the hold-to-talk send path (Recording -> Sending), with a ~15s cap;
- *  - mic arbitration: refuse (busy cue) when a video recording OR an Ask talk is active, and
- *    ignore re-entrant SOS while already busy — one talk at a time;
+ *  - mic arbitration: yield (busy cue) to an active Ask talk; during a video recording, BORROW the
+ *    mic from the capture pipeline (AcquireMicFromCapture) rather than refusing; ignore re-entrant
+ *    SOS while already busy — one talk at a time;
  *  - the inbound queue: a clip arriving while the user is Recording/Sending/Playing is queued and
  *    played after (the sender never hears its own — excluded server-side at fanout).
  */
