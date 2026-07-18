@@ -248,6 +248,12 @@ class CaptureManager(
             pipeline.release()
             return false
         }
+        // Close the rollover race (SegmentRecorder review): if Site-voice began a handover during
+        // this segment's async startup — after startAudioPaused was already sampled — the new segment
+        // could have opened its real mic despite an active borrow. Re-assert the pause now that the
+        // segment is live. Idempotent; no-op when no handover is active. Both run on the same Main
+        // dispatcher, so this observes any begin() that interleaved across startSegment's suspend.
+        if (handoverActive) pipeline.pauseSegmentAudio()
         currentVideoRecordId = recordId
         currentVideoFile = file
         currentVideoStartedAt = startedAt
