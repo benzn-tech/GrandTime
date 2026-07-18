@@ -21,6 +21,11 @@ sealed interface SiteVoiceCommand {
     data object UploadAndSend : SiteVoiceCommand
     data object PlayBusyCue : SiteVoiceCommand
     data object PlayErrorCue : SiteVoiceCommand
+    /** Borrow the mic from an active video segment (video audio goes silent). Emitted before
+     *  StartRecording only when a video recording is active at SOS-down. */
+    data object AcquireMicFromCapture : SiteVoiceCommand
+    /** Return the mic to the video segment (real audio resumes). Emitted after StopRecording. */
+    data object ReleaseMicToCapture : SiteVoiceCommand
     data class PlayClip(val clip: VoiceClip) : SiteVoiceCommand
 }
 
@@ -42,17 +47,23 @@ class SiteVoiceCore {
     private val queue = ArrayDeque<VoiceClip>()
     val queueSize: Int get() = queue.size
 
+    /** True while the current talk borrowed the mic from an active video segment; drives the
+     *  ReleaseMicToCapture emission on stop. Recomputed on every onSosDown. */
+    private var borrowedMic = false
+
     fun onSosDown(videoRecording: Boolean, askActive: Boolean): List<SiteVoiceCommand> = when (state) {
         SiteVoiceState.Idle ->
-            if (videoRecording || askActive) {
-                listOf(SiteVoiceCommand.PlayBusyCue) // mic exclusivity: no-op talk
+            if (askActive) {
+                listOf(SiteVoiceCommand.PlayBusyCue) // Ask holds the mic: mutually exclusive, no-op talk
             } else {
                 state = SiteVoiceState.Recording
-                listOf(
-                    SiteVoiceCommand.PlayTalkStartCue,
-                    SiteVoiceCommand.StartRecording,
-                    SiteVoiceCommand.ArmCapTimer,
-                )
+                borrowedMic = videoRecording // borrow only when a video segment is running
+                buildList {
+                    if (videoRecording) add(SiteVoiceCommand.AcquireMicFromCapture)
+                    add(SiteVoiceCommand.PlayTalkStartCue)
+                    add(SiteVoiceCommand.StartRecording)
+                    add(SiteVoiceCommand.ArmCapTimer)
+                }
             }
         else -> emptyList() // ignore re-entrant down / down while sending or playing
     }
@@ -60,11 +71,12 @@ class SiteVoiceCore {
     fun onSosUp(): List<SiteVoiceCommand> = when (state) {
         SiteVoiceState.Recording -> {
             state = SiteVoiceState.Sending
-            listOf(
-                SiteVoiceCommand.CancelCapTimer,
-                SiteVoiceCommand.StopRecording,
-                SiteVoiceCommand.UploadAndSend,
-            )
+            buildList {
+                add(SiteVoiceCommand.CancelCapTimer)
+                add(SiteVoiceCommand.StopRecording)
+                if (borrowedMic) add(SiteVoiceCommand.ReleaseMicToCapture)
+                add(SiteVoiceCommand.UploadAndSend)
+            }.also { borrowedMic = false }
         }
         else -> emptyList()
     }
@@ -72,7 +84,11 @@ class SiteVoiceCore {
     fun onCapReached(): List<SiteVoiceCommand> = when (state) {
         SiteVoiceState.Recording -> {
             state = SiteVoiceState.Sending
-            listOf(SiteVoiceCommand.StopRecording, SiteVoiceCommand.UploadAndSend)
+            buildList {
+                add(SiteVoiceCommand.StopRecording)
+                if (borrowedMic) add(SiteVoiceCommand.ReleaseMicToCapture)
+                add(SiteVoiceCommand.UploadAndSend)
+            }.also { borrowedMic = false }
         }
         else -> emptyList()
     }
@@ -96,7 +112,10 @@ class SiteVoiceCore {
         return drainOrIdle(emptyList())
     }
 
-    fun onError(): List<SiteVoiceCommand> = drainOrIdle(listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue))
+    fun onError(): List<SiteVoiceCommand> {
+        borrowedMic = false
+        return drainOrIdle(listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue))
+    }
 
     /** Play the next queued inbound (Playing) if any, else settle Idle. Prefix cues emit first. */
     private fun drainOrIdle(prefix: List<SiteVoiceCommand>): List<SiteVoiceCommand> {

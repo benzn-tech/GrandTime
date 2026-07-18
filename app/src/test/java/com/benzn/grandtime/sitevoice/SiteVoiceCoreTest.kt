@@ -18,11 +18,51 @@ class SiteVoiceCoreTest {
         assertTrue(cmds.contains(SiteVoiceCommand.ArmCapTimer))
     }
 
-    @Test fun down_while_video_recording_is_busy_and_stays_idle() {
+    @Test fun down_during_video_acquires_mic_then_records() {
         val c = core()
         val cmds = c.onSosDown(videoRecording = true, askActive = false)
-        assertEquals(SiteVoiceState.Idle, c.state)
-        assertEquals(listOf(SiteVoiceCommand.PlayBusyCue), cmds)
+        assertEquals(SiteVoiceState.Recording, c.state)
+        assertEquals(
+            listOf(
+                SiteVoiceCommand.AcquireMicFromCapture,
+                SiteVoiceCommand.PlayTalkStartCue,
+                SiteVoiceCommand.StartRecording,
+                SiteVoiceCommand.ArmCapTimer,
+            ),
+            cmds,
+        )
+        // Acquire must precede StartRecording so the mic is free before Site-voice opens it.
+        assertTrue(cmds.indexOf(SiteVoiceCommand.AcquireMicFromCapture)
+            < cmds.indexOf(SiteVoiceCommand.StartRecording))
+    }
+
+    @Test fun down_when_free_does_not_acquire_mic() {
+        val c = core()
+        val cmds = c.onSosDown(videoRecording = false, askActive = false)
+        assertTrue(!cmds.contains(SiteVoiceCommand.AcquireMicFromCapture))
+    }
+
+    @Test fun up_after_borrowed_mic_releases_after_stop_and_before_upload() {
+        val c = core().apply { onSosDown(videoRecording = true, askActive = false) }
+        val cmds = c.onSosUp()
+        assertEquals(SiteVoiceState.Sending, c.state)
+        assertTrue(cmds.contains(SiteVoiceCommand.ReleaseMicToCapture))
+        assertTrue(cmds.indexOf(SiteVoiceCommand.StopRecording)
+            < cmds.indexOf(SiteVoiceCommand.ReleaseMicToCapture))
+        assertTrue(cmds.indexOf(SiteVoiceCommand.ReleaseMicToCapture)
+            < cmds.indexOf(SiteVoiceCommand.UploadAndSend))
+    }
+
+    @Test fun up_without_borrow_has_no_release() {
+        val c = core().apply { onSosDown(videoRecording = false, askActive = false) }
+        assertTrue(!c.onSosUp().contains(SiteVoiceCommand.ReleaseMicToCapture))
+    }
+
+    @Test fun cap_after_borrowed_mic_releases() {
+        val c = core().apply { onSosDown(videoRecording = true, askActive = false) }
+        val cmds = c.onCapReached()
+        assertEquals(SiteVoiceState.Sending, c.state)
+        assertTrue(cmds.contains(SiteVoiceCommand.ReleaseMicToCapture))
     }
 
     @Test fun down_while_ask_active_is_busy_and_stays_idle() {
