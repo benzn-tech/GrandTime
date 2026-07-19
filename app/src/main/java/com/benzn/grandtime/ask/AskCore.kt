@@ -26,10 +26,10 @@ class AskCore {
     var state: AskState = AskState.Idle
         private set
 
-    fun onPttDown(videoRecording: Boolean): List<AskCommand> = when (state) {
+    fun onPttDown(videoRecording: Boolean, siteVoiceActive: Boolean = false): List<AskCommand> = when (state) {
         AskState.Idle ->
-            if (videoRecording) {
-                listOf(AskCommand.PlayBusyCue)  // mic exclusivity: no-op ask
+            if (videoRecording || siteVoiceActive) {
+                listOf(AskCommand.PlayBusyCue)  // mic exclusivity: yield to video OR active Site-voice
             } else {
                 state = AskState.Listening
                 listOf(AskCommand.PlayListeningCue, AskCommand.StartRecording, AskCommand.ArmCapTimer)
@@ -74,8 +74,8 @@ class AskCore {
 
     /** Discrete (tap) trigger for a keymap-routed hard key (Task 13): toggles
      * start-listening / stop-and-send, so a rebound key works without hold. */
-    fun onDiscreteAsk(videoRecording: Boolean): List<AskCommand> = when (state) {
-        AskState.Idle -> onPttDown(videoRecording)
+    fun onDiscreteAsk(videoRecording: Boolean, siteVoiceActive: Boolean = false): List<AskCommand> = when (state) {
+        AskState.Idle -> onPttDown(videoRecording, siteVoiceActive)
         AskState.Listening -> onPttUp()
         else -> emptyList()
     }

@@ -15,7 +15,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Orchestrates one hands-free voice ask: PttKeySource down/up -> AskCore ->
+ * Orchestrates one hands-free voice ask: physical SOS key (HoldToTalkKeySource) down/up -> AskCore ->
  * executors (AskRecorder, AskApiClient, AskSounds, AskPlayer). Sibling to
  * CaptureManager in CoreService. Refuses while a video recording is active
  * (reads AppState.captureState). Direct synchronous API call (Dispatchers.IO),
@@ -38,13 +38,15 @@ class AskManager(
 
     private val videoRecording: Boolean
         get() = AppState.captureState.value is CaptureState.RecordingVideo
+    private val siteVoiceActive: Boolean
+        get() = AppState.siteVoiceActive.value
 
     val handledActions: Set<KeyAction> = setOf(KeyAction.ASK_AGENT)
 
-    fun onPttDown() = dispatch { core.onPttDown(videoRecording) }
+    fun onPttDown() = dispatch { core.onPttDown(videoRecording, siteVoiceActive) }
     fun onPttUp() = dispatch { core.onPttUp() }
     /** Keymap-routed discrete tap (Task 13). */
-    fun onDiscreteAsk() = dispatch { core.onDiscreteAsk(videoRecording) }
+    fun onDiscreteAsk() = dispatch { core.onDiscreteAsk(videoRecording, siteVoiceActive) }
 
     /**
      * Serialize the AskCore mutation AND its command execution on [scope]'s
@@ -65,7 +67,7 @@ class AskManager(
         for (cmd in commands) when (cmd) {
             AskCommand.PlayListeningCue -> { probe("ask: listening"); sounds.listening() }
             AskCommand.PlayThinkingCue -> sounds.thinking()
-            AskCommand.PlayBusyCue -> { probe("ask: busy (video active)"); sounds.error() }
+            AskCommand.PlayBusyCue -> { probe("ask: busy (mic busy)"); sounds.error() }
             AskCommand.PlayErrorCue -> { probe("ask: error"); sounds.error() }
             AskCommand.StartRecording -> if (!recorder.start()) { fail(); return }  // short-circuit: skip stray ArmCapTimer
             AskCommand.StopRecording -> { /* clip read in SendClip */ }
@@ -74,6 +76,12 @@ class AskManager(
             AskCommand.SendClip -> sendClip()
             is AskCommand.PlayAnswer -> playAnswer(cmd.audioBase64)
         }
+        // Status mirror (additive, does not alter Ask's own command flow): every core.onXxx()
+        // result is executed through this function (dispatch, cap-timer fire, sendClip's
+        // nested onAnswer, playback-done callback, fail's onError), so this single point
+        // keeps AppState.askActive in sync with core.state after each FSM transition,
+        // including the async continuations a dispatch-only mirror would miss.
+        AppState.askActive.value = core.state != AskState.Idle
     }
 
     private fun armCap() {

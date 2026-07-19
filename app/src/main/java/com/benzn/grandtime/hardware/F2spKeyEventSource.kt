@@ -32,7 +32,6 @@ class F2spKeyEventSource(
             "lolaage.video1" to HardKey.VIDEO,
             "lolaage.take.picture" to HardKey.PHOTO,
             "lolaage.audio" to HardKey.AUDIO,
-            "lolaage.sos" to HardKey.SOS,
         )
 
         /** 只进探针、不进状态机的广播(逆向记录名 + 可能的带前缀变体都注册,收到多少算多少)。 */

@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -14,7 +15,6 @@ import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.R
 import com.benzn.grandtime.ask.AskManager
-import com.benzn.grandtime.ask.PttDirection
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureManager
 import com.benzn.grandtime.core.AppState
@@ -33,6 +33,7 @@ import com.benzn.grandtime.keymap.KeyActionDispatcher
 import com.benzn.grandtime.keymap.KeyMapStore
 import com.benzn.grandtime.keymap.keymapDataStore
 import com.benzn.grandtime.net.SitesApiClient
+import com.benzn.grandtime.sitevoice.SiteVoiceManager
 import com.benzn.grandtime.ui.actionLabel
 import com.benzn.grandtime.ui.readDurationMillis
 import com.benzn.grandtime.ui.scanDisk
@@ -66,7 +67,9 @@ class CoreService : LifecycleService() {
     private var f2spSource: F2spKeyEventSource? = null
     private var captureManager: CaptureManager? = null
     private var askManager: AskManager? = null
-    private var pttSource: com.benzn.grandtime.ask.PttKeySource? = null
+    private var sosKey: com.benzn.grandtime.hardware.HoldToTalkKeySource? = null
+    private var siteVoiceManager: SiteVoiceManager? = null
+    private var pttKey: com.benzn.grandtime.hardware.HoldToTalkKeySource? = null
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
     private lateinit var captureWakeLock: CaptureWakeLock
@@ -268,7 +271,7 @@ class CoreService : LifecycleService() {
             }
         }
 
-        captureManager = CaptureManager(
+        val capture = CaptureManager(
             context = this,
             scope = lifecycleScope,
             settingsStore = SettingsStore(applicationContext.settingsDataStore),
@@ -277,6 +280,7 @@ class CoreService : LifecycleService() {
             probe = ::probe,
             uploadEnqueuer = WorkManagerUploadEnqueuer(applicationContext),
         )
+        captureManager = capture
 
         val ask = AskManager(
             context = this,
@@ -286,15 +290,55 @@ class CoreService : LifecycleService() {
             probe = ::probe,
         )
         askManager = ask
-        val ptt = com.benzn.grandtime.ask.PttKeySource(this)
-        pttSource = ptt
+        // Physical SOS key now drives Ask (swapped with PTT — see task-2 brief).
+        val sos = com.benzn.grandtime.hardware.HoldToTalkKeySource(
+            this, "lolaage.sos.down", "lolaage.sos.up", lifecycleScope,
+        )
+        sosKey = sos
         lifecycleScope.launch {
-            ptt.events.collect { dir ->
-                probe("ptt ${dir.name}")
+            sos.events.collect { dir ->
+                probe("sos-key(ask) ${dir.name}")
                 when (dir) {
-                    PttDirection.DOWN -> ask.onPttDown()
-                    PttDirection.UP -> ask.onPttUp()
+                    com.benzn.grandtime.hardware.HoldDirection.DOWN -> ask.onPttDown()
+                    com.benzn.grandtime.hardware.HoldDirection.UP -> ask.onPttUp()
                 }
+            }
+        }
+
+        if (BuildConfig.SITE_VOICE_ENABLED) {
+            val connectivity = getSystemService(ConnectivityManager::class.java)
+            if (connectivity != null) {
+                val siteVoice = SiteVoiceManager(
+                    context = this,
+                    scope = lifecycleScope,
+                    auth = auth,
+                    apiBaseUrl = BuildConfig.ORG_API_BASE_URL,
+                    wsUrl = BuildConfig.SITE_VOICE_WS_URL,
+                    connectivity = connectivity,
+                    micHandover = capture,
+                    probe = ::probe,
+                )
+                siteVoiceManager = siteVoice
+                // Physical PTT key now drives Site voice (swapped with SOS — see task-2 brief).
+                val ptt = com.benzn.grandtime.hardware.HoldToTalkKeySource(
+                    this, "lolaage.ptt.down", "lolaage.ptt.up", lifecycleScope,
+                )
+                pttKey = ptt
+                lifecycleScope.launch {
+                    ptt.events.collect { dir ->
+                        probe("ptt-key(sitevoice) ${dir.name}")
+                        when (dir) {
+                            com.benzn.grandtime.hardware.HoldDirection.DOWN -> siteVoice.onSosDown()
+                            com.benzn.grandtime.hardware.HoldDirection.UP -> siteVoice.onSosUp()
+                        }
+                    }
+                }
+                lifecycleScope.launch {
+                    AppState.siteVoiceReplayRequests.collect { siteVoice.replay(it) }
+                }
+                siteVoice.start()  // opens the persistent WS
+            } else {
+                probe("site-voice: ConnectivityManager unavailable, not starting")
             }
         }
 
@@ -311,7 +355,8 @@ class CoreService : LifecycleService() {
 
         // 所有收集协程已挂上订阅,现在才 start() 广播接收器,避免早期事件被 replay=0 丢弃。
         f2sp.start()
-        ptt.start()
+        sosKey?.start()
+        pttKey?.start()
 
         AppState.serviceRunning.value = true
         probe("service started")
@@ -375,8 +420,10 @@ class CoreService : LifecycleService() {
         AppState.serviceRunning.value = false
         captureManager?.shutdown()
         f2spSource?.stop()
-        pttSource?.stop()
+        sosKey?.stop()
         askManager?.shutdown()
+        pttKey?.stop()
+        siteVoiceManager?.shutdown()
         overlayGuard.hide()
         captureWakeLock.release()
         super.onDestroy()

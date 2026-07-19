@@ -23,6 +23,13 @@ class AskCoreTest {
         assertEquals(listOf(AskCommand.PlayBusyCue), cmds)
     }
 
+    @Test fun down_during_site_voice_is_busy_and_stays_idle() {
+        val c = core()
+        val cmds = c.onPttDown(videoRecording = false, siteVoiceActive = true)
+        assertEquals(AskState.Idle, c.state)
+        assertEquals(listOf(AskCommand.PlayBusyCue), cmds)
+    }
+
     @Test fun up_while_listening_sends_and_goes_thinking() {
         val c = core().apply { onPttDown(false) }
         val cmds = c.onPttUp()
