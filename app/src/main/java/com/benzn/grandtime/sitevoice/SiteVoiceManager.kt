@@ -22,7 +22,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /**
- * Orchestrates Site voice: SosKeySource down/up -> SiteVoiceCore -> executors (AskRecorder,
+ * Orchestrates Site voice: physical PTT key (HoldToTalkKeySource) down/up -> SiteVoiceCore -> executors (AskRecorder,
  * VoiceApiClient, VoiceWsClient, AskPlayer, AskSounds). Sibling to AskManager in CoreService.
  * Reuses AskRecorder (-> AudioRecorder) and AskPlayer; adds the received cue.
  * Mic arbitration reads AppState.captureState (video) + AppState.askActive (Ask); publishes

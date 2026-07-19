@@ -15,7 +15,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Orchestrates one hands-free voice ask: PttKeySource down/up -> AskCore ->
+ * Orchestrates one hands-free voice ask: physical SOS key (HoldToTalkKeySource) down/up -> AskCore ->
  * executors (AskRecorder, AskApiClient, AskSounds, AskPlayer). Sibling to
  * CaptureManager in CoreService. Refuses while a video recording is active
  * (reads AppState.captureState). Direct synchronous API call (Dispatchers.IO),

@@ -15,7 +15,6 @@ import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.R
 import com.benzn.grandtime.ask.AskManager
-import com.benzn.grandtime.ask.PttDirection
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureManager
 import com.benzn.grandtime.core.AppState
@@ -68,9 +67,9 @@ class CoreService : LifecycleService() {
     private var f2spSource: F2spKeyEventSource? = null
     private var captureManager: CaptureManager? = null
     private var askManager: AskManager? = null
-    private var pttSource: com.benzn.grandtime.ask.PttKeySource? = null
+    private var sosKey: com.benzn.grandtime.hardware.HoldToTalkKeySource? = null
     private var siteVoiceManager: SiteVoiceManager? = null
-    private var sosSource: com.benzn.grandtime.sitevoice.SosKeySource? = null
+    private var pttKey: com.benzn.grandtime.hardware.HoldToTalkKeySource? = null
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
     private lateinit var captureWakeLock: CaptureWakeLock
@@ -291,14 +290,17 @@ class CoreService : LifecycleService() {
             probe = ::probe,
         )
         askManager = ask
-        val ptt = com.benzn.grandtime.ask.PttKeySource(this)
-        pttSource = ptt
+        // Physical SOS key now drives Ask (swapped with PTT — see task-2 brief).
+        val sos = com.benzn.grandtime.hardware.HoldToTalkKeySource(
+            this, "lolaage.sos.down", "lolaage.sos.up", lifecycleScope,
+        )
+        sosKey = sos
         lifecycleScope.launch {
-            ptt.events.collect { dir ->
-                probe("ptt ${dir.name}")
+            sos.events.collect { dir ->
+                probe("sos-key(ask) ${dir.name}")
                 when (dir) {
-                    PttDirection.DOWN -> ask.onPttDown()
-                    PttDirection.UP -> ask.onPttUp()
+                    com.benzn.grandtime.hardware.HoldDirection.DOWN -> ask.onPttDown()
+                    com.benzn.grandtime.hardware.HoldDirection.UP -> ask.onPttUp()
                 }
             }
         }
@@ -317,14 +319,17 @@ class CoreService : LifecycleService() {
                     probe = ::probe,
                 )
                 siteVoiceManager = siteVoice
-                val sos = com.benzn.grandtime.sitevoice.SosKeySource(this)
-                sosSource = sos
+                // Physical PTT key now drives Site voice (swapped with SOS — see task-2 brief).
+                val ptt = com.benzn.grandtime.hardware.HoldToTalkKeySource(
+                    this, "lolaage.ptt.down", "lolaage.ptt.up", lifecycleScope,
+                )
+                pttKey = ptt
                 lifecycleScope.launch {
-                    sos.events.collect { dir ->
-                        probe("sos ${dir.name}")
+                    ptt.events.collect { dir ->
+                        probe("ptt-key(sitevoice) ${dir.name}")
                         when (dir) {
-                            com.benzn.grandtime.sitevoice.SosDirection.DOWN -> siteVoice.onSosDown()
-                            com.benzn.grandtime.sitevoice.SosDirection.UP -> siteVoice.onSosUp()
+                            com.benzn.grandtime.hardware.HoldDirection.DOWN -> siteVoice.onSosDown()
+                            com.benzn.grandtime.hardware.HoldDirection.UP -> siteVoice.onSosUp()
                         }
                     }
                 }
@@ -350,8 +355,8 @@ class CoreService : LifecycleService() {
 
         // 所有收集协程已挂上订阅,现在才 start() 广播接收器,避免早期事件被 replay=0 丢弃。
         f2sp.start()
-        ptt.start()
-        sosSource?.start()
+        sosKey?.start()
+        pttKey?.start()
 
         AppState.serviceRunning.value = true
         probe("service started")
@@ -415,9 +420,9 @@ class CoreService : LifecycleService() {
         AppState.serviceRunning.value = false
         captureManager?.shutdown()
         f2spSource?.stop()
-        pttSource?.stop()
+        sosKey?.stop()
         askManager?.shutdown()
-        sosSource?.stop()
+        pttKey?.stop()
         siteVoiceManager?.shutdown()
         overlayGuard.hide()
         captureWakeLock.release()
