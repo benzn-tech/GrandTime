@@ -168,19 +168,23 @@ class SiteVoiceManager(
         AppState.siteVoiceActive.value = core.state != SiteVoiceState.Idle
     }
 
+    /** Backfill = clips missed WHILE OFFLINE, fetched on (re)connect. They populate the inbox (so the
+     *  user can see + replay them) but are NOT auto-played — auto-playing a backlog on every reconnect
+     *  floods the speaker with old messages. Only LIVE clips ([handleInbound]) auto-play. */
     private suspend fun backfill() {
         val siteId = AppState.selectedSite.value?.id ?: return
         val token = auth.freshIdToken() ?: return
         val since = lastSeenStore.lastSeen.firstOrNull()
         val items = withContext(Dispatchers.IO) { api.backfill(token, siteId, since) }
+        var added = 0
         for (it in items.sortedBy { it.createdAt }) {
             if (!markProcessed(it.s3Key)) continue
             val clip = download(it.s3Key, it.senderUserId, it.createdAt, it.durationS ?: 0) ?: continue
             addToInbox(clip)
             it.createdAt.takeIf { c -> c.isNotBlank() }?.let { c -> runCatching { lastSeenStore.set(c) } }
-            execute(core.onClipReady(clip))
-            AppState.siteVoiceActive.value = core.state != SiteVoiceState.Idle
+            added++
         }
+        if (added > 0) probe("site-voice: backfilled $added to inbox (not auto-played)")
     }
 
     /** Presign a GET, download the clip bytes to a temp file, wrap in a VoiceClip. */
