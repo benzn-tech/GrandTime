@@ -18,8 +18,12 @@ enum class HoldDirection { DOWN, UP }
  * (debounce against accidental presses) — only once the key has been held past the
  * threshold does the timer fire and emit [HoldDirection.DOWN]. [onUp] cancels any
  * pending timer and, only if the timer already fired (activated), emits
- * [HoldDirection.UP]; a re-press ([onDown] called again before [onUp]) cancels the
- * previous timer and restarts it, so it cannot double-fire.
+ * [HoldDirection.UP]. A repeat [onDown] WITHIN an active hold cycle (timer pending or
+ * already activated) is IGNORED — some ROMs auto-repeat the `.down` broadcast while a
+ * key is held, and restarting the timer would delay activation, while resetting
+ * `activated` after DOWN already fired would drop the eventual UP and leave the
+ * consumer's recording stuck until its cap. A fresh cycle begins only after
+ * [onUp]/[reset].
  *
  * Collectors MUST subscribe to [events] before the key source starts producing —
  * MutableSharedFlow(replay=0) drops emissions with no subscribers. All state
@@ -37,8 +41,10 @@ class HoldToTalkGate(
     private var activated = false
 
     fun onDown() {
-        pendingTimer?.cancel()
-        activated = false
+        // Ignore a repeat DOWN within an active hold cycle (ROM `.down` auto-repeat while held):
+        // pendingTimer stays non-null from onDown until onUp/reset, so this also covers the
+        // post-activation case where dropping through would reset `activated` and lose the UP.
+        if (pendingTimer != null || activated) return
         pendingTimer = scope.launch {
             delay(holdMillis)
             activated = true

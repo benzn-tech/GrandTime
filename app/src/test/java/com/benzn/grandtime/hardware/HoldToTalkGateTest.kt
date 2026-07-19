@@ -43,20 +43,38 @@ class HoldToTalkGateTest {
     }
 
     @Test
-    fun `re-press without an up does not double-fire`() = runTest {
+    fun `repeat down before threshold does not double-fire`() = runTest {
         val gate = HoldToTalkGate(backgroundScope)
         val events = collectInto(gate)
         gate.onDown()
         advanceTimeBy(400)
-        gate.onDown() // re-press before threshold — resets the timer
+        gate.onDown() // repeat DOWN within the cycle — ignored, the first timer keeps running
         advanceTimeBy(400)
         runCurrent()
-        assertEquals(0, events.size) // neither segment reached 1s yet
-        advanceTimeBy(700)
+        assertEquals(0, events.size) // first timer at t=800, not yet 1s
+        advanceTimeBy(300)
         runCurrent()
-        assertEquals(listOf(HoldDirection.DOWN), events)
+        assertEquals(listOf(HoldDirection.DOWN), events) // first timer fires at t=1000
         gate.onUp()
         runCurrent()
         assertEquals(listOf(HoldDirection.DOWN, HoldDirection.UP), events)
+    }
+
+    /** Regression: a ROM that auto-repeats `.down` AFTER activation must not drop the UP
+     *  (which would leave the consumer recording until its cap). */
+    @Test
+    fun `repeat down after activation does not drop the UP`() = runTest {
+        val gate = HoldToTalkGate(backgroundScope)
+        val events = collectInto(gate)
+        gate.onDown()
+        advanceTimeBy(1001)
+        runCurrent()
+        assertEquals(listOf(HoldDirection.DOWN), events) // activated
+        gate.onDown() // post-activation auto-repeat — must be ignored, must NOT reset `activated`
+        runCurrent()
+        assertEquals(listOf(HoldDirection.DOWN), events) // no second DOWN
+        gate.onUp()
+        runCurrent()
+        assertEquals(listOf(HoldDirection.DOWN, HoldDirection.UP), events) // UP still fires
     }
 }
