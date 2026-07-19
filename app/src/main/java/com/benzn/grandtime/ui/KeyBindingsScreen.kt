@@ -59,7 +59,7 @@ fun KeyBindingsScreen() {
             .padding(16.dp)
     ) {
         FsCard(contentPadding = 0.dp) {
-            HardKey.entries.forEach { key ->
+            HardKey.entries.filter { it != HardKey.SOS }.forEach { key ->
                 PressType.entries.forEach { pressType ->
                     val current = KeyMapping.resolve(KeyPress(key, pressType), overrides)
                     val overridden = KeyMapping.overrideKeyOf(key, pressType) in overrides
@@ -108,6 +108,11 @@ fun KeyBindingsScreen() {
                 }
             }
         }
+        Spacer(Modifier.height(16.dp))
+        Text("Hold-to-talk keys (fixed)", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(8.dp))
+        Text("SOS  →  Ask agent (hold ~1s)", style = MaterialTheme.typography.bodyMedium)
+        Text("PTT  →  Site voice (hold ~1s to talk)", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(24.dp))
         Button(
             onClick = { scope.launch { store.resetToDefaults() } },
