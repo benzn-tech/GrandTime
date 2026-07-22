@@ -13,8 +13,8 @@ android {
         applicationId = "com.benzn.grandtime"
         minSdk = 33
         targetSdk = 33
-        versionCode = 5
-        versionName = "0.5.1"
+        versionCode = 6
+        versionName = "0.5.2"
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
@@ -27,9 +27,9 @@ android {
             isDefault = true // default-selected variant; keeps assembleRelease/Android Studio from picking dev
             // Production org gateway — the customer lake. Shipping/release build.
             buildConfigField("String", "ORG_API_BASE_URL", "\"https://ys94qy2tk0.execute-api.ap-southeast-2.amazonaws.com/prod/api\"")
-            // Site voice WebSocket API (prod). Dark-launched: disabled until PROD_ENABLE_SITE_VOICE flip.
-            buildConfigField("String", "SITE_VOICE_WS_URL", "\"wss://REPLACE_PROD_WS_ID.execute-api.ap-southeast-2.amazonaws.com/prod\"")
-            buildConfigField("boolean", "SITE_VOICE_ENABLED", "false")
+            // Site voice WebSocket API (prod, fieldsight-prod-voice-ws). Enabled: PROD_ENABLE_SITE_VOICE flipped, prod backend live.
+            buildConfigField("String", "SITE_VOICE_WS_URL", "\"wss://ouv5cmq6si.execute-api.ap-southeast-2.amazonaws.com/prod\"")
+            buildConfigField("boolean", "SITE_VOICE_ENABLED", "true")
         }
         create("dev") {
             dimension = "env"
