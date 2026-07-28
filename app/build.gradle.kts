@@ -13,8 +13,8 @@ android {
         applicationId = "com.benzn.grandtime"
         minSdk = 33
         targetSdk = 33
-        versionCode = 6
-        versionName = "0.5.2"
+        versionCode = 7
+        versionName = "0.5.3"
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
