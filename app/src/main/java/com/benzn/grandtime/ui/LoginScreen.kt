@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,8 +38,11 @@ fun LoginScreen(onSignedIn: () -> Unit) {
     val context = LocalContext.current
     val auth = remember { (context.applicationContext as GrandTimeApp).authManager }
     val scope = rememberCoroutineScope()
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    // rememberSaveable so a typed email/password survives config changes / process death
+    // (the Activity is also orientation-locked + handles configChanges, so it won't recreate on
+    // rotation — this is defense-in-depth so the login form never loses what the user typed).
+    var email by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
