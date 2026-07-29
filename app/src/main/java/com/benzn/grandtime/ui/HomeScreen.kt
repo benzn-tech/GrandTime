@@ -127,6 +127,8 @@ fun HomeScreen() {
             val (dotColor, statusText) = when (val s = capture) {
                 is CaptureState.RecordingVideo ->
                     MaterialTheme.colorScheme.error to "Recording ${mmss(nowMillis - s.startedAtMillis)}"
+                is CaptureState.PausedVideo ->
+                    MaterialTheme.colorScheme.error to "Paused"
                 is CaptureState.RecordingAudio ->
                     MaterialTheme.colorScheme.error to "Recording audio ${mmss(nowMillis - s.startedAtMillis)}"
                 CaptureState.Idle ->

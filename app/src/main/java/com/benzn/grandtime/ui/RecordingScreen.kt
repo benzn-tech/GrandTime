@@ -24,6 +24,7 @@ import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.capture.CaptureState
+import com.benzn.grandtime.keymap.KeyAction
 import kotlinx.coroutines.delay
 
 @Composable
@@ -82,11 +83,12 @@ fun RecordingScreen(onStop: () -> Unit) {
             Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Deliberate End: flag the next stop as intent="end" so the backend finalizes + emails the
-            // meeting summary immediately, then stop via the same path as the Stop button. A plain Stop
-            // stays intent="idle" (30s grace).
+            // Deliberate End: send END_VIDEO directly (screenCaptureActions — CoreService dispatches it
+            // to CaptureManager, same as a physical long-press). CaptureManager now derives intent="end"
+            // straight from StopReason.END, so no separate flag/onStop() is needed here. A plain Stop
+            // (short-press semantics) now pauses rather than fully stopping — see CaptureCore.
             Button(
-                onClick = { AppState.endIntentPending = true; onStop() },
+                onClick = { AppState.screenCaptureActions.tryEmit(KeyAction.END_VIDEO) },
                 modifier = Modifier.height(56.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.secondary,

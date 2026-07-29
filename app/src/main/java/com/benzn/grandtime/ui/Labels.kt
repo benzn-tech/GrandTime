@@ -29,7 +29,8 @@ fun shortPressLabel(pressType: PressType): String = when (pressType) {
 }
 
 fun actionLabel(action: KeyAction): String = when (action) {
-    KeyAction.START_STOP_VIDEO -> "Start/stop video"
+    KeyAction.START_STOP_VIDEO -> "Start / pause video"
+    KeyAction.END_VIDEO -> "End meeting"
     KeyAction.TOGGLE_VIDEO_UPLOAD -> "Toggle video upload"
     KeyAction.TAKE_PHOTO -> "Take photo"
     KeyAction.TOGGLE_TORCH -> "Torch on/off"

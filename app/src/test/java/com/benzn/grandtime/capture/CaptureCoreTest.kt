@@ -19,13 +19,13 @@ class CaptureCoreTest {
     }
 
     @Test
-    fun `video key while recording stops without roll then finalize returns to idle`() {
+    fun `video key while recording pauses then finalize enters PausedVideo`() {
         val c = core()
         c.onAction(KeyAction.START_STOP_VIDEO)
         val stopCmds = c.onAction(KeyAction.START_STOP_VIDEO)
-        assertEquals(listOf<CaptureCommand>(CaptureCommand.StopVideo(rollToNext = false)), stopCmds)
-        val doneCmds = c.onVideoFinalized(rollToNext = false)
-        assertEquals(CaptureState.Idle, c.state)
+        assertEquals(listOf<CaptureCommand>(CaptureCommand.StopVideo(StopReason.PAUSE)), stopCmds)
+        val doneCmds = c.onVideoFinalized(StopReason.PAUSE)
+        assertEquals(CaptureState.PausedVideo("id0", 1, 1000L), c.state)
         assertTrue(doneCmds.any { it is CaptureCommand.Notify })
     }
 
@@ -70,8 +70,8 @@ class CaptureCoreTest {
     fun `segment timer rolls to next segment with same session`() {
         val c = core()
         c.onAction(KeyAction.START_STOP_VIDEO)
-        assertEquals(listOf<CaptureCommand>(CaptureCommand.StopVideo(rollToNext = true)), c.onSegmentTimerFired())
-        val rollCmds = c.onVideoFinalized(rollToNext = true)
+        assertEquals(listOf<CaptureCommand>(CaptureCommand.StopVideo(StopReason.ROLLOVER)), c.onSegmentTimerFired())
+        val rollCmds = c.onVideoFinalized(StopReason.ROLLOVER)
         assertTrue(rollCmds.contains(CaptureCommand.StartVideoSegment("id0", 2)))
         assertEquals(CaptureState.RecordingVideo("id0", 2, 1000L), c.state)
     }
@@ -123,5 +123,82 @@ class CaptureCoreTest {
     fun `unhandled actions produce no commands`() {
         assertTrue(core().onAction(KeyAction.SEND_SOS).isEmpty())
         assertTrue(core().onAction(KeyAction.ASK_AGENT).isEmpty())
+    }
+
+    @Test
+    fun short_press_while_recording_pauses_not_stops() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_VIDEO) // Idle -> RecordingVideo(seg 1)
+        val cmds = c.onAction(KeyAction.START_STOP_VIDEO) // Recording -> pause
+        assertTrue(cmds.any { it is CaptureCommand.StopVideo && it.reason == StopReason.PAUSE })
+        // state becomes PausedVideo only after finalize:
+        c.onVideoFinalized(StopReason.PAUSE)
+        val s = c.state
+        assertTrue(s is CaptureState.PausedVideo && s.segmentIndex == 1)
+    }
+
+    @Test
+    fun short_press_while_paused_resumes_same_session_next_segment() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_VIDEO) // Recording seg1
+        c.onAction(KeyAction.START_STOP_VIDEO) // -> pause cmd
+        c.onVideoFinalized(StopReason.PAUSE) // PausedVideo seg1
+        val sid = (c.state as CaptureState.PausedVideo).sessionId
+        val cmds = c.onAction(KeyAction.START_STOP_VIDEO) // resume
+        val start = cmds.filterIsInstance<CaptureCommand.StartVideoSegment>().single()
+        assertEquals(sid, start.sessionId) // SAME session
+        assertEquals(2, start.segmentIndex) // next segment
+        assertTrue(c.state is CaptureState.RecordingVideo)
+    }
+
+    @Test
+    fun long_press_while_recording_ends_with_end_reason() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_VIDEO)
+        val cmds = c.onAction(KeyAction.END_VIDEO)
+        assertTrue(cmds.any { it is CaptureCommand.StopVideo && it.reason == StopReason.END })
+        c.onVideoFinalized(StopReason.END)
+        assertTrue(c.state is CaptureState.Idle)
+    }
+
+    @Test
+    fun long_press_while_paused_ends_session_directly() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_VIDEO)
+        c.onAction(KeyAction.START_STOP_VIDEO)
+        c.onVideoFinalized(StopReason.PAUSE) // PausedVideo
+        val sid = (c.state as CaptureState.PausedVideo).sessionId
+        val cmds = c.onAction(KeyAction.END_VIDEO)
+        assertTrue(cmds.any { it is CaptureCommand.EndPausedSession && it.sessionId == sid })
+        assertTrue(c.state is CaptureState.Idle)
+    }
+
+    @Test
+    fun segment_timer_rollover_still_advances_segment() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_VIDEO)
+        c.onSegmentTimerFired() // StopVideo(ROLLOVER)
+        c.onVideoFinalized(StopReason.ROLLOVER)
+        val s = c.state
+        assertTrue(s is CaptureState.RecordingVideo && s.segmentIndex == 2)
+    }
+
+    @Test
+    fun startedAtMillis_preserved_through_pause_resume() {
+        val c = core() // clock starts at T0
+        c.onAction(KeyAction.START_STOP_VIDEO)
+        val t0 = (c.state as CaptureState.RecordingVideo).startedAtMillis
+        c.onAction(KeyAction.START_STOP_VIDEO)
+        c.onVideoFinalized(StopReason.PAUSE)
+        assertEquals(t0, (c.state as CaptureState.PausedVideo).startedAtMillis)
+        c.onAction(KeyAction.START_STOP_VIDEO) // resume
+        assertEquals(t0, (c.state as CaptureState.RecordingVideo).startedAtMillis)
+    }
+
+    @Test
+    fun end_video_ignored_when_idle() {
+        val c = core()
+        assertTrue(c.onAction(KeyAction.END_VIDEO).isEmpty())
+        assertTrue(c.state is CaptureState.Idle)
     }
 }

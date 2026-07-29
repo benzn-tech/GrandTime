@@ -67,7 +67,7 @@ class CaptureManager(
 
     private var segmentTimer: Job? = null
     private var watermarkTimer: Job? = null
-    private var pendingRoll = false
+    private var pendingStopReason: StopReason = StopReason.ROLLOVER
     /** True while Site-voice is borrowing the mic. Read by startVideoSegment so a segment rollover
      *  during a handover starts the next segment with its audio paused (silent) until end(). */
     @Volatile private var handoverActive = false
@@ -114,7 +114,7 @@ class CaptureManager(
     }
 
     val handledActions: Set<KeyAction> = setOf(
-        KeyAction.START_STOP_VIDEO, KeyAction.TAKE_PHOTO, KeyAction.START_STOP_AUDIO,
+        KeyAction.START_STOP_VIDEO, KeyAction.END_VIDEO, KeyAction.TAKE_PHOTO, KeyAction.START_STOP_AUDIO,
         KeyAction.TOGGLE_TORCH, KeyAction.ADJUST_VOLUME,
     )
 
@@ -181,10 +181,11 @@ class CaptureManager(
                 is CaptureCommand.StartVideoSegment -> startVideoSegment(cmd)
                 is CaptureCommand.StopVideo -> {
                     segmentTimer?.cancel()
-                    pendingRoll = cmd.rollToNext
+                    pendingStopReason = cmd.reason
                     pipeline.stopSegment()
                     true
                 }
+                is CaptureCommand.EndPausedSession -> { endPausedSession(cmd.sessionId); true }
                 is CaptureCommand.TakePhoto -> { takePhoto(cmd); true }
                 is CaptureCommand.StartAudio -> startAudio(cmd)
                 CaptureCommand.StopAudio -> { stopAudio(); true }
@@ -202,7 +203,6 @@ class CaptureManager(
 
     /** Best-effort session_open — fire-and-forget, never blocks capture. No-op if not logged in. */
     private fun fireSessionOpen(sessionId: String, kind: String, startedAtMillis: Long) {
-        AppState.endIntentPending = false // clear any stale End flag at the start of a new session
         // Everything (incl. the `as GrandTimeApp` cast) runs inside the IO launch + runCatching so
         // nothing can throw onto the capture coroutine — this fires at record-start before the
         // segment is even opened (Opus review: keep the capture path crash-proof).
@@ -227,12 +227,12 @@ class CaptureManager(
         }
     }
 
-    /** Reads and clears the one-shot End flag: "end" if the user pressed "End meeting", else "idle".
-     *  Only the deliberate clean-stop paths call this; failure paths always close with "idle". */
-    private fun consumeEndIntent(): String {
-        val end = AppState.endIntentPending
-        AppState.endIntentPending = false
-        return if (end) "end" else "idle"
+    /** Deliberate End of a PausedVideo session: no live segment to finalize (already stopped by the
+     *  preceding PAUSE), so just release resources and close with intent="end" directly. */
+    private fun endPausedSession(sessionId: String) {
+        stopWatermarkTimer(); gps.stop(); sounds.stopRecording()
+        scope.launch { pipeline.release() }
+        fireSessionClose(sessionId, System.currentTimeMillis(), "end")
     }
 
     private suspend fun startVideoSegment(cmd: CaptureCommand.StartVideoSegment): Boolean {
@@ -268,19 +268,23 @@ class CaptureManager(
                         val wifiOnly = settingsStore.settings.first().videoUploadWifiOnly
                         uploadEnqueuer.enqueue(finalizedId, requireUnmetered = uploadRequiresUnmetered("video", wifiOnly))
                     }
-                    val roll = pendingRoll
-                    pendingRoll = false
+                    val reason = pendingStopReason
+                    pendingStopReason = StopReason.ROLLOVER
                     val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
-                    execute(core.onVideoFinalized(roll))
-                    // !roll: on a rollover whose NEXT segment then fails to start, the nested
-                    // startVideoSegment failure path already reached Idle + fired close; guarding on
-                    // !roll here prevents a second close for the same session (Opus review).
-                    if (!roll && core.state is CaptureState.Idle) {
+                    execute(core.onVideoFinalized(reason))
+                    // reason != ROLLOVER guard: on a rollover whose NEXT segment then fails to start, the
+                    // nested startVideoSegment failure path already reached Idle + fired close; guarding
+                    // here prevents a second close for the same session (Opus review). PAUSE lands in
+                    // PausedVideo (not Idle) so it never reaches this branch — pipeline/GPS stay live for
+                    // a fast resume.
+                    if (reason != StopReason.ROLLOVER && core.state is CaptureState.Idle) {
                         sounds.stopRecording()
                         stopWatermarkTimer()
                         gps.stop()
                         pipeline.release()
-                        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis(), consumeEndIntent())
+                        if (reason == StopReason.END && endingSessionId != null) {
+                            fireSessionClose(endingSessionId, System.currentTimeMillis(), "end")
+                        }
                     }
                 }
             }
@@ -567,7 +571,9 @@ class CaptureManager(
         if (!pipeline.isRecording) pipeline.release()
         sounds.stopRecording()
         execute(core.onAudioFinalized())
-        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis(), consumeEndIntent())
+        // No deliberate-End concept for audio (the "End meeting" button lives on the video RecordingScreen
+        // only) — always closes with intent="idle".
+        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
     }
 
     private fun vibrate(times: Int) {

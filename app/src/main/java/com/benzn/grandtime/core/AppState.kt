@@ -28,17 +28,12 @@ object AppState {
     /** 采集状态(Service 写,Home 卡读)。 */
     val captureState = MutableStateFlow<CaptureState>(CaptureState.Idle)
 
-    /** One-shot "the next stop is a deliberate End" flag. Set by the RecordingScreen "End meeting"
-     *  button, consumed by CaptureManager when it fires the clean session_close so that close carries
-     *  intent="end" (backend finalizes + emails immediately) instead of "idle" (30s grace). Reset on
-     *  session start and on consume so it never leaks into another session. Today both the write and
-     *  the consume run on CaptureManager's Main.immediate scope (strictly ordered, no active race);
-     *  @Volatile is defensive in case a consumer ever moves onto another thread. */
-    @Volatile
-    var endIntentPending: Boolean = false
-
     /** UI 屏幕按键 → Service(down/up 原始事件)。 */
     val screenKeyEvents = MutableSharedFlow<Pair<HardKey, RawDirection>>(extraBufferCapacity = 16)
+
+    /** Recording-screen buttons → service: a capture KeyAction to run directly (bypasses press-type
+     *  detection, which can't express a long-press from a tap). CoreService dispatches to CaptureManager. */
+    val screenCaptureActions = MutableSharedFlow<KeyAction>(extraBufferCapacity = 8)
 
     /** RecordingScreen 提供的预览 surface(前台可见时非 null)。 */
     val previewSurface = MutableStateFlow<android.view.Surface?>(null)

@@ -2,6 +2,7 @@ package com.benzn.grandtime.keymap
 
 enum class KeyAction {
     START_STOP_VIDEO,
+    END_VIDEO,
     TOGGLE_VIDEO_UPLOAD,
     TAKE_PHOTO,
     TOGGLE_TORCH,
