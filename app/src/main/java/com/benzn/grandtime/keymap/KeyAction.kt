@@ -8,6 +8,7 @@ enum class KeyAction {
     TOGGLE_TORCH,
     ADJUST_VOLUME,
     START_STOP_AUDIO,
+    END_AUDIO,
     SEND_SOS,
     TOGGLE_WARNING_LIGHT,
     ASK_AGENT,

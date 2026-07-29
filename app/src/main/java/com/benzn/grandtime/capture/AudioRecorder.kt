@@ -37,6 +37,7 @@ class AudioRecorder(private val context: Context) {
         file: File,
         segmentBytes: Long = 0L,
         overlapBytes: Long = 0L,
+        startIndex: Int = 1,
         clockMs: () -> Long = { System.currentTimeMillis() },
         nextFile: (() -> File)? = null,
         onSegment: ((AudioSegment) -> Unit)? = null,
@@ -54,7 +55,7 @@ class AudioRecorder(private val context: Context) {
         rec.startRecording()
         worker = if (segmented) {
             thread(name = "audio-pcm") {
-                runSegmentedWorker(rec, buf, tmp, file, segmentBytes, overlapBytes, clockMs, nextFile, onSegment)
+                runSegmentedWorker(rec, buf, tmp, file, segmentBytes, overlapBytes, startIndex, clockMs, nextFile, onSegment)
             }
         } else {
             thread(name = "audio-pcm") { runSingleFileWorker(rec, buf, tmp) }
@@ -99,6 +100,7 @@ class AudioRecorder(private val context: Context) {
         firstTarget: File,
         segmentBytes: Long,
         overlapBytes: Long,
+        startIndex: Int,
         clockMs: () -> Long,
         nextFile: (() -> File)?,
         onSegment: ((AudioSegment) -> Unit)?,
@@ -106,7 +108,7 @@ class AudioRecorder(private val context: Context) {
         val ring = PcmRingBuffer(overlapBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         var curTmp = firstTmp
         var curTarget = firstTarget
-        var index = 1
+        var index = startIndex
         var segStart = clockMs()
         var bytesInSegment = 0L
         var out = curTmp.outputStream().buffered()
@@ -169,7 +171,10 @@ class AudioRecorder(private val context: Context) {
     // segment with the right start-time/index/callback. Only ever written by the worker thread
     // and only ever read by stop() after worker.join(), so no additional synchronization needed.
     private var lastSegmentStart: Long = 0
-    private var lastSegmentIndex: Int = 0
+    /** Public so CaptureManager can read it right after [stop] returns (which finalizes the last
+     *  in-flight segment synchronously) to compute the NEXT segment index for a resumed session. */
+    var lastSegmentIndex: Int = 0
+        private set
     private var segmentOnFinish: ((AudioSegment) -> Unit)? = null
     private var segmentClock: (() -> Long)? = null
     private var segmented: Boolean = false

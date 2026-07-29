@@ -74,6 +74,10 @@ class CaptureManager(
     private var currentVideoRecordId: String? = null
     private var currentVideoFile: File? = null
     private var currentVideoStartedAt: Long = 0
+    /** Next audio segment index to use on resume — set by [pauseAudio] from [AudioRecorder.lastSegmentIndex]
+     *  right after [AudioRecorder.stop] finalizes the last segment, so a resumed session's chunk keys
+     *  never collide with the ones already uploaded before the pause. */
+    private var audioResumeIndex: Int = 1
 
     init {
         // 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
@@ -124,7 +128,7 @@ class CaptureManager(
 
     val handledActions: Set<KeyAction> = setOf(
         KeyAction.START_STOP_VIDEO, KeyAction.END_VIDEO, KeyAction.TAKE_PHOTO, KeyAction.START_STOP_AUDIO,
-        KeyAction.TOGGLE_TORCH, KeyAction.ADJUST_VOLUME,
+        KeyAction.END_AUDIO, KeyAction.TOGGLE_TORCH, KeyAction.ADJUST_VOLUME,
     )
 
     fun handle(action: KeyAction) {
@@ -197,7 +201,10 @@ class CaptureManager(
                 is CaptureCommand.EndPausedSession -> { endPausedSession(cmd.sessionId); true }
                 is CaptureCommand.TakePhoto -> { takePhoto(cmd); true }
                 is CaptureCommand.StartAudio -> startAudio(cmd)
-                CaptureCommand.StopAudio -> { stopAudio(); true }
+                CaptureCommand.PauseAudio -> { pauseAudio(); true }
+                is CaptureCommand.ResumeAudio -> resumeAudio(cmd)
+                is CaptureCommand.EndAudio -> { endAudio(cmd); true }
+                is CaptureCommand.EndPausedAudio -> { endPausedAudio(cmd); true }
                 CaptureCommand.ToggleTorch -> {
                     torch.toggle(); probe("torch ${if (torch.torchOn) "on" else "off"}"); true
                 }
@@ -558,6 +565,7 @@ class CaptureManager(
             file = first,
             segmentBytes = segBytes,
             overlapBytes = overlap,
+            startIndex = 1, // segment 1 of a brand-new session
             nextFile = { storage.newFile(MediaStorage.Kind.AUDIO) },
             onSegment = { seg -> scope.launch { onAudioSegmentFinalized(seg, sessionId) } },
         )
@@ -590,17 +598,63 @@ class CaptureManager(
         probe("audio segment ${seg.index} saved: ${seg.file.name} (${seg.file.length()} bytes)")
     }
 
-    private suspend fun stopAudio() {
-        val endingSessionId = (core.state as? CaptureState.RecordingAudio)?.sessionId
-        val stoppedCleanly = audio.stop()
-        if (!stoppedCleanly) probe("audio stop reported error")
+    /** Pause: stop the recorder — AudioRecorder.stop() finalizes the last (in-flight) segment
+     *  synchronously before returning — and remember the NEXT segment index for resume, so a
+     *  resumed session's chunk keys never collide with the ones already saved. CaptureCore already
+     *  moved the state to PausedAudio synchronously in onAction; no session_close here (the session
+     *  stays open across a pause, mirroring the video pause). */
+    private suspend fun pauseAudio() {
+        val ok = audio.stop()
+        if (!ok) probe("audio stop reported error")
+        audioResumeIndex = audio.lastSegmentIndex + 1
+        // 暂停期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
+        if (!pipeline.isRecording) pipeline.release()
+        sounds.stopRecording()
+    }
+
+    /** Resume: restart the recorder continuing the SAME session at the next segment index — no
+     *  session_open (the session never closed on pause). */
+    private suspend fun resumeAudio(cmd: CaptureCommand.ResumeAudio): Boolean {
+        val settings = settingsStore.settings.first()
+        val segBytes = segmentBytesFor(settings.segmentMinutes)
+        val overlap = overlapBytesFor(2)
+        val first = storage.newFile(MediaStorage.Kind.AUDIO)
+        val sessionId = cmd.sessionId
+        val started = audio.start(
+            file = first,
+            segmentBytes = segBytes,
+            overlapBytes = overlap,
+            startIndex = audioResumeIndex,
+            nextFile = { storage.newFile(MediaStorage.Kind.AUDIO) },
+            onSegment = { seg -> scope.launch { onAudioSegmentFinalized(seg, sessionId) } },
+        )
+        if (!started) {
+            // The session was already open (opened at the original start, not here) — a failed resume
+            // abandons it, so close it out instead of leaving a phantom open session server-side.
+            execute(core.onFailure("Audio recorder unavailable"))
+            fireSessionClose(sessionId, System.currentTimeMillis())
+            return false
+        }
+        sounds.startRecording()
+        probe("audio resumed: ${first.name} (segment $audioResumeIndex)")
+        return true
+    }
+
+    /** Deliberate End while recording: stop the recorder + close the session with intent="end". */
+    private suspend fun endAudio(cmd: CaptureCommand.EndAudio) {
+        val ok = audio.stop()
+        if (!ok) probe("audio stop reported error")
         // 录音期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
         if (!pipeline.isRecording) pipeline.release()
         sounds.stopRecording()
-        execute(core.onAudioFinalized())
-        // No deliberate-End concept for audio (the "End meeting" button lives on the video RecordingScreen
-        // only) — always closes with intent="idle".
-        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
+        fireSessionClose(cmd.sessionId, System.currentTimeMillis(), "end")
+    }
+
+    /** Deliberate End of a PausedAudio session: no recorder to stop (already stopped on pause) —
+     *  just release any leftover camera + close with intent="end" directly. */
+    private suspend fun endPausedAudio(cmd: CaptureCommand.EndPausedAudio) {
+        if (!pipeline.isRecording) pipeline.release()
+        fireSessionClose(cmd.sessionId, System.currentTimeMillis(), "end")
     }
 
     private fun vibrate(times: Int) {

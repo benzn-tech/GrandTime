@@ -131,6 +131,8 @@ fun HomeScreen() {
                     MaterialTheme.colorScheme.error to "Paused"
                 is CaptureState.RecordingAudio ->
                     MaterialTheme.colorScheme.error to "Recording audio ${mmss(nowMillis - s.startedAtMillis)}"
+                is CaptureState.PausedAudio ->
+                    MaterialTheme.colorScheme.error to "Paused"
                 CaptureState.Idle ->
                     (if (running) fs.successDot else MaterialTheme.colorScheme.outline) to
                         (if (running) "Standing by" else "Service stopped")

@@ -101,12 +101,105 @@ class CaptureCoreTest {
     }
 
     @Test
-    fun `audio stop then finalize returns to idle`() {
+    fun `idle audio starts and enters RecordingAudio`() {
+        val c = core()
+        val cmds = c.onAction(KeyAction.START_STOP_AUDIO)
+        assertTrue(cmds.contains(CaptureCommand.StartAudio("id0")))
+        assertEquals(CaptureState.RecordingAudio("id0", 1000L), c.state)
+    }
+
+    @Test
+    fun `audio key while recording pauses not stops`() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_AUDIO) // Idle -> RecordingAudio
+        val cmds = c.onAction(KeyAction.START_STOP_AUDIO) // Recording -> pause
+        assertEquals(
+            listOf<CaptureCommand>(CaptureCommand.PauseAudio, CaptureCommand.Vibrate(1), CaptureCommand.Notify("Paused")),
+            cmds,
+        )
+        assertEquals(CaptureState.PausedAudio("id0", 1000L, 1000L), c.state)
+    }
+
+    @Test
+    fun `audio key while paused resumes same session`() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_AUDIO) // Recording
+        c.onAction(KeyAction.START_STOP_AUDIO) // -> PausedAudio
+        val sid = (c.state as CaptureState.PausedAudio).sessionId
+        val cmds = c.onAction(KeyAction.START_STOP_AUDIO) // resume
+        val resume = cmds.filterIsInstance<CaptureCommand.ResumeAudio>().single()
+        assertEquals(sid, resume.sessionId) // SAME session
+        assertTrue(c.state is CaptureState.RecordingAudio)
+    }
+
+    @Test
+    fun `long press while idle audio cycles volume`() {
+        val c = core()
+        val cmds = c.onAction(KeyAction.END_AUDIO)
+        assertEquals(listOf<CaptureCommand>(CaptureCommand.CycleVolume), cmds)
+        assertEquals(CaptureState.Idle, c.state)
+    }
+
+    @Test
+    fun `long press while recording audio ends with end reason`() {
         val c = core()
         c.onAction(KeyAction.START_STOP_AUDIO)
-        assertEquals(listOf<CaptureCommand>(CaptureCommand.StopAudio), c.onAction(KeyAction.START_STOP_AUDIO))
-        c.onAudioFinalized()
-        assertEquals(CaptureState.Idle, c.state)
+        val cmds = c.onAction(KeyAction.END_AUDIO)
+        assertTrue(cmds.any { it is CaptureCommand.EndAudio && it.sessionId == "id0" })
+        assertTrue(c.state is CaptureState.Idle)
+    }
+
+    @Test
+    fun `long press while paused audio ends session directly`() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_AUDIO)
+        c.onAction(KeyAction.START_STOP_AUDIO) // -> PausedAudio
+        val sid = (c.state as CaptureState.PausedAudio).sessionId
+        val cmds = c.onAction(KeyAction.END_AUDIO)
+        assertTrue(cmds.any { it is CaptureCommand.EndPausedAudio && it.sessionId == sid })
+        assertTrue(c.state is CaptureState.Idle)
+    }
+
+    @Test
+    fun `resume shifts audio start forward by pause duration so timer excludes pause`() {
+        var t = 1000L
+        val c = CaptureCore(clock = { t }, newId = { "id" })
+        c.onAction(KeyAction.START_STOP_AUDIO)        // start at 1000 -> startedAt=1000
+        t = 6000L                                      // recorded 5s
+        c.onAction(KeyAction.START_STOP_AUDIO)         // pause at 6000
+        t = 16000L                                     // paused 10s
+        c.onAction(KeyAction.START_STOP_AUDIO)         // resume at 16000
+        // start shifts forward by the 10s pause: 1000 + (16000-6000) = 11000
+        // so the timer at resume = t - startedAt = 16000 - 11000 = 5000ms = the 5s actually recorded.
+        assertEquals(11000L, (c.state as CaptureState.RecordingAudio).startedAtMillis)
+    }
+
+    @Test
+    fun `photo during paused audio uses same session`() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_AUDIO)
+        c.onAction(KeyAction.START_STOP_AUDIO) // -> PausedAudio
+        val cmds = c.onAction(KeyAction.TAKE_PHOTO)
+        assertTrue(cmds.contains(CaptureCommand.TakePhoto("id0")))
+        assertTrue(c.state is CaptureState.PausedAudio)
+    }
+
+    @Test
+    fun `video key during paused audio is rejected`() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_AUDIO)
+        c.onAction(KeyAction.START_STOP_AUDIO) // -> PausedAudio
+        val cmds = c.onAction(KeyAction.START_STOP_VIDEO)
+        assertTrue(cmds.contains(CaptureCommand.Vibrate(2)))
+        assertTrue(c.state is CaptureState.PausedAudio)
+    }
+
+    @Test
+    fun `end audio ignored when in video states`() {
+        val c = core()
+        c.onAction(KeyAction.START_STOP_VIDEO)
+        assertTrue(c.onAction(KeyAction.END_AUDIO).isEmpty())
+        assertTrue(c.state is CaptureState.RecordingVideo)
     }
 
     @Test

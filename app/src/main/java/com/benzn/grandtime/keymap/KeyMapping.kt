@@ -11,8 +11,8 @@ object KeyMapping {
         (HardKey.VIDEO to PressType.LONG) to KeyAction.END_VIDEO,
         (HardKey.PHOTO to PressType.SHORT) to KeyAction.TAKE_PHOTO,
         (HardKey.PHOTO to PressType.LONG) to KeyAction.TOGGLE_TORCH,
-        (HardKey.AUDIO to PressType.SHORT) to KeyAction.ADJUST_VOLUME,
-        (HardKey.AUDIO to PressType.LONG) to KeyAction.START_STOP_AUDIO,
+        (HardKey.AUDIO to PressType.SHORT) to KeyAction.START_STOP_AUDIO,
+        (HardKey.AUDIO to PressType.LONG) to KeyAction.END_AUDIO,
         (HardKey.SOS to PressType.SHORT) to KeyAction.SEND_SOS,
         (HardKey.SOS to PressType.LONG) to KeyAction.TOGGLE_WARNING_LIGHT,
     )

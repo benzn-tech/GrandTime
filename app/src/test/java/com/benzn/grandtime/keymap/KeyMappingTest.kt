@@ -18,9 +18,9 @@ class KeyMappingTest {
             KeyMapping.resolve(KeyPress(HardKey.PHOTO, PressType.SHORT), emptyMap()))
         assertEquals(KeyAction.TOGGLE_TORCH,
             KeyMapping.resolve(KeyPress(HardKey.PHOTO, PressType.LONG), emptyMap()))
-        assertEquals(KeyAction.ADJUST_VOLUME,
-            KeyMapping.resolve(KeyPress(HardKey.AUDIO, PressType.SHORT), emptyMap()))
         assertEquals(KeyAction.START_STOP_AUDIO,
+            KeyMapping.resolve(KeyPress(HardKey.AUDIO, PressType.SHORT), emptyMap()))
+        assertEquals(KeyAction.END_AUDIO,
             KeyMapping.resolve(KeyPress(HardKey.AUDIO, PressType.LONG), emptyMap()))
         assertEquals(KeyAction.SEND_SOS,
             KeyMapping.resolve(KeyPress(HardKey.SOS, PressType.SHORT), emptyMap()))

@@ -10,7 +10,10 @@ sealed interface CaptureCommand {
     data class EndPausedSession(val sessionId: String) : CaptureCommand
     data class TakePhoto(val sessionId: String) : CaptureCommand
     data class StartAudio(val sessionId: String) : CaptureCommand
-    data object StopAudio : CaptureCommand
+    data object PauseAudio : CaptureCommand
+    data class ResumeAudio(val sessionId: String) : CaptureCommand
+    data class EndAudio(val sessionId: String) : CaptureCommand
+    data class EndPausedAudio(val sessionId: String) : CaptureCommand
     data object ToggleTorch : CaptureCommand
     data object CycleVolume : CaptureCommand
     data class Vibrate(val times: Int) : CaptureCommand
@@ -52,6 +55,10 @@ class CaptureCore(
                 CaptureCommand.Vibrate(2),
                 CaptureCommand.Notify("Stop audio recording first"),
             )
+            is CaptureState.PausedAudio -> listOf(
+                CaptureCommand.Vibrate(2),
+                CaptureCommand.Notify("Stop audio recording first"),
+            )
         }
         KeyAction.END_VIDEO -> when (val s = state) {
             is CaptureState.RecordingVideo -> listOf(CaptureCommand.StopVideo(StopReason.END))
@@ -66,8 +73,9 @@ class CaptureCore(
             is CaptureState.RecordingVideo -> listOf(CaptureCommand.TakePhoto(s.sessionId), CaptureCommand.Vibrate(1))
             is CaptureState.PausedVideo -> listOf(CaptureCommand.TakePhoto(s.sessionId), CaptureCommand.Vibrate(1))
             is CaptureState.RecordingAudio -> listOf(CaptureCommand.TakePhoto(s.sessionId), CaptureCommand.Vibrate(1))
+            is CaptureState.PausedAudio -> listOf(CaptureCommand.TakePhoto(s.sessionId), CaptureCommand.Vibrate(1))
         }
-        KeyAction.START_STOP_AUDIO -> when (state) {
+        KeyAction.START_STOP_AUDIO -> when (val s = state) {
             is CaptureState.Idle -> {
                 val session = newId()
                 state = CaptureState.RecordingAudio(session, clock())
@@ -77,7 +85,16 @@ class CaptureCore(
                     CaptureCommand.Notify("Recording audio"),
                 )
             }
-            is CaptureState.RecordingAudio -> listOf(CaptureCommand.StopAudio)
+            is CaptureState.RecordingAudio -> {
+                state = CaptureState.PausedAudio(s.sessionId, s.startedAtMillis, clock())
+                listOf(CaptureCommand.PauseAudio, CaptureCommand.Vibrate(1), CaptureCommand.Notify("Paused"))
+            }
+            is CaptureState.PausedAudio -> {
+                // Shift the timer origin forward by how long we were paused (same rule as video).
+                val resumedStart = s.startedAtMillis + (clock() - s.pausedAtMillis)
+                state = CaptureState.RecordingAudio(s.sessionId, resumedStart)
+                listOf(CaptureCommand.ResumeAudio(s.sessionId), CaptureCommand.Vibrate(1), CaptureCommand.Notify("Recording audio"))
+            }
             is CaptureState.RecordingVideo -> listOf(
                 CaptureCommand.Vibrate(2),
                 CaptureCommand.Notify("Stop video recording first"),
@@ -86,6 +103,18 @@ class CaptureCore(
                 CaptureCommand.Vibrate(2),
                 CaptureCommand.Notify("Stop video recording first"),
             )
+        }
+        KeyAction.END_AUDIO -> when (val s = state) {
+            is CaptureState.Idle -> listOf(CaptureCommand.CycleVolume)
+            is CaptureState.RecordingAudio -> {
+                state = CaptureState.Idle
+                listOf(CaptureCommand.EndAudio(s.sessionId), CaptureCommand.Vibrate(1), CaptureCommand.Notify("Standing by"))
+            }
+            is CaptureState.PausedAudio -> {
+                state = CaptureState.Idle
+                listOf(CaptureCommand.EndPausedAudio(s.sessionId), CaptureCommand.Vibrate(1), CaptureCommand.Notify("Standing by"))
+            }
+            else -> emptyList()
         }
         KeyAction.TOGGLE_TORCH -> listOf(CaptureCommand.ToggleTorch)
         KeyAction.ADJUST_VOLUME -> listOf(CaptureCommand.CycleVolume)
@@ -117,11 +146,6 @@ class CaptureCore(
             }
         }
         else -> emptyList()
-    }
-
-    fun onAudioFinalized(): List<CaptureCommand> {
-        state = CaptureState.Idle
-        return listOf(CaptureCommand.Vibrate(1), CaptureCommand.Notify("Standing by"))
     }
 
     fun onFailure(message: String): List<CaptureCommand> {
