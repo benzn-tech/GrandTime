@@ -1,8 +1,18 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+// Release signing loaded from keystore.properties (gitignored — the app's permanent identity, never
+// committed). Absent on machines without the keystore → the release build simply stays unsigned there.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
@@ -39,6 +49,25 @@ android {
             // Site voice WebSocket API (fieldsight-test). Enabled for soak testing.
             buildConfigField("String", "SITE_VOICE_WS_URL", "\"wss://i1r3tuv9bh.execute-api.ap-southeast-2.amazonaws.com/prod\"")
             buildConfigField("boolean", "SITE_VOICE_ENABLED", "true")
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // Sign with the release keystore when present (production APK); otherwise the build is
+            // unsigned. Minify off for now — no ProGuard/R8 rules maintained yet.
+            signingConfig = if (keystorePropertiesFile.exists()) signingConfigs.getByName("release") else null
+            isMinifyEnabled = false
         }
     }
 

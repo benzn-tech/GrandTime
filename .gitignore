@@ -2,6 +2,12 @@
 build/
 app/build/
 local.properties
+
+# Release signing — NEVER commit these (they are the app's permanent identity)
+keystore.jks
+keystore.properties
+*.jks
+*.keystore
 .idea/
 *.iml
 .kotlin/
