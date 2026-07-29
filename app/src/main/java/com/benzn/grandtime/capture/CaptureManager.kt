@@ -87,7 +87,9 @@ class CaptureManager(
                     stopWatermarkTimer()
                     gps.stop()
                     sounds.stopRecording()
+                    val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
                     execute(core.onFailure("Camera lost — recording stopped"))
+                    if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
                 }
             }
         }
@@ -245,7 +247,9 @@ class CaptureManager(
                 if (error) {
                     stopWatermarkTimer()
                     gps.stop()
+                    val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
                     execute(core.onFailure(message ?: "Video error"))
+                    if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
                     pipeline.release()
                 } else {
                     if (finalizedId != null) {
@@ -271,7 +275,9 @@ class CaptureManager(
             stopWatermarkTimer()
             gps.stop()
             sounds.stopRecording()
+            val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
             execute(core.onFailure("Camera unavailable"))
+            if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
             pipeline.release()
             return false
         }
