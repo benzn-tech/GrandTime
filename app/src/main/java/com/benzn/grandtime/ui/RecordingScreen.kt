@@ -28,9 +28,10 @@ import com.benzn.grandtime.keymap.KeyAction
 import kotlinx.coroutines.delay
 
 @Composable
-fun RecordingScreen(onStop: () -> Unit) {
+fun RecordingScreen() {
     val context = LocalContext.current
     val capture by AppState.captureState.collectAsStateWithLifecycle()
+    val paused = capture is CaptureState.PausedVideo
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { nowMillis = System.currentTimeMillis(); delay(1000) } }
 
@@ -74,34 +75,36 @@ fun RecordingScreen(onStop: () -> Unit) {
         ) {
             Box(Modifier.size(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error))
             Spacer(Modifier.width(8.dp))
-            Text(
-                "REC ${mmss((nowMillis - (start ?: nowMillis)))}",
-                color = Color.White, style = MaterialTheme.typography.titleMedium,
-            )
+            if (paused) {
+                Text("PAUSED", color = Color.White, style = MaterialTheme.typography.titleMedium)
+            } else {
+                Text(
+                    "REC ${mmss((nowMillis - (start ?: nowMillis)))}",
+                    color = Color.White, style = MaterialTheme.typography.titleMedium,
+                )
+            }
         }
         Row(
             Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Deliberate End: send END_VIDEO directly (screenCaptureActions — CoreService dispatches it
-            // to CaptureManager, same as a physical long-press). CaptureManager now derives intent="end"
-            // straight from StopReason.END, so no separate flag/onStop() is needed here. A plain Stop
-            // (short-press semantics) now pauses rather than fully stopping — see CaptureCore.
+            // Pause/Resume and End both emit directly via screenCaptureActions — CoreService dispatches
+            // to CaptureManager, same pipeline as a physical short-press (pause/resume) / long-press (end).
             Button(
-                onClick = { AppState.screenCaptureActions.tryEmit(KeyAction.END_VIDEO) },
+                onClick = { AppState.screenCaptureActions.tryEmit(KeyAction.START_STOP_VIDEO) },
                 modifier = Modifier.height(56.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.secondary,
                     contentColor = MaterialTheme.colorScheme.onSecondary,
                 ),
-            ) { Text("End meeting") }
+            ) { Text(if (paused) "Resume" else "Pause") }
             Button(
-                onClick = onStop,
+                onClick = { AppState.screenCaptureActions.tryEmit(KeyAction.END_VIDEO) },
                 modifier = Modifier.height(56.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.error, contentColor = Color.White,
                 ),
-            ) { Text("Stop") }
+            ) { Text("End meeting") }
         }
     }
 }

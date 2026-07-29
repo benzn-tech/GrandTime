@@ -53,8 +53,6 @@ import com.benzn.grandtime.R
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.LoginState
-import com.benzn.grandtime.hardware.HardKey
-import com.benzn.grandtime.hardware.RawDirection
 import com.benzn.grandtime.service.CoreService
 import com.benzn.grandtime.ui.theme.FieldSightTheme
 import java.io.File
@@ -196,12 +194,13 @@ private fun MainScaffold() {
     BackHandler(enabled = isRecording) {}
     val running by AppState.serviceRunning.collectAsStateWithLifecycle()
 
-    // Service 侧 captureState 驱动导航:进入 RecordingVideo → 全屏 RECORDING;
-    // 离开 RecordingVideo(停止/失败)且当前在 RECORDING → 回 HOME。
+    // Service 侧 captureState 驱动导航:进入 RecordingVideo/PausedVideo → 全屏 RECORDING;
+    // 两者都离开(停止/失败)且当前在 RECORDING → 回 HOME。
     val capture by AppState.captureState.collectAsStateWithLifecycle()
     LaunchedEffect(capture) {
-        if (capture is CaptureState.RecordingVideo && screen != Screen.RECORDING) screen = Screen.RECORDING
-        else if (capture !is CaptureState.RecordingVideo && screen == Screen.RECORDING) screen = Screen.HOME
+        val recording = capture is CaptureState.RecordingVideo || capture is CaptureState.PausedVideo
+        if (recording && screen != Screen.RECORDING) screen = Screen.RECORDING
+        else if (!recording && screen == Screen.RECORDING) screen = Screen.HOME
     }
 
     Scaffold(
@@ -261,13 +260,7 @@ private fun MainScaffold() {
                 Screen.SETTINGS -> SettingsScreen(onOpen = { screen = it })
                 Screen.KEY_BINDINGS -> KeyBindingsScreen()
                 Screen.DIAGNOSTICS -> DiagnosticsScreen()
-                Screen.RECORDING -> RecordingScreen(
-                    onStop = {
-                        // 与物理键同管线:短按 VIDEO(down 立即接 up)= 录像态下的停止(spec 键位)。
-                        AppState.screenKeyEvents.tryEmit(HardKey.VIDEO to RawDirection.DOWN)
-                        AppState.screenKeyEvents.tryEmit(HardKey.VIDEO to RawDirection.UP)
-                    },
-                )
+                Screen.RECORDING -> RecordingScreen()
             }
             // #81:全局快门确认闪现,叠在任意屏幕之上(TAKE_PHOTO 可能来自 Home,抓帧可能发生在
             // RECORDING 全屏预览中)——TopCenter 小缩略图不挡录像预览/控件。
