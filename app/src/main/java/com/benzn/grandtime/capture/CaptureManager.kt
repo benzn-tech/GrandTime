@@ -63,6 +63,7 @@ class CaptureManager(
     private val storage = MediaStorage({ MediaStorage.publicRoot(context) }, scopeProvider = { AppState.mediaScope.value })
     private val sounds = CaptureSounds()
     private val gps = GpsTracker(context)
+    private val sessionsApi = com.benzn.grandtime.net.SessionsApiClient(com.benzn.grandtime.BuildConfig.ORG_API_BASE_URL)
 
     private var segmentTimer: Job? = null
     private var watermarkTimer: Job? = null
@@ -197,6 +198,29 @@ class CaptureManager(
         AppState.captureState.value = core.state
     }
 
+    /** Best-effort session_open — fire-and-forget, never blocks capture. No-op if not logged in. */
+    private fun fireSessionOpen(sessionId: String, kind: String, startedAtMillis: Long) {
+        val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
+        val siteId = AppState.selectedSite.value?.id
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val token = app.authManager.freshIdToken() ?: return@launch
+                sessionsApi.open(token, sessionId, startedAtMillis, kind, siteId)
+            }
+        }
+    }
+
+    /** Best-effort session_close (intent "idle" — deliberate-End is P0-c) — fire-and-forget. */
+    private fun fireSessionClose(sessionId: String, endedAtMillis: Long) {
+        val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val token = app.authManager.freshIdToken() ?: return@launch
+                sessionsApi.close(token, sessionId, endedAtMillis, "idle")
+            }
+        }
+    }
+
     private suspend fun startVideoSegment(cmd: CaptureCommand.StartVideoSegment): Boolean {
         val settings = settingsStore.settings.first()
         val file = storage.newFile(MediaStorage.Kind.VIDEO)
@@ -206,6 +230,7 @@ class CaptureManager(
         if (cmd.segmentIndex == 1) {
             if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) gps.start()
             startWatermarkTimer(settings)
+            fireSessionOpen(cmd.sessionId, kind = "video", startedAtMillis = startedAt)
         }
         val result = pipeline.startSegment(
             file = file,
@@ -229,12 +254,14 @@ class CaptureManager(
                     }
                     val roll = pendingRoll
                     pendingRoll = false
+                    val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
                     execute(core.onVideoFinalized(roll))
                     if (core.state is CaptureState.Idle) {
                         sounds.stopRecording()
                         stopWatermarkTimer()
                         gps.stop()
                         pipeline.release()
+                        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
                     }
                 }
             }
@@ -487,6 +514,7 @@ class CaptureManager(
         }
         sounds.startRecording()
         probe("audio started: ${first.name}")
+        fireSessionOpen(sessionId, kind = "audio", startedAtMillis = System.currentTimeMillis())
         return true
     }
 
@@ -511,12 +539,14 @@ class CaptureManager(
     }
 
     private suspend fun stopAudio() {
+        val endingSessionId = (core.state as? CaptureState.RecordingAudio)?.sessionId
         val stoppedCleanly = audio.stop()
         if (!stoppedCleanly) probe("audio stop reported error")
         // 录音期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
         if (!pipeline.isRecording) pipeline.release()
         sounds.stopRecording()
         execute(core.onAudioFinalized())
+        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
     }
 
     private fun vibrate(times: Int) {
