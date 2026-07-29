@@ -61,6 +61,11 @@ class Camera2Pipeline(
 
     val isRecording: Boolean get() = segment != null
 
+    /** True while the camera capture session is open. False after release() — used to tell a cold
+     *  (re)start (segment 1, or resume after a power-saving pause released the camera) from a rollover
+     *  that reuses the live session, so GPS/watermark are (re)started only on a cold start. */
+    val hasSession: Boolean get() = session != null
+
     data class SegmentResult(val codec: String, val resolution: String)
 
     private fun cm() = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager

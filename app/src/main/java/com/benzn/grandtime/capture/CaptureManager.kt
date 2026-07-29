@@ -249,10 +249,16 @@ class CaptureManager(
         val file = storage.newFile(MediaStorage.Kind.VIDEO)
         val startedAt = System.currentTimeMillis()
         val recordId = UUID.randomUUID().toString()
-        // 段 1:按权限起 GPS(未授权 GpsTracker.start() 自己 no-op),并按设置起水印刷新定时器。
-        if (cmd.segmentIndex == 1) {
+        // GPS + watermark (re)start on a COLD camera start — segment 1, OR resume after a power-saving
+        // pause released the camera. A rollover reuses the live session (hasSession true) and keeps them
+        // running, so don't restart on rollover. (GpsTracker.start() is a no-op without permission.)
+        val cameraWasClosed = !pipeline.hasSession
+        if (cameraWasClosed) {
             if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) gps.start()
             startWatermarkTimer(settings)
+        }
+        // session_open only at the true session start (segment 1) — resume must NOT re-open it.
+        if (cmd.segmentIndex == 1) {
             fireSessionOpen(cmd.sessionId, kind = "video", startedAtMillis = startedAt)
         }
         val result = pipeline.startSegment(
@@ -294,6 +300,13 @@ class CaptureManager(
                         if (reason == StopReason.END && endingSessionId != null) {
                             fireSessionClose(endingSessionId, System.currentTimeMillis(), "end")
                         }
+                    } else if (reason == StopReason.PAUSE && core.state is CaptureState.PausedVideo) {
+                        // #3 power-saving pause: release the camera + GPS + watermark so the device can
+                        // deep-sleep while paused (the wakelock is already released for PausedVideo).
+                        // Resume cold-opens the camera and restarts GPS/watermark; the session stays open.
+                        stopWatermarkTimer()
+                        gps.stop()
+                        pipeline.release()
                     }
                 }
             }

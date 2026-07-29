@@ -25,7 +25,7 @@ class CaptureCoreTest {
         val stopCmds = c.onAction(KeyAction.START_STOP_VIDEO)
         assertEquals(listOf<CaptureCommand>(CaptureCommand.StopVideo(StopReason.PAUSE)), stopCmds)
         val doneCmds = c.onVideoFinalized(StopReason.PAUSE)
-        assertEquals(CaptureState.PausedVideo("id0", 1, 1000L), c.state)
+        assertEquals(CaptureState.PausedVideo("id0", 1, 1000L, 1000L), c.state)
         assertTrue(doneCmds.any { it is CaptureCommand.Notify })
     }
 
@@ -193,6 +193,21 @@ class CaptureCoreTest {
         assertEquals(t0, (c.state as CaptureState.PausedVideo).startedAtMillis)
         c.onAction(KeyAction.START_STOP_VIDEO) // resume
         assertEquals(t0, (c.state as CaptureState.RecordingVideo).startedAtMillis)
+    }
+
+    @Test
+    fun resume_shifts_start_forward_by_pause_duration_so_timer_excludes_pause() {
+        var t = 1000L
+        val c = CaptureCore(clock = { t }, newId = { "id" })
+        c.onAction(KeyAction.START_STOP_VIDEO)       // start at 1000 → startedAt=1000
+        t = 6000L                                     // recorded 5s
+        c.onAction(KeyAction.START_STOP_VIDEO)        // pause cmd
+        c.onVideoFinalized(StopReason.PAUSE)          // PausedVideo pausedAt=6000
+        t = 16000L                                    // paused 10s
+        c.onAction(KeyAction.START_STOP_VIDEO)        // resume at 16000
+        // start shifts forward by the 10s pause: 1000 + (16000-6000) = 11000
+        // so the timer at resume = t - startedAt = 16000 - 11000 = 5000ms = the 5s actually recorded.
+        assertEquals(11000L, (c.state as CaptureState.RecordingVideo).startedAtMillis)
     }
 
     @Test

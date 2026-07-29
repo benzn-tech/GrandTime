@@ -42,7 +42,10 @@ class CaptureCore(
             is CaptureState.RecordingVideo -> listOf(CaptureCommand.StopVideo(StopReason.PAUSE))
             is CaptureState.PausedVideo -> {
                 val next = s.segmentIndex + 1
-                state = CaptureState.RecordingVideo(s.sessionId, next, s.startedAtMillis)
+                // Shift the timer origin forward by how long we were paused, so the REC timer counts
+                // actual recording time (excludes the pause), not wall-clock since the first start.
+                val resumedStart = s.startedAtMillis + (clock() - s.pausedAtMillis)
+                state = CaptureState.RecordingVideo(s.sessionId, next, resumedStart)
                 listOf(CaptureCommand.StartVideoSegment(s.sessionId, next), CaptureCommand.Vibrate(1), CaptureCommand.Notify("Recording video"))
             }
             is CaptureState.RecordingAudio -> listOf(
@@ -105,7 +108,7 @@ class CaptureCore(
                 listOf(CaptureCommand.StartVideoSegment(s.sessionId, next))
             }
             StopReason.PAUSE -> {
-                state = CaptureState.PausedVideo(s.sessionId, s.segmentIndex, s.startedAtMillis)
+                state = CaptureState.PausedVideo(s.sessionId, s.segmentIndex, s.startedAtMillis, clock())
                 listOf(CaptureCommand.Vibrate(1), CaptureCommand.Notify("Paused"))
             }
             StopReason.END -> {
