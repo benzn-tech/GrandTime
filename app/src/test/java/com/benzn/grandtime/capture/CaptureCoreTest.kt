@@ -211,6 +211,23 @@ class CaptureCoreTest {
     }
 
     @Test
+    fun two_pause_cycles_accumulate_so_timer_excludes_all_pauses() {
+        var t = 1000L
+        val c = CaptureCore(clock = { t }, newId = { "id" })
+        c.onAction(KeyAction.START_STOP_VIDEO)                     // start t=1000
+        t = 6000L                                                  // recorded 5s
+        c.onAction(KeyAction.START_STOP_VIDEO); c.onVideoFinalized(StopReason.PAUSE) // pause1 @6000
+        t = 16000L                                                 // paused 10s
+        c.onAction(KeyAction.START_STOP_VIDEO)                     // resume1 @16000 → start = 1000+10000 = 11000
+        t = 19000L                                                 // recorded 3s
+        c.onAction(KeyAction.START_STOP_VIDEO); c.onVideoFinalized(StopReason.PAUSE) // pause2 @19000
+        t = 39000L                                                 // paused 20s
+        c.onAction(KeyAction.START_STOP_VIDEO)                     // resume2 @39000 → start = 11000+20000 = 31000
+        // timer = t - start = 39000 - 31000 = 8000ms = the 5s + 3s actually recorded (both pauses excluded).
+        assertEquals(31000L, (c.state as CaptureState.RecordingVideo).startedAtMillis)
+    }
+
+    @Test
     fun end_video_ignored_when_idle() {
         val c = core()
         assertTrue(c.onAction(KeyAction.END_VIDEO).isEmpty())

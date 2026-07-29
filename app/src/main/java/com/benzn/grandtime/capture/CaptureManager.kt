@@ -91,8 +91,8 @@ class CaptureManager(
                     execute(core.onFailure("Camera lost — recording stopped"))
                     if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
                 } else if (core.state is CaptureState.PausedVideo) {
-                    // Camera lost while paused (we keep it alive across a pause): no live segment to
-                    // finalize — just clean up + close the session (idle) so GPS/watermark don't leak.
+                    // Camera lost in the narrow race before pause-cleanup released it (#3 releases the
+                    // camera on pause): no live segment to finalize — clean up + close the session (idle).
                     val endingSessionId = (core.state as? CaptureState.PausedVideo)?.sessionId
                     stopWatermarkTimer()
                     gps.stop()
@@ -343,6 +343,10 @@ class CaptureManager(
         if (cmd.segmentIndex == 1) {
             sounds.startRecording()
         }
+        // A cold camera (re)open resets Camera2Pipeline's internal torch flag to off; re-assert the
+        // operator's torch state (TorchController is the source of truth) so a torch left ON before a
+        // power-saving pause relights on resume, instead of needing a spurious double-toggle.
+        if (cameraWasClosed && torch.torchOn) pipeline.setTorch(true)
         probe("video segment ${cmd.segmentIndex} started: ${file.name}")
         return true
     }
@@ -457,8 +461,9 @@ class CaptureManager(
         } else {
             notify("Photo failed"); vibrate(2)
         }
-        // 录像态/暂停态保留相机会话(暂停要快速 resume);否则(Idle/录音)拍完释放相机。
-        if (core.state !is CaptureState.RecordingVideo && core.state !is CaptureState.PausedVideo && !pipeline.isRecording) pipeline.release()
+        // 只有活跃录像态保留相机会话;否则(Idle/录音/暂停)拍完释放相机——暂停期(#3 省电)要让相机
+        // 关着,若拍照重开了会话,拍完必须再释放,否则 resume 会误判"相机没冷启"而不重启 GPS/水印。
+        if (core.state !is CaptureState.RecordingVideo && !pipeline.isRecording) pipeline.release()
     }
 
     /** 照片精度降采样(spec §2.7):JPEG 超目标像素则解码→按比例缩小→重压。IO 线程。 */
