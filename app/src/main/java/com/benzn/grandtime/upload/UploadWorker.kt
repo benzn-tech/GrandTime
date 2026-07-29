@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
+import com.benzn.grandtime.capture.ChunkNaming
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.db.CaptureDb
@@ -63,7 +64,10 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                 kind = uploadKind(record.kind),
                 clientUuid = record.id,
                 siteId = record.siteId,
-                fileName = record.fileName,
+                // Wire name carries the session/chunk tokens the backend groups on; local file name
+                // and audio segmentation are untouched. Falls back to record.fileName for photos /
+                // legacy rows without a valid session id (ChunkNaming.wireFileName).
+                fileName = ChunkNaming.wireFileName(record.fileName, record.sessionId, record.segmentIndex),
                 contentType = contentType,
                 startedAt = iso8601(record.startedAt),
                 endedAt = record.endedAt?.let { iso8601(it) },

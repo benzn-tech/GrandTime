@@ -55,7 +55,7 @@ class CaptureManager(
         override fun enqueue(recordId: String, initialDelaySeconds: Long, requireUnmetered: Boolean) {}
     },
 ) : MicHandover {
-    private val core = CaptureCore(clock = System::currentTimeMillis, newId = { UUID.randomUUID().toString() })
+    private val core = CaptureCore(clock = System::currentTimeMillis, newId = { ChunkNaming.sessionId(UUID.randomUUID().toString()) })
     private val pipeline = Camera2Pipeline(context, probe)
     private val audio = AudioRecorder(context)
     private val torch = TorchController(context, pipeline)
