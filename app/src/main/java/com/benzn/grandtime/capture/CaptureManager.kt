@@ -90,6 +90,15 @@ class CaptureManager(
                     val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
                     execute(core.onFailure("Camera lost — recording stopped"))
                     if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
+                } else if (core.state is CaptureState.PausedVideo) {
+                    // Camera lost while paused (we keep it alive across a pause): no live segment to
+                    // finalize — just clean up + close the session (idle) so GPS/watermark don't leak.
+                    val endingSessionId = (core.state as? CaptureState.PausedVideo)?.sessionId
+                    stopWatermarkTimer()
+                    gps.stop()
+                    sounds.stopRecording()
+                    execute(core.onFailure("Camera lost — recording stopped"))
+                    if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
                 }
             }
         }
@@ -435,8 +444,8 @@ class CaptureManager(
         } else {
             notify("Photo failed"); vibrate(2)
         }
-        // 录像中保留会话;否则(Idle/录音)拍完释放相机。
-        if (core.state !is CaptureState.RecordingVideo && !pipeline.isRecording) pipeline.release()
+        // 录像态/暂停态保留相机会话(暂停要快速 resume);否则(Idle/录音)拍完释放相机。
+        if (core.state !is CaptureState.RecordingVideo && core.state !is CaptureState.PausedVideo && !pipeline.isRecording) pipeline.release()
     }
 
     /** 照片精度降采样(spec §2.7):JPEG 超目标像素则解码→按比例缩小→重压。IO 线程。 */
