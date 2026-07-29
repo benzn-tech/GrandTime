@@ -77,7 +77,10 @@ class CaptureCore(
         is CaptureState.RecordingVideo ->
             if (rollToNext) {
                 val next = s.segmentIndex + 1
-                state = CaptureState.RecordingVideo(s.sessionId, next, clock())
+                // Preserve the ORIGINAL session start across ~1-min segment rollovers (do NOT reset to
+                // clock()): startedAtMillis drives the on-screen REC timer, which must show continuous
+                // session time, not restart from 00:00 every minute at each segment boundary.
+                state = CaptureState.RecordingVideo(s.sessionId, next, s.startedAtMillis)
                 listOf(CaptureCommand.StartVideoSegment(s.sessionId, next))
             } else {
                 state = CaptureState.Idle
