@@ -382,10 +382,16 @@ class CoreService : LifecycleService() {
      *  exemption (same as the boot launch); a no-op when the overlay permission isn't granted
      *  (can't start an activity from the background without it) or when the app is already foreground. */
     private fun bringAppToForeground() {
+        // Already on screen → do nothing. Relaunching a visible MainActivity destroys its RecordingScreen
+        // preview SurfaceView (the "photo-during-recording → preview goes black" bug). This is the no-op
+        // the method always intended. SINGLE_TOP is defence-in-depth: even if a launch does fire, an
+        // Activity already at the top of the task is reused (onNewIntent) instead of recreated.
+        if (MainActivity.isForeground) return
         if (Settings.canDrawOverlays(this)) {
             runCatching {
                 startActivity(
-                    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    Intent(this, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 )
             }
         }

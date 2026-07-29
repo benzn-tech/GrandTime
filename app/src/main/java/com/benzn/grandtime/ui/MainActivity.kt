@@ -62,6 +62,16 @@ import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        /** True across the Activity's visible lifetime (onStart..onStop). CoreService reads this so a
+         *  physical-key capture action does NOT relaunch the Activity when the UI is already on screen.
+         *  Relaunching a visible MainActivity destroys the RecordingScreen preview SurfaceView, which is
+         *  the root cause of the "photo-during-recording → preview goes black (recording stays fine)" bug. */
+        @Volatile
+        var isForeground = false
+            private set
+    }
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             startCore()
@@ -91,6 +101,16 @@ class MainActivity : ComponentActivity() {
         } else {
             permissionLauncher.launch(required.toTypedArray())
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        isForeground = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        isForeground = false
     }
 
     override fun onResume() {
