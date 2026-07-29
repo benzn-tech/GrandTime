@@ -78,13 +78,29 @@ fun RecordingScreen(onStop: () -> Unit) {
                 color = Color.White, style = MaterialTheme.typography.titleMedium,
             )
         }
-        Button(
-            onClick = onStop,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp).height(56.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.error, contentColor = Color.White,
-            ),
-        ) { Text("Stop") }
+        Row(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // Deliberate End: flag the next stop as intent="end" so the backend finalizes + emails the
+            // meeting summary immediately, then stop via the same path as the Stop button. A plain Stop
+            // stays intent="idle" (30s grace).
+            Button(
+                onClick = { AppState.endIntentPending = true; onStop() },
+                modifier = Modifier.height(56.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
+                ),
+            ) { Text("End meeting") }
+            Button(
+                onClick = onStop,
+                modifier = Modifier.height(56.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error, contentColor = Color.White,
+                ),
+            ) { Text("Stop") }
+        }
     }
 }
 

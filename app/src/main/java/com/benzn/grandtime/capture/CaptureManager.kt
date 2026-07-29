@@ -202,6 +202,7 @@ class CaptureManager(
 
     /** Best-effort session_open — fire-and-forget, never blocks capture. No-op if not logged in. */
     private fun fireSessionOpen(sessionId: String, kind: String, startedAtMillis: Long) {
+        AppState.endIntentPending = false // clear any stale End flag at the start of a new session
         // Everything (incl. the `as GrandTimeApp` cast) runs inside the IO launch + runCatching so
         // nothing can throw onto the capture coroutine — this fires at record-start before the
         // segment is even opened (Opus review: keep the capture path crash-proof).
@@ -216,14 +217,22 @@ class CaptureManager(
     }
 
     /** Best-effort session_close (intent "idle" — deliberate-End is P0-c) — fire-and-forget. */
-    private fun fireSessionClose(sessionId: String, endedAtMillis: Long) {
+    private fun fireSessionClose(sessionId: String, endedAtMillis: Long, intent: String = "idle") {
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
                 val token = app.authManager.freshIdToken() ?: return@launch
-                sessionsApi.close(token, sessionId, endedAtMillis, "idle")
+                sessionsApi.close(token, sessionId, endedAtMillis, intent)
             }
         }
+    }
+
+    /** Reads and clears the one-shot End flag: "end" if the user pressed "End meeting", else "idle".
+     *  Only the deliberate clean-stop paths call this; failure paths always close with "idle". */
+    private fun consumeEndIntent(): String {
+        val end = AppState.endIntentPending
+        AppState.endIntentPending = false
+        return if (end) "end" else "idle"
     }
 
     private suspend fun startVideoSegment(cmd: CaptureCommand.StartVideoSegment): Boolean {
@@ -271,7 +280,7 @@ class CaptureManager(
                         stopWatermarkTimer()
                         gps.stop()
                         pipeline.release()
-                        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
+                        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis(), consumeEndIntent())
                     }
                 }
             }
@@ -558,7 +567,7 @@ class CaptureManager(
         if (!pipeline.isRecording) pipeline.release()
         sounds.stopRecording()
         execute(core.onAudioFinalized())
-        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
+        if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis(), consumeEndIntent())
     }
 
     private fun vibrate(times: Int) {

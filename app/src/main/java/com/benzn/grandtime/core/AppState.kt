@@ -28,6 +28,13 @@ object AppState {
     /** 采集状态(Service 写,Home 卡读)。 */
     val captureState = MutableStateFlow<CaptureState>(CaptureState.Idle)
 
+    /** One-shot "the next stop is a deliberate End" flag. Set by the RecordingScreen "End meeting"
+     *  button (UI thread), consumed by CaptureManager when it fires the clean session_close so that
+     *  close carries intent="end" (backend finalizes + emails immediately) instead of "idle" (30s
+     *  grace). Reset on session start and on consume so it never leaks into another session. */
+    @Volatile
+    var endIntentPending: Boolean = false
+
     /** UI 屏幕按键 → Service(down/up 原始事件)。 */
     val screenKeyEvents = MutableSharedFlow<Pair<HardKey, RawDirection>>(extraBufferCapacity = 16)
 
