@@ -29,9 +29,11 @@ object AppState {
     val captureState = MutableStateFlow<CaptureState>(CaptureState.Idle)
 
     /** One-shot "the next stop is a deliberate End" flag. Set by the RecordingScreen "End meeting"
-     *  button (UI thread), consumed by CaptureManager when it fires the clean session_close so that
-     *  close carries intent="end" (backend finalizes + emails immediately) instead of "idle" (30s
-     *  grace). Reset on session start and on consume so it never leaks into another session. */
+     *  button, consumed by CaptureManager when it fires the clean session_close so that close carries
+     *  intent="end" (backend finalizes + emails immediately) instead of "idle" (30s grace). Reset on
+     *  session start and on consume so it never leaks into another session. Today both the write and
+     *  the consume run on CaptureManager's Main.immediate scope (strictly ordered, no active race);
+     *  @Volatile is defensive in case a consumer ever moves onto another thread. */
     @Volatile
     var endIntentPending: Boolean = false
 
