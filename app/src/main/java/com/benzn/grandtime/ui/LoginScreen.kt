@@ -38,9 +38,10 @@ fun LoginScreen(onSignedIn: () -> Unit) {
     val context = LocalContext.current
     val auth = remember { (context.applicationContext as GrandTimeApp).authManager }
     val scope = rememberCoroutineScope()
-    // rememberSaveable so a typed email/password survives config changes / process death
-    // (the Activity is also orientation-locked + handles configChanges, so it won't recreate on
-    // rotation — this is defense-in-depth so the login form never loses what the user typed).
+    // rememberSaveable so a typed email/password survives Activity recreation / process death.
+    // MainActivity is NOT orientation-locked (the portrait lock blacked the landscape camera and was
+    // removed), so rotation DOES recreate the Activity — rememberSaveable is what keeps the login
+    // form from losing what the user typed across that recreation.
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
