@@ -146,6 +146,12 @@ class CoreService : LifecycleService() {
         lifecycleScope.launch {
             AppState.screenKeyEvents.collect { (key, direction) -> onScreen.onScreenKey(key, direction) }
         }
+        lifecycleScope.launch {
+            AppState.screenCaptureActions.collect { action ->
+                val mgr = captureManager
+                if (mgr != null && action in mgr.handledActions) { bringAppToForeground(); mgr.handle(action) }
+            }
+        }
         // 拆成两个独立协程:collect 先挂上订阅,silentLogin() 单独启动——
         // 避免未来 silentLogin() 若抛异常,导致同一协程内尚未执行到的 collect 永远不会挂上,AppState 停止镜像登录态。
         lifecycleScope.launch {
