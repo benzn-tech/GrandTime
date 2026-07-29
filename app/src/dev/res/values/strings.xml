@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dev-flavor launcher label: distinguishes the test-stack build from the prod app on-device. -->
+    <string name="app_name">devfieldsight</string>
+</resources>
