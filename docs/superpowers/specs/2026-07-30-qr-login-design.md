@@ -150,11 +150,19 @@ the app with `AuthParameters={USERNAME}` (plain CUSTOM_AUTH, **not** SRP).
 | `createdAt` | N | epoch seconds |
 | `env` | S | `prod`/`test` (informational) |
 
-- **Single shared table** (mirrors the shared Cognito pool). Both org-api deployments (test + prod)
-  write to it; the single VerifyAuthChallenge trigger reads it. DynamoDB TTL is best-effort cleanup —
-  Verify **also** checks `expiresAt` explicitly (TTL deletion can lag minutes).
-- Ephemeral auth artifacts only — no customer data — so a shared table does not violate the
-  test/prod data isolation (BUG-38).
+- **One table, owned by the prod stack.** Only the **prod** create endpoint writes; the single
+  VerifyAuthChallenge trigger reads. DynamoDB TTL is best-effort cleanup — Verify **also** checks
+  `expiresAt` explicitly (TTL deletion can lag minutes).
+- **Why not a separate test table / test create endpoint?** The Cognito pool + the 3 triggers are
+  **shared** across test and prod (BUG-38), so there is no isolated pool to rehearse on, and the
+  single Verify trigger would have to check two tables — messy. Crucially, **code redemption is
+  environment-agnostic**: the terminal completes `CUSTOM_AUTH` **directly against Cognito** (shared
+  pool + shared app client), never via org-api. So *any* terminal (dev or prod flavor) can redeem a
+  **prod**-created code — which is also how we test the full loop without a test create endpoint. If
+  dev/test web ever needs to mint codes, add a test create endpoint later that writes to **this same
+  prod table** via IAM (a small additive change).
+- Ephemeral auth artifacts only — no customer data — so this does not touch the test/prod data
+  isolation (BUG-38).
 
 ---
 
@@ -218,17 +226,16 @@ Evolve the probe into the real screen:
 change are pool/client-level and take effect for both at once. There is no separate pool to rehearse
 on.** Mitigation:
 
-1. Deploy the **code table** + **3 trigger Lambdas** + attach the pool `LambdaConfig` **once**
-   (from the prod SAM stack, or a dedicated auth mini-stack — **not** double-configured from two
-   stacks, which would fight over the pool's LambdaConfig). Grant the deploy role IAM for the new
-   resources (memory *org-api-new-route-iam-trap*: a missing grant → CREATE_FAILED rolls back the
-   whole stack).
+1. Deploy the **code table** + **3 trigger Lambdas** + attach the pool `LambdaConfig` **once** from
+   the **prod** SAM stack (**not** double-configured from two stacks, which would fight over the
+   pool's LambdaConfig). Grant the deploy role IAM for the new resources (memory
+   *org-api-new-route-iam-trap*: a missing grant → CREATE_FAILED rolls back the whole stack).
 2. Add `ALLOW_CUSTOM_AUTH` to the mobile client.
-3. Deploy `POST /api/org/auth/qr/create` to **test** org-api first; grant both org-api roles IAM to
-   the shared code table.
-4. **Rehearse end-to-end on the same pool** using the **test** create endpoint + **dev** mobile
-   flavor (dev + prod mobile share the pool and app client) before announcing prod.
-5. Deploy the create endpoint to prod; ship web + mobile.
+3. Deploy `POST /api/org/auth/qr/create` to **prod** org-api (v1 has no test create endpoint — see §6).
+4. **Rehearse end-to-end on the shared pool**: sign into **prod** web, mint a code, and scan it with a
+   terminal (dev *or* prod flavor both work — redemption is Cognito-direct). Do this before
+   announcing the feature to real users.
+5. Ship web + mobile.
 
 Because triggers only fire for `CUSTOM_AUTH`, existing `USER_PASSWORD_AUTH` (web + mobile password
 login) is unaffected throughout.
@@ -271,8 +278,9 @@ login) is unaffected throughout.
 ---
 
 ## 13. Open questions for review
-1. **Code-table ownership** — prod SAM stack vs a dedicated auth mini-stack? (Recommend: prod stack,
-   referenced by test org-api via parameter + IAM.)
+1. ~~**Code-table ownership**~~ **RESOLVED (2026-07-30):** one table in the prod stack, prod-only
+   create endpoint. No test create endpoint / cross-stack IAM in v1 — redemption is Cognito-direct
+   and env-agnostic, so a prod code can be scanned by any terminal (see §6).
 2. **Self-service only for v1?** (Recommend yes; admin provisioning as a fast follow.)
 3. **Web entry placement** — Settings page vs a dedicated "Devices" view? (Recommend: Settings for
    v1.)
