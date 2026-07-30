@@ -239,7 +239,9 @@ fun FilesScreen() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            if (unit.representative.sessionId == activeSessionId) {
+                            // Only the live video/audio recording is protected; a photo taken during a
+                            // recording shares its sessionId but is a closed file — safe to delete anytime.
+                            if (unit.representative.kind != "photo" && unit.representative.sessionId == activeSessionId) {
                                 Toast.makeText(context, "Stop this recording before deleting", Toast.LENGTH_SHORT).show()
                             } else {
                                 deleteUnit = unit
