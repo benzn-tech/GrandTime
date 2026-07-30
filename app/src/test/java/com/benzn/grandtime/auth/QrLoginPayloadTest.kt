@@ -22,6 +22,14 @@ class QrLoginPayloadTest {
         assertNull(QrLoginParser.parse("""{"v":1,"c":"C","env":"prod"}"""))
     }
 
+    @Test fun `rejects missing env`() {
+        assertNull(QrLoginParser.parse("""{"v":1,"u":"a@b.com","c":"C"}"""))
+    }
+
+    @Test fun `rejects blank env`() {
+        assertNull(QrLoginParser.parse("""{"v":1,"u":"a@b.com","c":"C","env":""}"""))
+    }
+
     @Test fun `rejects non-JSON (eg a random website QR)`() {
         assertNull(QrLoginParser.parse("https://example.com"))
     }
