@@ -4,11 +4,24 @@ F2SP 执法终端上的现场作业记录仪原生 Android App(Kotlin/Compose),�
 
 **沟通**:中文回复;汇报用 已完成/如何/影响 格式。
 
-## 当前状态(2026-07-15)
+## 当前状态(2026-07-30)
 
-- **已上线**:主干采集(SP1)、UI 换装、SP3a/SP3c 采集、SP2 Cognito 登录、SP4 上传+工地选择、SP3b 物理灯语、**SP-Capture2-P2(相机层 CameraX→Camera2+OpenGL+MediaCodec+音频 重写)** —— 全部合并 `main` + 推 GitHub + 真机验收。P2 tag `sp-capture2-p2-accepted`。
-- **下一步(已设计+计划,未实施)**:**SP-Capture2-P3(GPS 水印 + gps_track)**。spec + plan 已 push,直接接 SDD 执行即可。见 `docs/superpowers/2026-07-15-session-handoff.md`。
-- `main` 与 origin 同步。当前无活跃 feature 分支(P3 执行时新建)。
+- **prod 线上 = 0.5.7**(versionCode 11,签名 release,tag `v0.5.7`,连客户湖 `fieldsight-data-509194952652`)。dev 版桌面标签叫 **devfieldsight**(见记忆 [[grandtime-dev-label-convention]])。
+- **已上线到 prod**(按时间):SP1-4 采集/登录/上传、SP3b 灯语、SP-Capture2-P2/P3(Camera2+GL+水印+GPS)、录像中拍照预览黑修复、**视频 Pause/Resume + 息屏省电暂停**、**音频 Pause/Resume**(音频键:空闲长按=调音量、录音中短按=暂停、长按=结束、空闲短按=开始)、**P0 chunk-session**(文件名 `_sid{32hex}_c{NNNN}`+session open/close+≤2min 快报告链路)、**30s 滚动分段 + 文件页/首页按"整段录制"归一**(UI 归一非物理合并)、**release 签名**(keystore.jks + keystore.properties 均 gitignored,**必须备份**,口令见早期会话)。
+- **进行中:扫码登录(QR passwordless sign-in)** —— spec + 三份计划已完成**未开始实现**。0.5.7 里已有登录页"Scan QR to Sign in"按钮 + Camera2/ZXing 扫码界面,但**当前只解码不真登录**(探针)。详见下方"扫码登录"节 + 记忆 [[grandtime-qr-login]]。
+- `main` 与 origin 同步。当前无活跃 feature 分支。
+
+## 扫码登录(QR sign-in)—— 下一步要做的事
+
+**目标**:终端扫 web 出示的一次性二维码 → 走 Cognito 自定义认证(passwordless)→ 终端拿到**自己的** token 登录,免在硬键盘打字。**跨 3 仓**。
+
+- **设计已定**(spec `docs/superpowers/specs/2026-07-30-qr-login-design.md`):流向=终端扫 web 码;架构=Cognito CUSTOM_AUTH(因 web/移动端 app client 不同 + 后端无法凭空签发 token);v1 只自助;码 TTL 90s 单次;Verify 按 `userAttributes.sub` 比对;码表+create 全放 prod(兑换 Cognito 直连、环境无关)。
+- **三份实施计划**(逐任务 TDD,共 12 任务):
+  - Backend `C:/Users/camil/Dropbox/fieldsight-pipeline/docs/superpowers/plans/2026-07-30-qr-login-backend.md`(本地 commit `9032acc`,分支 feat/session-continuity,**未推**——推 develop 触发部署)
+  - Mobile `docs/superpowers/plans/2026-07-30-qr-login-mobile.md`(已推 main)
+  - Web `.../fieldsight-pipeline/docs/superpowers/plans/2026-07-30-qr-login-web.md`(本地 commit `cbb371c`,未推)
+- **执行顺序**:后端(Task1-3 纯代码/模板本地可测 → Task4 动**共享 prod Cognito 池**改 app client + 挂触发器,`describe→merge→update`,权限受限**须用户 `!` 亲自跑**;Task4 Step5 纯 CLI 端到端演练即可验后端,免移动端)→ 移动 → web。
+- **待用户选执行方式**:Subagent-Driven(推荐)或 Inline,选定后从后端 Task 1 开工。
 
 ## 架构(采集核心 = Camera2 管线)
 
