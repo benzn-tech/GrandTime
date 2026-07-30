@@ -40,6 +40,8 @@ android {
             // Site voice WebSocket API (prod, fieldsight-prod-voice-ws). Enabled: PROD_ENABLE_SITE_VOICE flipped, prod backend live.
             buildConfigField("String", "SITE_VOICE_WS_URL", "\"wss://ouv5cmq6si.execute-api.ap-southeast-2.amazonaws.com/prod\"")
             buildConfigField("boolean", "SITE_VOICE_ENABLED", "true")
+            // QR login env tag — must match the "env" field the web app encodes into the login QR.
+            buildConfigField("String", "QR_ENV", "\"prod\"")
         }
         create("dev") {
             dimension = "env"
@@ -49,6 +51,8 @@ android {
             // Site voice WebSocket API (fieldsight-test). Enabled for soak testing.
             buildConfigField("String", "SITE_VOICE_WS_URL", "\"wss://i1r3tuv9bh.execute-api.ap-southeast-2.amazonaws.com/prod\"")
             buildConfigField("boolean", "SITE_VOICE_ENABLED", "true")
+            // QR login env tag — must match the "env" field the web app encodes into the login QR.
+            buildConfigField("String", "QR_ENV", "\"test\"")
         }
     }
 

@@ -6,6 +6,5 @@ enum class Screen(val title: String) {
     SETTINGS("Settings"),
     KEY_BINDINGS("Key bindings"),
     DIAGNOSTICS("Diagnostics"),
-    QR_SCAN("Scan QR (test)"),
     RECORDING("Recording"),
 }
