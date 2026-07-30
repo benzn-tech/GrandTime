@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,6 +50,21 @@ fun LoginScreen(onSignedIn: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
+    // Feasibility probe (QR-login step 1): open the scanner from the login screen without needing to
+    // sign in first. This is where the real "扫码登录" button will live once the custom-auth flow lands.
+    var showScanner by rememberSaveable { mutableStateOf(false) }
+
+    // The device's physical back key would otherwise exit the app (login is the root screen). While the
+    // scanner is up, send back to the login form instead — mirrors the top-left back arrow.
+    BackHandler(enabled = showScanner) { showScanner = false }
+
+    if (showScanner) {
+        Column(Modifier.fillMaxSize()) {
+            AppTopBar(title = "Scan QR (test)", showBack = true, onBack = { showScanner = false }, serviceRunning = false)
+            QrScanScreen()
+        }
+        return
+    }
 
     fun submit() {
         if (loading) return
@@ -65,9 +83,21 @@ fun LoginScreen(onSignedIn: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         AppTopBar(title = null, showBack = false, onBack = {}, serviceRunning = false)
         Column(
-            Modifier.fillMaxSize().padding(24.dp),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Right under the header so it's always visible on the short landscape terminal screen —
+            // this is where the real "扫码登录" entry lives. Same yellow fill as Sign in below.
+            Button(
+                onClick = { showScanner = true }, enabled = !loading,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
+                ),
+            ) {
+                Text("Scan QR to Sign in")
+            }
             Spacer(Modifier.height(24.dp))
             Text("Sign in", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(16.dp))

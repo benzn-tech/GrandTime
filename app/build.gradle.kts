@@ -23,8 +23,8 @@ android {
         applicationId = "com.benzn.grandtime"
         minSdk = 33
         targetSdk = 33
-        versionCode = 10
-        versionName = "0.5.6"
+        versionCode = 11
+        versionName = "0.5.7"
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
@@ -103,6 +103,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.security.crypto)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.zxing.core)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
