@@ -346,7 +346,7 @@ class CaptureManager(
                 siteId = AppState.selectedSite.value?.id,
             )
         )
-        startSegmentTimer(settings.segmentMinutes)
+        startSegmentTimer(settings.segmentSeconds)
         if (cmd.segmentIndex == 1) {
             sounds.startRecording()
         }
@@ -411,10 +411,10 @@ class CaptureManager(
         pipeline.setWatermarkBitmap(null)
     }
 
-    private fun startSegmentTimer(minutes: Int) {
+    private fun startSegmentTimer(seconds: Int) {
         segmentTimer?.cancel()
         segmentTimer = scope.launch {
-            delay(minutes * 60_000L)
+            delay(seconds * 1000L)
             execute(core.onSegmentTimerFired())
         }
     }
@@ -557,7 +557,7 @@ class CaptureManager(
      */
     private suspend fun startAudio(cmd: CaptureCommand.StartAudio): Boolean {
         val settings = settingsStore.settings.first()
-        val segBytes = segmentBytesFor(settings.segmentMinutes)
+        val segBytes = segmentBytesFor(settings.segmentSeconds)
         val overlap = overlapBytesFor(2)
         val first = storage.newFile(MediaStorage.Kind.AUDIO)
         val sessionId = cmd.sessionId
@@ -616,7 +616,7 @@ class CaptureManager(
      *  session_open (the session never closed on pause). */
     private suspend fun resumeAudio(cmd: CaptureCommand.ResumeAudio): Boolean {
         val settings = settingsStore.settings.first()
-        val segBytes = segmentBytesFor(settings.segmentMinutes)
+        val segBytes = segmentBytesFor(settings.segmentSeconds)
         val overlap = overlapBytesFor(2)
         val first = storage.newFile(MediaStorage.Kind.AUDIO)
         val sessionId = cmd.sessionId

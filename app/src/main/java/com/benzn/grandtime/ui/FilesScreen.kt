@@ -28,6 +28,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -89,8 +90,9 @@ fun FilesScreen() {
     val dao = remember { CaptureDb.get(context.applicationContext).captureRecords() }
     var filter by rememberSaveable { mutableStateOf(MediaFilter.ALL) }
     var playingAudio by remember { mutableStateOf<CaptureRecord?>(null) }
-    var menuRecord by remember { mutableStateOf<CaptureRecord?>(null) }
-    var deleteRecord by remember { mutableStateOf<CaptureRecord?>(null) }
+    var detailUnit by remember { mutableStateOf<RecordingUnit?>(null) }
+    var menuUnit by remember { mutableStateOf<RecordingUnit?>(null) }
+    var deleteUnit by remember { mutableStateOf<RecordingUnit?>(null) }
     val records by dao.observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
     val fs = LocalFsColors.current
 
@@ -143,7 +145,8 @@ fun FilesScreen() {
                 }
             }
         } else {
-            val grouped = filtered.groupBy { dayLabel(it.startedAt) }
+            val units = groupIntoRecordingUnits(filtered)
+            val grouped = units.groupBy { dayLabel(it.representative.startedAt) }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -160,13 +163,18 @@ fun FilesScreen() {
                             modifier = Modifier.padding(vertical = 4.dp),
                         )
                     }
-                    items(dayItems, key = { it.id }) { record ->
+                    items(dayItems, key = { it.representative.id }) { unit ->
                         MediaCell(
-                            record = record,
+                            unit = unit,
                             onClick = {
-                                if (record.kind == "audio") playingAudio = record else openFile(context, record)
+                                if (unit.isGroup) {
+                                    detailUnit = unit
+                                } else {
+                                    val record = unit.representative
+                                    if (record.kind == "audio") playingAudio = record else openFile(context, record)
+                                }
                             },
-                            onLongClick = { menuRecord = record },
+                            onLongClick = { menuUnit = unit },
                         )
                     }
                 }
@@ -178,8 +186,16 @@ fun FilesScreen() {
         AudioPlayerSheet(record) { playingAudio = null }
     }
 
-    menuRecord?.let { record ->
-        ModalBottomSheet(onDismissRequest = { menuRecord = null }) {
+    detailUnit?.let { unit ->
+        RecordingDetailSheet(
+            unit = unit,
+            onPlaySegment = { seg -> if (seg.kind == "audio") playingAudio = seg else openFile(context, seg) },
+            onDismiss = { detailUnit = null },
+        )
+    }
+
+    menuUnit?.let { unit ->
+        ModalBottomSheet(onDismissRequest = { menuUnit = null }) {
             Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
                 Text(
                     "Re-upload",
@@ -187,13 +203,18 @@ fun FilesScreen() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            if (record.uploadStatus == "uploaded") {
+                            if (unit.segments.all { it.uploadStatus == "uploaded" }) {
                                 Toast.makeText(context, "Already uploaded", Toast.LENGTH_SHORT).show()
                             } else {
-                                WorkManagerUploadEnqueuer(context).enqueue(record.id)
-                                Toast.makeText(context, "Re-uploading ${record.fileName}", Toast.LENGTH_SHORT).show()
+                                unit.ids.forEach { WorkManagerUploadEnqueuer(context).enqueue(it) }
+                                val label = if (unit.isGroup) {
+                                    "recording (${unit.segmentCount} segments)"
+                                } else {
+                                    unit.representative.fileName
+                                }
+                                Toast.makeText(context, "Re-uploading $label", Toast.LENGTH_SHORT).show()
                             }
-                            menuRecord = null
+                            menuUnit = null
                         }
                         .padding(horizontal = 24.dp, vertical = 16.dp),
                 )
@@ -204,8 +225,8 @@ fun FilesScreen() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            deleteRecord = record
-                            menuRecord = null
+                            deleteUnit = unit
+                            menuUnit = null
                         }
                         .padding(horizontal = 24.dp, vertical = 16.dp),
                 )
@@ -213,28 +234,29 @@ fun FilesScreen() {
         }
     }
 
-    deleteRecord?.let { record ->
+    deleteUnit?.let { unit ->
         AlertDialog(
-            onDismissRequest = { deleteRecord = null },
+            onDismissRequest = { deleteUnit = null },
             title = { Text("Delete recording") },
-            text = { Text(deleteConfirmMessage(record.uploadStatus)) },
+            text = { Text(deleteConfirmMessage(unit.aggregateUploadStatus())) },
             confirmButton = {
                 TextButton(onClick = {
-                    val rec = record
+                    val ids = unit.ids
+                    val paths = unit.segments.map { it.filePath }
                     scope.launch {
                         withContext(Dispatchers.IO) {
-                            runCatching { File(rec.filePath).delete() }
-                            dao.markMissing(listOf(rec.id))
+                            paths.forEach { path -> runCatching { File(path).delete() } }
+                            dao.markMissing(ids)
                         }
                     }
                     Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
-                    deleteRecord = null
+                    deleteUnit = null
                 }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { deleteRecord = null }) {
+                TextButton(onClick = { deleteUnit = null }) {
                     Text("Cancel")
                 }
             },
@@ -244,9 +266,10 @@ fun FilesScreen() {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MediaCell(record: CaptureRecord, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun MediaCell(unit: RecordingUnit, onClick: () -> Unit, onLongClick: () -> Unit) {
     val context = LocalContext.current
     val fs = LocalFsColors.current
+    val record = unit.representative
     Column(Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)) {
         Box(
             Modifier
@@ -276,7 +299,9 @@ private fun MediaCell(record: CaptureRecord, onClick: () -> Unit, onLongClick: (
                     modifier = Modifier.fillMaxSize(),
                 )
             }
-            if (record.kind == "video") {
+            // Video/audio recordings (segmented, possibly multi-part) get a duration badge; a
+            // multi-segment recording also gets an "xN" tag so it reads as one grouped tile.
+            if (record.kind != "photo") {
                 Row(
                     Modifier
                         .align(Alignment.BottomEnd)
@@ -287,13 +312,15 @@ private fun MediaCell(record: CaptureRecord, onClick: () -> Unit, onLongClick: (
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("▶", color = Color.White, fontSize = 9.sp)
-                    record.durationMs?.let { d ->
+                    Spacer(Modifier.size(3.dp))
+                    Text(mmssLabel(unit.totalDurationMs), color = Color.White, fontSize = 9.sp)
+                    if (unit.isGroup) {
                         Spacer(Modifier.size(3.dp))
-                        Text(mmssLabel(d), color = Color.White, fontSize = 9.sp)
+                        Text("×${unit.segmentCount}", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
-            UploadStatusBadge(record, Modifier.align(Alignment.TopEnd))
+            RecordingUploadStatusBadge(unit, Modifier.align(Alignment.TopEnd))
         }
         Text(
             record.fileName,
@@ -307,26 +334,30 @@ private fun MediaCell(record: CaptureRecord, onClick: () -> Unit, onLongClick: (
     }
 }
 
-/** 上传状态角标(仿 duration badge 样式),pending/failed 可点击(重新)入队。 */
+/** Upload-status corner badge (duration-badge styling). For a single unit this mirrors the
+ *  segment's own status exactly (same 4 symbols/enqueue behavior as before grouping existed);
+ *  for a multi-segment recording it falls back to [aggregateUploadStatus]'s 3-bucket rule, and
+ *  tapping it re-enqueues every not-yet-uploaded segment in the group. */
 @Composable
-private fun UploadStatusBadge(record: CaptureRecord, modifier: Modifier = Modifier) {
+private fun RecordingUploadStatusBadge(unit: RecordingUnit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val fs = LocalFsColors.current
-    val (symbol, color) = when (record.uploadStatus) {
+    val status = if (unit.isGroup) unit.aggregateUploadStatus() else unit.representative.uploadStatus
+    val (symbol, color) = when (status) {
         "uploaded" -> "✓" to fs.successDot
         "uploading" -> "↑" to Color.White
         "failed" -> "!" to MaterialTheme.colorScheme.error
-        else -> "…" to Color(0xFFBDBDBD) // pending
+        else -> "…" to Color(0xFFBDBDBD) // pending (or, for a group, any non-uploaded/non-failed mix)
     }
-    val enqueueable = record.uploadStatus == "pending" || record.uploadStatus == "failed"
+    val enqueueableIds = unit.segments.filter { it.uploadStatus == "pending" || it.uploadStatus == "failed" }.map { it.id }
     Row(
         modifier
             .padding(4.dp)
             .clip(MaterialTheme.shapes.small)
             .background(Color(0x99000000))
             .let { base ->
-                if (enqueueable) {
-                    base.clickable { WorkManagerUploadEnqueuer(context).enqueue(record.id) }
+                if (enqueueableIds.isNotEmpty()) {
+                    base.clickable { enqueueableIds.forEach { id -> WorkManagerUploadEnqueuer(context).enqueue(id) } }
                 } else {
                     base
                 }
@@ -335,6 +366,46 @@ private fun UploadStatusBadge(record: CaptureRecord, modifier: Modifier = Modifi
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(symbol, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Bottom sheet listing a multi-segment recording's parts in order (c0000..), each tappable to
+ *  play/open that individual segment file — no merge/playlist, segment-by-segment per the slice's
+ *  scope (a true single-file/seamless-playback export is a later slice). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RecordingDetailSheet(unit: RecordingUnit, onPlaySegment: (CaptureRecord) -> Unit, onDismiss: () -> Unit) {
+    val fs = LocalFsColors.current
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text(
+                "${unit.segmentCount} segments · ${mmssLabel(unit.totalDurationMs)}",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            unit.segments.forEachIndexed { index, segment ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onPlaySegment(segment) }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Segment ${index + 1}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    segment.durationMs?.let { d ->
+                        Text(mmssLabel(d), color = fs.textTertiary, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                if (index != unit.segments.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
     }
 }
 

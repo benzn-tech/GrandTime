@@ -18,6 +18,8 @@ private class FakeDao : CaptureRecordDao {
         finalizedCalls.add(FinalizeCall(id, endedAt, durationMs, sizeBytes))
     }
     override fun observeAll(): Flow<List<CaptureRecord>> = flowOf(rows)
+    override fun observeSince(sinceMs: Long): Flow<List<CaptureRecord>> =
+        flowOf(rows.filter { !it.missing && it.createdAt >= sinceMs })
     override suspend fun listAll(): List<CaptureRecord> = rows.toList()
     override suspend fun getById(id: String): CaptureRecord? = rows.firstOrNull { it.id == id }
     override suspend fun markMissing(ids: List<String>) { missingIds.addAll(ids) }

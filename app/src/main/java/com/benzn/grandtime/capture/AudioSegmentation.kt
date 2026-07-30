@@ -7,10 +7,10 @@ import java.io.File
 data class AudioSegment(val file: File, val startedAtMs: Long, val endedAtMs: Long, val index: Int)
 
 /** PCM byte budget for one rolling audio segment, matching the video segment-length setting
- *  (spec: minutes * 60s * sampleRate * bytesPerSample). 16 kHz mono 16-bit by default, matching
+ *  (spec: seconds * sampleRate * bytesPerSample). 16 kHz mono 16-bit by default, matching
  *  [AudioRecorder]'s fixed capture format. */
-fun segmentBytesFor(minutes: Int, sampleRate: Int = 16000, bytesPerSample: Int = 2): Long =
-    minutes.toLong() * 60 * sampleRate * bytesPerSample
+fun segmentBytesFor(seconds: Int, sampleRate: Int = 16000, bytesPerSample: Int = 2): Long =
+    seconds.toLong() * sampleRate * bytesPerSample
 
 /** PCM byte length of the overlap tail carried into the next segment, capped so a
  *  misconfigured/huge `seconds` value can't blow up the ring buffer memory footprint. */

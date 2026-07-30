@@ -80,7 +80,7 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             RowDivider()
             SettingRow("Aspect ratio", settings.aspectRatio.label) { dialog = SettingDialog.ASPECT_RATIO }
             RowDivider()
-            SettingRow("Segment length", "${settings.segmentMinutes} min") { dialog = SettingDialog.SEGMENT }
+            SettingRow("Segment length", segmentLengthLabel(settings.segmentSeconds)) { dialog = SettingDialog.SEGMENT }
             RowDivider()
             SettingRow("Photo quality", settings.photoQuality.label) { dialog = SettingDialog.PHOTO_QUALITY }
             RowDivider()
@@ -165,9 +165,9 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
         SettingDialog.SEGMENT -> RadioDialog(
             title = "Segment length",
             options = SettingsStore.SEGMENT_OPTIONS,
-            selected = settings.segmentMinutes,
-            label = { "$it min" },
-            onSelect = { scope.launch { store.setSegmentMinutes(it) } },
+            selected = settings.segmentSeconds,
+            label = { segmentLengthLabel(it) },
+            onSelect = { scope.launch { store.setSegmentSeconds(it) } },
             onDismiss = { dialog = null },
         )
         SettingDialog.PHOTO_QUALITY -> RadioDialog(
@@ -230,6 +230,10 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
         )
     }
 }
+
+/** "30s" below a minute, "N min" at/above — shared by the SettingRow value and the RadioDialog options. */
+private fun segmentLengthLabel(seconds: Int): String =
+    if (seconds < 60) "${seconds}s" else "${seconds / 60} min"
 
 @Composable
 private fun GroupHeader(text: String) {

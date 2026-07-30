@@ -24,7 +24,7 @@ enum class AspectRatio(val label: String) { RATIO_4_3("4:3"), RATIO_16_9("16:9")
 /** 录制参数:本子项目仅持久化;SP3 采集读取生效。上传固定实时,无开关(产品决定)。 */
 data class RecordingSettings(
     val videoQuality: VideoQuality = VideoQuality.P1080,
-    val segmentMinutes: Int = 5,
+    val segmentSeconds: Int = 30,
     val photoQuality: PhotoQuality = PhotoQuality.HIGH,
     val photoResolution: PhotoResolution = PhotoResolution.MAX,
     val screenOffMinutes: Int = 3,
@@ -36,10 +36,10 @@ data class RecordingSettings(
 class SettingsStore(private val dataStore: DataStore<Preferences>) {
 
     companion object {
-        val SEGMENT_OPTIONS = listOf(1, 3, 5, 10)
+        val SEGMENT_OPTIONS = listOf(30, 60, 120, 300)
         val SCREEN_OFF_OPTIONS = listOf(1, 3, 5, 0)
         private val KEY_VIDEO_QUALITY = stringPreferencesKey("video_quality")
-        private val KEY_SEGMENT_MINUTES = intPreferencesKey("video_segment_minutes")
+        private val KEY_SEGMENT_SECONDS = intPreferencesKey("video_segment_seconds")
         private val KEY_PHOTO_QUALITY = stringPreferencesKey("photo_quality")
         private val KEY_PHOTO_RESOLUTION = stringPreferencesKey("photo_resolution")
         private val KEY_SCREEN_OFF_MINUTES = intPreferencesKey("screen_off_minutes")
@@ -53,7 +53,7 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
             videoQuality = prefs[KEY_VIDEO_QUALITY]
                 ?.let { name -> VideoQuality.entries.firstOrNull { it.name == name } }
                 ?: VideoQuality.P1080,
-            segmentMinutes = prefs[KEY_SEGMENT_MINUTES]?.takeIf { it in SEGMENT_OPTIONS } ?: 5,
+            segmentSeconds = prefs[KEY_SEGMENT_SECONDS]?.takeIf { it in SEGMENT_OPTIONS } ?: 30,
             photoQuality = prefs[KEY_PHOTO_QUALITY]
                 ?.let { name -> PhotoQuality.entries.firstOrNull { it.name == name } }
                 ?: PhotoQuality.HIGH,
@@ -73,9 +73,9 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
         dataStore.edit { it[KEY_VIDEO_QUALITY] = value.name }
     }
 
-    suspend fun setSegmentMinutes(value: Int) {
-        require(value in SEGMENT_OPTIONS) { "segment minutes must be one of $SEGMENT_OPTIONS" }
-        dataStore.edit { it[KEY_SEGMENT_MINUTES] = value }
+    suspend fun setSegmentSeconds(value: Int) {
+        require(value in SEGMENT_OPTIONS) { "segment seconds must be one of $SEGMENT_OPTIONS" }
+        dataStore.edit { it[KEY_SEGMENT_SECONDS] = value }
     }
 
     suspend fun setPhotoQuality(value: PhotoQuality) {

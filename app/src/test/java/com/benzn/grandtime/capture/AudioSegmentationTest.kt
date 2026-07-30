@@ -9,13 +9,13 @@ import org.junit.Test
 class AudioSegmentationTest {
 
     @Test
-    fun `segmentBytesFor 3 minutes at 16kHz mono 16-bit`() {
-        assertEquals(5_760_000L, segmentBytesFor(3))
+    fun `segmentBytesFor 30 seconds at 16kHz mono 16-bit`() {
+        assertEquals(960_000L, segmentBytesFor(30))
     }
 
     @Test
-    fun `segmentBytesFor 1 minute at 16kHz mono 16-bit`() {
-        assertEquals(1_920_000L, segmentBytesFor(1))
+    fun `segmentBytesFor 60 seconds at 16kHz mono 16-bit`() {
+        assertEquals(1_920_000L, segmentBytesFor(60))
     }
 
     @Test

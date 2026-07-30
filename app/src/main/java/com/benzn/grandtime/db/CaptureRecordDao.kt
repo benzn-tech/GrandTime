@@ -17,6 +17,11 @@ interface CaptureRecordDao {
     @Query("SELECT * FROM capture_records WHERE missing = 0 ORDER BY startedAt DESC")
     fun observeAll(): Flow<List<CaptureRecord>>
 
+    /** Records created at/after [sinceMs] (e.g. local midnight) — used by Home to aggregate
+     *  today's uploads at the recording level rather than the per-segment status counts. */
+    @Query("SELECT * FROM capture_records WHERE missing = 0 AND createdAt >= :sinceMs ORDER BY startedAt DESC")
+    fun observeSince(sinceMs: Long): Flow<List<CaptureRecord>>
+
     @Query("SELECT * FROM capture_records")
     suspend fun listAll(): List<CaptureRecord>
 

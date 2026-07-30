@@ -79,10 +79,14 @@ fun HomeScreen() {
     var showSitePicker by remember { mutableStateOf(false) }
     val zone = remember { ZoneId.systemDefault() }
     val startOfDay = startOfDayMillis(System.currentTimeMillis(), zone)
-    val uploadCounts by remember(startOfDay) {
-        CaptureDb.get(context).captureRecords().observeUploadStatusCountsSince(startOfDay)
+    val todaysRecords by remember(startOfDay) {
+        CaptureDb.get(context).captureRecords().observeSince(startOfDay)
     }.collectAsStateWithLifecycle(initialValue = emptyList())
-    val uploadSummary = summarizeUploads(uploadCounts)
+    // "Today's uploads" counts RECORDINGS, not the ~30s segments they roll into on disk — a
+    // recording is uploaded iff every one of its segments is, failed if any segment failed
+    // (and not all uploaded), else still waiting. See RecordingGrouping.kt.
+    val todaysUnits = groupIntoRecordingUnits(todaysRecords)
+    val uploadSummary = summarizeRecordingUploads(todaysUnits)
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(capture) {
@@ -212,13 +216,15 @@ fun HomeScreen() {
                         Spacer(Modifier.height(8.dp))
                         Button(
                             onClick = {
+                                val failedUnits = todaysUnits.filter { it.aggregateUploadStatus() == "failed" }
+                                val idsToRetry = failedUnits.flatMap { unit ->
+                                    unit.segments.filter { it.uploadStatus != "uploaded" }.map { it.id }
+                                }
                                 coroutineScope.launch {
-                                    val failedRecs = CaptureDb.get(context).captureRecords()
-                                        .listByUploadStatus(listOf("failed"))
-                                    failedRecs.forEach { WorkManagerUploadEnqueuer(context).enqueue(it.id) }
+                                    idsToRetry.forEach { WorkManagerUploadEnqueuer(context).enqueue(it) }
                                     Toast.makeText(
                                         context,
-                                        "Retrying ${failedRecs.size} uploads",
+                                        "Retrying ${failedUnits.size} recordings",
                                         Toast.LENGTH_SHORT,
                                     ).show()
                                 }

@@ -36,7 +36,7 @@ class SettingsStoreTest {
     fun `defaults when empty`() = runTest(UnconfinedTestDispatcher()) {
         val (store, _) = newStore()
         assertEquals(
-            RecordingSettings(VideoQuality.P1080, 5, PhotoQuality.HIGH),
+            RecordingSettings(VideoQuality.P1080, 30, PhotoQuality.HIGH),
             store.settings.first(),
         )
     }
@@ -45,10 +45,10 @@ class SettingsStoreTest {
     fun `write and read back`() = runTest(UnconfinedTestDispatcher()) {
         val (store, _) = newStore()
         store.setVideoQuality(VideoQuality.P480)
-        store.setSegmentMinutes(10)
+        store.setSegmentSeconds(60)
         store.setPhotoQuality(PhotoQuality.STANDARD)
         assertEquals(
-            RecordingSettings(VideoQuality.P480, 10, PhotoQuality.STANDARD),
+            RecordingSettings(VideoQuality.P480, 60, PhotoQuality.STANDARD),
             store.settings.first(),
         )
     }
@@ -58,17 +58,17 @@ class SettingsStoreTest {
         val (store, ds) = newStore()
         ds.edit {
             it[stringPreferencesKey("video_quality")] = "BOGUS"
-            it[intPreferencesKey("video_segment_minutes")] = 42
+            it[intPreferencesKey("video_segment_seconds")] = 42
             it[stringPreferencesKey("photo_quality")] = "ULTRA"
         }
         assertEquals(RecordingSettings(), store.settings.first())
     }
 
     @Test
-    fun `setSegmentMinutes rejects values outside options`() = runTest(UnconfinedTestDispatcher()) {
+    fun `setSegmentSeconds rejects values outside options`() = runTest(UnconfinedTestDispatcher()) {
         val (store, _) = newStore()
         assertThrows(IllegalArgumentException::class.java) {
-            runBlocking { store.setSegmentMinutes(2) }
+            runBlocking { store.setSegmentSeconds(45) }
         }
     }
 
