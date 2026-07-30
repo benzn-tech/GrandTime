@@ -8,6 +8,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +63,7 @@ import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import com.benzn.grandtime.R
 import com.benzn.grandtime.capture.MediaStorage
+import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.db.CaptureRecord
@@ -94,6 +97,17 @@ fun FilesScreen() {
     var menuUnit by remember { mutableStateOf<RecordingUnit?>(null) }
     var deleteUnit by remember { mutableStateOf<RecordingUnit?>(null) }
     val records by dao.observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
+    // Session id of the recording in progress (if any) — its segment rows exist in the DB before the
+    // recording ends (the live one is unfinalized + still being written). Deleting that unit would
+    // unlink the file MediaCodec is writing + take down the whole live session, so block it.
+    val capture by AppState.captureState.collectAsStateWithLifecycle()
+    val activeSessionId = when (val c = capture) {
+        is CaptureState.RecordingVideo -> c.sessionId
+        is CaptureState.PausedVideo -> c.sessionId
+        is CaptureState.RecordingAudio -> c.sessionId
+        is CaptureState.PausedAudio -> c.sessionId
+        else -> null
+    }
     val fs = LocalFsColors.current
 
     LaunchedEffect(Unit) {
@@ -225,7 +239,11 @@ fun FilesScreen() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            deleteUnit = unit
+                            if (unit.representative.sessionId == activeSessionId) {
+                                Toast.makeText(context, "Stop this recording before deleting", Toast.LENGTH_SHORT).show()
+                            } else {
+                                deleteUnit = unit
+                            }
                             menuUnit = null
                         }
                         .padding(horizontal = 24.dp, vertical = 16.dp),
@@ -377,7 +395,9 @@ private fun RecordingUploadStatusBadge(unit: RecordingUnit, modifier: Modifier =
 private fun RecordingDetailSheet(unit: RecordingUnit, onPlaySegment: (CaptureRecord) -> Unit, onDismiss: () -> Unit) {
     val fs = LocalFsColors.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+        // verticalScroll: at 30s segments a multi-minute recording has many rows; without scroll the
+        // ModalBottomSheet clips overflow and later segments become untappable.
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp)) {
             Text(
                 "${unit.segmentCount} segments · ${mmssLabel(unit.totalDurationMs)}",
                 style = MaterialTheme.typography.titleMedium,

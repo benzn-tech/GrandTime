@@ -31,7 +31,10 @@ class FilesReconciler(
                     durationMs = durationReader(f.path),
                     sizeBytes = f.sizeBytes,
                     codec = "unknown",
-                    sessionId = "reconciled",
+                    // Unique per orphan — a shared literal would make the recording-level Files/Home
+                    // grouping collapse all unrelated reconciled files into ONE unit, so a group Delete
+                    // would wipe unrelated footage. Each orphan is its own single-segment recording.
+                    sessionId = java.util.UUID.randomUUID().toString(),
                     createdAt = clock(),
                 )
             )
