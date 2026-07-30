@@ -19,6 +19,11 @@ sealed interface AuthOutcome {
     data object AuthInvalid : AuthOutcome
 }
 
+sealed interface CustomAuthOutcome {
+    data class Challenge(val session: String) : CustomAuthOutcome
+    data class Error(val message: String) : CustomAuthOutcome
+}
+
 /**
  * 裸 HTTP InitiateAuth,对齐 web cognito.js。http 可注入便于单测;默认走 OkHttp。
  */
@@ -58,6 +63,43 @@ class CognitoClient(
         }
         return parseInitiateAuth(result)
     }
+
+    /** Step 1 of passwordless QR auth: begin CUSTOM_AUTH; returns the challenge Session. */
+    fun initiateCustomAuth(username: String): CustomAuthOutcome {
+        val body = JSONObject()
+            .put("AuthFlow", "CUSTOM_AUTH")
+            .put("ClientId", clientId)
+            .put("AuthParameters", JSONObject().put("USERNAME", username))
+            .toString()
+        return runCatching {
+            val json = JSONObject(http("InitiateAuth", body).body)
+            val session = json.optString("Session").takeIf { it.isNotBlank() }
+            if (json.optString("ChallengeName") == "CUSTOM_CHALLENGE" && session != null) {
+                CustomAuthOutcome.Challenge(session)
+            } else {
+                CustomAuthOutcome.Error(errorMessageFor(json.optString("__type")))
+            }
+        }.getOrElse { CustomAuthOutcome.Error("Network error — check your connection") }
+    }
+
+    /** Step 2: answer the CUSTOM_CHALLENGE with the one-time code; success yields Tokens. */
+    fun respondToCustomChallenge(username: String, session: String, code: String): AuthOutcome {
+        val body = JSONObject()
+            .put("ChallengeName", "CUSTOM_CHALLENGE")
+            .put("ClientId", clientId)
+            .put("Session", session)
+            .put("ChallengeResponses", JSONObject().put("USERNAME", username).put("ANSWER", code))
+            .toString()
+        return runCatching { parseInitiateAuth(http("RespondToAuthChallenge", body)) }
+            .getOrElse { AuthOutcome.Error("Network error — check your connection") }
+    }
+
+    /** Convenience: run both steps. Any challenge failure → AuthOutcome.Error. */
+    fun signInWithCustomAuth(username: String, code: String): AuthOutcome =
+        when (val init = initiateCustomAuth(username)) {
+            is CustomAuthOutcome.Challenge -> respondToCustomChallenge(username, init.session, code)
+            is CustomAuthOutcome.Error -> AuthOutcome.Error(init.message)
+        }
 
     private fun defaultHttp(target: String, body: String): HttpResult {
         val endpoint = "https://cognito-idp.$region.amazonaws.com/"

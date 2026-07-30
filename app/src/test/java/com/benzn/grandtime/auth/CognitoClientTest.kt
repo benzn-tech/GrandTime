@@ -83,4 +83,45 @@ class CognitoClientTest {
         val client = CognitoClient("clientId", "ap-southeast-2", fake)
         assertEquals(AuthOutcome.Tokens("idX", "rtX"), client.refresh("valid-refresh-token"))
     }
+
+    @Test fun `initiateCustomAuth returns the challenge session`() {
+        val fake: (String, String) -> HttpResult = { target, _ ->
+            assertEquals("InitiateAuth", target)
+            HttpResult(200, """{"ChallengeName":"CUSTOM_CHALLENGE","Session":"sess-1","ChallengeParameters":{}}""")
+        }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        val r = client.initiateCustomAuth("a@b.com") as CustomAuthOutcome.Challenge
+        assertEquals("sess-1", r.session)
+    }
+
+    @Test fun `signInWithCustomAuth two-step happy path returns Tokens`() {
+        val fake: (String, String) -> HttpResult = { target, _ ->
+            when (target) {
+                "InitiateAuth" -> HttpResult(200, """{"ChallengeName":"CUSTOM_CHALLENGE","Session":"sess-1"}""")
+                "RespondToAuthChallenge" -> HttpResult(200, """{"AuthenticationResult":{"IdToken":"idX","RefreshToken":"rtX"}}""")
+                else -> HttpResult(400, "{}")
+            }
+        }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        assertEquals(AuthOutcome.Tokens("idX", "rtX"), client.signInWithCustomAuth("a@b.com", "CODE"))
+    }
+
+    @Test fun `signInWithCustomAuth maps a wrong or expired code to Error`() {
+        val fake: (String, String) -> HttpResult = { target, _ ->
+            when (target) {
+                "InitiateAuth" -> HttpResult(200, """{"ChallengeName":"CUSTOM_CHALLENGE","Session":"sess-1"}""")
+                else -> HttpResult(400, """{"__type":"NotAuthorizedException","message":"Incorrect."}""")
+            }
+        }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        assertTrue(client.signInWithCustomAuth("a@b.com", "BAD") is AuthOutcome.Error)
+    }
+
+    @Test fun `initiateCustomAuth maps a non-challenge response to Error`() {
+        val fake: (String, String) -> HttpResult = { _, _ ->
+            HttpResult(400, """{"__type":"UserNotFoundException"}""")
+        }
+        val client = CognitoClient("clientId", "ap-southeast-2", fake)
+        assertTrue(client.initiateCustomAuth("nobody@b.com") is CustomAuthOutcome.Error)
+    }
 }
