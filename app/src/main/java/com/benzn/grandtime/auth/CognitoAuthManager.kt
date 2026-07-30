@@ -45,20 +45,7 @@ class CognitoAuthManager(
 
     override suspend fun signIn(username: String, password: String): SignInResult {
         return when (val r = withContext(Dispatchers.IO) { client.signIn(username, password) }) {
-            is AuthOutcome.Tokens -> {
-                val claims = r.idToken.let { JwtDecoder.decode(it) }
-                    ?: return SignInResult.Failure("Login failed — please try again")
-                val refresh = r.refreshToken
-                    ?: return SignInResult.Failure("Login failed — please try again")
-                val mediaScope = UserFolder.derive(claims.name, claims.email, claims.sub)
-                val displayName = claims.name ?: claims.email ?: mediaScope.namePrefix ?: "User"
-                idTokenCache = r.idToken
-                tokenStore.save(
-                    PersistedSession(refresh, claims.sub, displayName, mediaScope.folder, mediaScope.namePrefix)
-                )
-                onLoggedIn(claims.sub, displayName, mediaScope)
-                SignInResult.Success
-            }
+            is AuthOutcome.Tokens -> persistAndEnter(r)
             AuthOutcome.NewPasswordRequired -> SignInResult.NewPasswordRequired
             is AuthOutcome.Error -> SignInResult.Failure(r.message)
             // Unreachable via client.signIn() (it uses parseInitiateAuth directly, which never
@@ -66,6 +53,30 @@ class CognitoAuthManager(
             // exhaustiveness; kept account-enumeration-safe if it were ever reached.
             AuthOutcome.AuthInvalid -> SignInResult.Failure("Incorrect email or password")
         }
+    }
+
+    override suspend fun signInWithQrCode(username: String, code: String): SignInResult {
+        return when (val r = withContext(Dispatchers.IO) { client.signInWithCustomAuth(username, code) }) {
+            is AuthOutcome.Tokens -> persistAndEnter(r)
+            else -> SignInResult.Failure("Invalid or expired QR code — generate a new one")
+        }
+    }
+
+    // Shared token-persist path for both password sign-in and QR sign-in: decode the idToken,
+    // derive the user's media scope/folder, persist the session, and enter the logged-in state.
+    private fun persistAndEnter(tokens: AuthOutcome.Tokens): SignInResult {
+        val claims = JwtDecoder.decode(tokens.idToken)
+            ?: return SignInResult.Failure("Login failed — please try again")
+        val refresh = tokens.refreshToken
+            ?: return SignInResult.Failure("Login failed — please try again")
+        val mediaScope = UserFolder.derive(claims.name, claims.email, claims.sub)
+        val displayName = claims.name ?: claims.email ?: mediaScope.namePrefix ?: "User"
+        idTokenCache = tokens.idToken
+        tokenStore.save(
+            PersistedSession(refresh, claims.sub, displayName, mediaScope.folder, mediaScope.namePrefix)
+        )
+        onLoggedIn(claims.sub, displayName, mediaScope)
+        return SignInResult.Success
     }
 
     override suspend fun signOut() {
