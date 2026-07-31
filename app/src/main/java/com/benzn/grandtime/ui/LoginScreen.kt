@@ -50,8 +50,8 @@ fun LoginScreen(onSignedIn: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
-    // Feasibility probe (QR-login step 1): open the scanner from the login screen without needing to
-    // sign in first. This is where the real "扫码登录" button will live once the custom-auth flow lands.
+    // Toggles the QR scanner in place of the login form. Scanning is a pre-login action — no
+    // email/password needed first.
     var showScanner by rememberSaveable { mutableStateOf(false) }
 
     // The device's physical back key would otherwise exit the app (login is the root screen). While the
@@ -60,8 +60,8 @@ fun LoginScreen(onSignedIn: () -> Unit) {
 
     if (showScanner) {
         Column(Modifier.fillMaxSize()) {
-            AppTopBar(title = "Scan QR (test)", showBack = true, onBack = { showScanner = false }, serviceRunning = false)
-            QrScanScreen()
+            AppTopBar(title = "Scan QR to Sign in", showBack = true, onBack = { showScanner = false }, serviceRunning = false)
+            QrScanScreen(onSignedIn = onSignedIn)
         }
         return
     }

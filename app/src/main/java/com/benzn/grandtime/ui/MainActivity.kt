@@ -186,7 +186,7 @@ private fun MainScaffold() {
         return
     }
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
-    val isSubScreen = screen == Screen.KEY_BINDINGS || screen == Screen.DIAGNOSTICS || screen == Screen.QR_SCAN
+    val isSubScreen = screen == Screen.KEY_BINDINGS || screen == Screen.DIAGNOSTICS
     val isRecording = screen == Screen.RECORDING
     BackHandler(enabled = isSubScreen) { screen = Screen.SETTINGS }
     // 录像中吞掉系统返回键(no-op):避免误触退到后台造成困惑(录像本身经 Service 不受影响),
@@ -260,7 +260,6 @@ private fun MainScaffold() {
                 Screen.SETTINGS -> SettingsScreen(onOpen = { screen = it })
                 Screen.KEY_BINDINGS -> KeyBindingsScreen()
                 Screen.DIAGNOSTICS -> DiagnosticsScreen()
-                Screen.QR_SCAN -> QrScanScreen()
                 Screen.RECORDING -> RecordingScreen()
             }
             // #81:全局快门确认闪现,叠在任意屏幕之上(TAKE_PHOTO 可能来自 Home,抓帧可能发生在

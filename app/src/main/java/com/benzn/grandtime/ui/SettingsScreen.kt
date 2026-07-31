@@ -106,8 +106,6 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
         FsCard(contentPadding = 0.dp) {
             SettingRow("Diagnostics", null) { onOpen(Screen.DIAGNOSTICS) }
             RowDivider()
-            SettingRow("Scan QR (test)", null) { onOpen(Screen.QR_SCAN) }
-            RowDivider()
             SettingRow("Export diagnostics", null) {
                 scope.launch {
                     val file = withContext(Dispatchers.IO) { DiagnosticsExporter.export(context) }
