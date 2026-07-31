@@ -124,4 +124,36 @@ class CognitoClientTest {
         val client = CognitoClient("clientId", "ap-southeast-2", fake)
         assertTrue(client.initiateCustomAuth("nobody@b.com") is CustomAuthOutcome.Error)
     }
+
+    @Test fun `redeemQrCode posts code to org redeem endpoint and returns refreshToken on 200`() {
+        var captured: Pair<String, String>? = null
+        val client = CognitoClient(
+            "clientId", "ap-southeast-2",
+            orgBaseUrl = "https://test.example/prod/api",
+            redeemHttp = { url, body -> captured = url to body; HttpResult(200, """{"refreshToken":"RT-1"}""") },
+        )
+        val result = client.redeemQrCode("CODE-123")
+        assertEquals("RT-1", result)
+        assertTrue(captured!!.first.endsWith("/api/org/auth/qr/redeem"))
+        assertTrue(captured!!.second.contains("\"code\""))
+        assertTrue(captured!!.second.contains("CODE-123"))
+    }
+
+    @Test fun `redeemQrCode returns null on 401`() {
+        val client = CognitoClient(
+            "clientId", "ap-southeast-2",
+            orgBaseUrl = "https://test.example/prod/api",
+            redeemHttp = { _, _ -> HttpResult(401, """{"__type":"NotAuthorizedException"}""") },
+        )
+        assertEquals(null, client.redeemQrCode("CODE-123"))
+    }
+
+    @Test fun `redeemQrCode returns null on malformed 200 body`() {
+        val client = CognitoClient(
+            "clientId", "ap-southeast-2",
+            orgBaseUrl = "https://test.example/prod/api",
+            redeemHttp = { _, _ -> HttpResult(200, "not json") },
+        )
+        assertEquals(null, client.redeemQrCode("CODE-123"))
+    }
 }
