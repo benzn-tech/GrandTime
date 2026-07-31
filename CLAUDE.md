@@ -6,9 +6,9 @@ F2SP 执法终端上的现场作业记录仪原生 Android App(Kotlin/Compose),�
 
 ## 当前状态(2026-07-31)
 
-- **prod 线上 = 0.5.7**(versionCode 11,签名 release,tag `v0.5.7`,连客户湖 `fieldsight-data-509194952652`)。dev 版桌面标签叫 **devfieldsight**(见记忆 [[grandtime-dev-label-convention]])。
+- **prod 线上 = 0.5.8**(versionCode 12,签名 release,tag `v0.5.8`,连客户湖 `fieldsight-data-509194952652`)。dev 版桌面标签叫 **devfieldsight**(见记忆 [[grandtime-dev-label-convention]])。
 - **已上线到 prod**(按时间):SP1-4 采集/登录/上传、SP3b 灯语、SP-Capture2-P2/P3(Camera2+GL+水印+GPS)、录像中拍照预览黑修复、**视频 Pause/Resume + 息屏省电暂停**、**音频 Pause/Resume**(音频键:空闲长按=调音量、录音中短按=暂停、长按=结束、空闲短按=开始)、**P0 chunk-session**(文件名 `_sid{32hex}_c{NNNN}`+session open/close+≤2min 快报告链路)、**30s 滚动分段 + 文件页/首页按"整段录制"归一**(UI 归一非物理合并)、**release 签名**(keystore.jks + keystore.properties 均 gitignored,**必须备份**,口令见早期会话)。
-- **进行中:扫码登录(QR terminal sign-in)** —— v1(Cognito CUSTOM_AUTH)全建+已上 prod 但**被 prod 池的登录策略卡死**;已**重设计为 v2(refresh-token 交接)**,后端 v2 完成并推送,web+移动 v2 计划已写待实现。详见下方"扫码登录 v2"节 + 记忆 [[qr-login-feature]]。
+- **✅ 已上线:扫码登录 v2(QR terminal sign-in,2026-07-31)** —— 三端全上 prod 并**真机验证登录成功**:后端 redeem(PR #175/#180 → main)、web(PR #141 → main,Amplify)、移动(PR #2 → main,本版)。v1 的 Cognito CUSTOM_AUTH 路线被 prod 池"选择式登录"卡死,已弃用改 refresh-token 交接。**两个部署期真坑**:①in-VPC org-api 无 DynamoDB VPC 端点→redeem 挂死 504(已加网关端点 `vpce-01233d5b756ffefcb`);②`consumed` 是 DynamoDB **保留字**,消费用的 `update_item` 未加 `#c` 别名→每次兑换静默 401(已修 + 加日志 + 测试桩防回归)。详见下方"扫码登录 v2"节 + 记忆 [[qr-login-feature]]。**待办**:负路径真机验证(过期码/随机码)、解共享池遗留 `LambdaConfig`(惰性无害)。
 - `main` 与 origin 同步。GrandTime 无活跃 feature 分支(v1 分支 `feat/qr-login-mobile` 已推 origin,PR #1 开着但已过时——v2 会另起分支)。
 
 ## 扫码登录 v2(QR terminal sign-in)—— 交接(2026-07-31)
