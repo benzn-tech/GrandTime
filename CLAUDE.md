@@ -4,24 +4,36 @@ F2SP 执法终端上的现场作业记录仪原生 Android App(Kotlin/Compose),�
 
 **沟通**:中文回复;汇报用 已完成/如何/影响 格式。
 
-## 当前状态(2026-07-30)
+## 当前状态(2026-07-31)
 
 - **prod 线上 = 0.5.7**(versionCode 11,签名 release,tag `v0.5.7`,连客户湖 `fieldsight-data-509194952652`)。dev 版桌面标签叫 **devfieldsight**(见记忆 [[grandtime-dev-label-convention]])。
 - **已上线到 prod**(按时间):SP1-4 采集/登录/上传、SP3b 灯语、SP-Capture2-P2/P3(Camera2+GL+水印+GPS)、录像中拍照预览黑修复、**视频 Pause/Resume + 息屏省电暂停**、**音频 Pause/Resume**(音频键:空闲长按=调音量、录音中短按=暂停、长按=结束、空闲短按=开始)、**P0 chunk-session**(文件名 `_sid{32hex}_c{NNNN}`+session open/close+≤2min 快报告链路)、**30s 滚动分段 + 文件页/首页按"整段录制"归一**(UI 归一非物理合并)、**release 签名**(keystore.jks + keystore.properties 均 gitignored,**必须备份**,口令见早期会话)。
-- **进行中:扫码登录(QR passwordless sign-in)** —— spec + 三份计划已完成**未开始实现**。0.5.7 里已有登录页"Scan QR to Sign in"按钮 + Camera2/ZXing 扫码界面,但**当前只解码不真登录**(探针)。详见下方"扫码登录"节 + 记忆 [[grandtime-qr-login]]。
-- `main` 与 origin 同步。当前无活跃 feature 分支。
+- **进行中:扫码登录(QR terminal sign-in)** —— v1(Cognito CUSTOM_AUTH)全建+已上 prod 但**被 prod 池的登录策略卡死**;已**重设计为 v2(refresh-token 交接)**,后端 v2 完成并推送,web+移动 v2 计划已写待实现。详见下方"扫码登录 v2"节 + 记忆 [[qr-login-feature]]。
+- `main` 与 origin 同步。GrandTime 无活跃 feature 分支(v1 分支 `feat/qr-login-mobile` 已推 origin,PR #1 开着但已过时——v2 会另起分支)。
 
-## 扫码登录(QR sign-in)—— 下一步要做的事
+## 扫码登录 v2(QR terminal sign-in)—— 交接(2026-07-31)
 
-**目标**:终端扫 web 出示的一次性二维码 → 走 Cognito 自定义认证(passwordless)→ 终端拿到**自己的** token 登录,免在硬键盘打字。**跨 3 仓**。
+**目标(不变)**:F2SP 终端扫 web 出示的一次性二维码 → 终端拿到**自己的** Cognito token 登录,免在硬键盘打字。**跨 3 仓**(fieldsight-pipeline 后端 / fieldsight-ui web / GrandTime 移动)。
 
-- **设计已定**(spec `docs/superpowers/specs/2026-07-30-qr-login-design.md`):流向=终端扫 web 码;架构=Cognito CUSTOM_AUTH(因 web/移动端 app client 不同 + 后端无法凭空签发 token);v1 只自助;码 TTL 90s 单次;Verify 按 `userAttributes.sub` 比对;码表+create 全放 prod(兑换 Cognito 直连、环境无关)。
-- **三份实施计划**(逐任务 TDD,共 12 任务):
-  - Backend `C:/Users/camil/Dropbox/fieldsight-pipeline/docs/superpowers/plans/2026-07-30-qr-login-backend.md`(本地 commit `9032acc`,分支 feat/session-continuity,**未推**——推 develop 触发部署)
-  - Mobile `docs/superpowers/plans/2026-07-30-qr-login-mobile.md`(已推 main)
-  - Web `.../fieldsight-pipeline/docs/superpowers/plans/2026-07-30-qr-login-web.md`(本地 commit `cbb371c`,未推)
-- **执行顺序**:后端(Task1-3 纯代码/模板本地可测 → Task4 动**共享 prod Cognito 池**改 app client + 挂触发器,`describe→merge→update`,权限受限**须用户 `!` 亲自跑**;Task4 Step5 纯 CLI 端到端演练即可验后端,免移动端)→ 移动 → web。
-- **待用户选执行方式**:Subagent-Driven(推荐)或 Inline,选定后从后端 Task 1 开工。
+### 为什么从 v1 转 v2(关键 context)
+- **v1(Cognito CUSTOM_AUTH)**:12 个 SDD 任务全建完+Opus 终审+**已部署到 prod**(码表+3 触发器+挂共享池 LambdaConfig+client 加 ALLOW_CUSTOM_AUTH)。但**登录跑不通** —— prod 池 `ap-southeast-2_q88pd6XXr` 是 **ESSENTIALS 层"选择式登录"**(`Policies.SignInPolicy.AllowedFirstAuthFactors=["PASSWORD"]`),Cognito 这套新模型**没有 custom-auth 因子**(合法值只有 SOFTWARE_TOKEN/SMS_OTP/EMAIL_OTP/EMAIL_MAGIC_LINK/WEB_AUTHN/PASSWORD);`initiate-auth CUSTOM_AUTH` 在进触发器**之前**就被拒;SignInPolicy 在 ESSENTIALS 层**删不掉**(update-user-pool 省略它也留着)。
+- **决定性发现**:池里**只有一个 app client**(`4ratjdjonqm17tln6bs2761ci3`,web+移动**共用**,不轮换)→ v1"web 和移动 client 不同"的前提是**错的**。
+- **v2(refresh-token 交接)**:因同一 client,给终端一个 refresh token 走 `REFRESH_TOKEN_AUTH` 即可登录(**不受 SignInPolicy 管**)。流:web 出码时把自己的 refresh token 存后端(绑一次性码)→ 终端扫码 → **未认证 `POST /api/org/auth/qr/redeem`** 返回 token → 终端 `REFRESH_TOKEN_AUTH` → 登录。**凭据不进 QR**(QR 只带 90s 单次码)。终端与 web 共享会话血缘(已接受)。
+- **v2 设计 spec**:`docs/superpowers/specs/2026-07-31-qr-login-refresh-handoff-design.md`(supersede v1 的 `2026-07-30-qr-login-design.md`)。
+
+### v2 进度
+- **后端 v2:完成并推送** —— 分支 `feat/qr-login-v2-backend`(@`3c9e0e5`,off `origin/develop`),已推 origin(**未 PR、未部署**)。4 个编码任务 + Opus 终审"Ready to merge: Yes" + fix wave;测试 1343 绿。计划 `fieldsight-pipeline/docs/superpowers/plans/2026-07-31-qr-login-v2-backend.md`,ledger `.superpowers/sdd/2026-07-31-qr-login-v2-backend/progress.md`。内容:create 存 refreshToken · 公开 redeem 端点(在 `lambda_handler` 里 `get_connection()` **之前**处理,pre-auth+pre-DB、原子单次、恶意输入→通用 401、不记日志)· 模板加公开路由(`Auth:{Authorizer:NONE}`)/删 3 触发器/留码表 · 删 `lambda_qr_auth.py`。
+- **web v2 + 移动 v2:计划已写,未实现**。web 计划 `.../plans/2026-07-31-qr-login-v2-web.md`(2 编码任务:create 带上 web 的 refresh token、payload 去 `u` 变 `{v:2,c,env}`)。移动计划 `docs/superpowers/plans/2026-07-31-qr-login-v2-mobile.md`(4 任务:`QrLoginPayload` v2、`redeemQrCode(code)` + 删 custom-auth 那套、`signInWithQrCode(code)`=redeem→已有的 `refresh()`→persistAndEnter、扫码器)。这俩是在 v1 分支代码上改 → 从 v1 分支(`feat/qr-login-web`/`feat/qr-login-mobile`)切 v2 分支。
+
+### 新会话怎么接续
+1. 读记忆 [[qr-login-feature]] + 上面两份 v2 计划。
+2. 用 **Subagent-Driven**(SDD)执行,顺序 **web → 移动**(后端已完)。web/移动纯代码,不需 gated 步骤;真机验收才需后端 redeem 上线。
+3. **部署(用户跑,Task 5)**:后端走 **hotfix-off-main**(注意 `origin/develop` 比 `main` 领先 ~25 提交,别 develop→main 全量发)→ deploy-prod(审批门)→ **解开共享池 LambdaConfig 回 `{}`**(`describe→merge→update` 保全字段 + 改后全量 diff 验证 + 回滚备份 `deploy-backup/pool.json`)→ CLI 演练。web 走 Amplify、移动出 release APK 装 F2SP。
+
+### 部署/AWS 坑(实测)
+- 变更类 aws/gh 命令被 **Claude Code auto 模式分类器拦截** → 需 `dangerouslyDisableSandbox:true` 或用户 `!` 亲跑;AWS 用自定义 `aws login` 重认证,会话 ~1 小时过期。
+- 改共享 prod 池/client 一律 `describe→merge→update` + **改后全量 diff 确认只有目标字段变**(v1 挂触发器就是这么安全落地的);`update-user-pool` 省略字段会重置。
+- 加新 CFN 资源要连查部署角色 `github-actions-fieldsight-deploy` IAM(v1 已补 `dynamodb:UpdateTimeToLive`;v2 只删资源不加类型,无需再补)。
 
 ## 架构(采集核心 = Camera2 管线)
 
