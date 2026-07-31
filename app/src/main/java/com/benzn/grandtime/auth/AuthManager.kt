@@ -14,7 +14,7 @@ interface AuthManager {
     suspend fun silentLogin(): Boolean
     suspend fun signIn(username: String, password: String): SignInResult
     /** Passwordless sign-in via a scanned QR code (Cognito custom auth). */
-    suspend fun signInWithQrCode(username: String, code: String): SignInResult
+    suspend fun signInWithQrCode(code: String): SignInResult
     suspend fun signOut()
     /** SP4 上传用:内存 idToken 有效则返回,过期则刷新;失败返回 null。本期不调用。 */
     suspend fun freshIdToken(): String?

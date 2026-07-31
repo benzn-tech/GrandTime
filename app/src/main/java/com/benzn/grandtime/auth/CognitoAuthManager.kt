@@ -55,9 +55,14 @@ class CognitoAuthManager(
         }
     }
 
-    override suspend fun signInWithQrCode(username: String, code: String): SignInResult {
-        return when (val r = withContext(Dispatchers.IO) { client.signInWithCustomAuth(username, code) }) {
-            is AuthOutcome.Tokens -> persistAndEnter(r)
+    override suspend fun signInWithQrCode(code: String): SignInResult {
+        val rt = withContext(Dispatchers.IO) { client.redeemQrCode(code) }
+            ?: return SignInResult.Failure("Invalid or expired QR code — generate a new one")
+        return when (val r = withContext(Dispatchers.IO) { client.refresh(rt) }) {
+            // REFRESH_TOKEN_AUTH does not return a new RefreshToken (r.refreshToken is null), but
+            // persistAndEnter requires one to persist the session — thread the redeemed refresh
+            // token back in so the session survives past this login.
+            is AuthOutcome.Tokens -> persistAndEnter(r.copy(refreshToken = rt))
             else -> SignInResult.Failure("Invalid or expired QR code — generate a new one")
         }
     }
