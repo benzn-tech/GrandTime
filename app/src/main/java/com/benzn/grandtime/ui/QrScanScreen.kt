@@ -88,7 +88,10 @@ fun QrScanScreen(onSignedIn: () -> Unit) {
                         busy = true
                         status = "Signing in…"
                         scope.launch {
-                            when (val r = auth.signInWithQrCode(payload.username, payload.code)) {
+                            // TODO(qr-login-v2 Task 4): pass payload.code only, once
+                            // signInWithQrCode(code) lands (Task 3). Compile-only shim for
+                            // Task 1 (QrLoginPayload dropped `username`) — not the real wiring.
+                            when (val r = auth.signInWithQrCode("", payload.code)) {
                                 SignInResult.Success -> onSignedIn()
                                 is SignInResult.Failure -> { status = r.message; busy = false }
                                 SignInResult.NewPasswordRequired -> {
