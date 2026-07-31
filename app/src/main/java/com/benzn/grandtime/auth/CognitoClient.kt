@@ -1,5 +1,6 @@
 package com.benzn.grandtime.auth
 
+import com.benzn.grandtime.BuildConfig
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -26,9 +27,14 @@ class CognitoClient(
     private val clientId: String,
     private val region: String,
     http: ((target: String, body: String) -> HttpResult)? = null,
+    private val orgBaseUrl: String = BuildConfig.ORG_API_BASE_URL,
+    redeemHttp: ((url: String, body: String) -> HttpResult)? = null,
 ) {
     // Falls back to the real OkHttp path when no override is injected (tests inject a fake).
     private val http: (String, String) -> HttpResult = http ?: ::defaultHttp
+    // Separate injectable: the org gateway is a different (unauthenticated) endpoint from
+    // Cognito IDP, so it cannot reuse `http` (which hardcodes cognito-idp target headers).
+    private val redeemHttp: (String, String) -> HttpResult = redeemHttp ?: ::defaultRedeemHttp
 
     fun signIn(username: String, password: String): AuthOutcome {
         val body = JSONObject()
@@ -57,6 +63,24 @@ class CognitoClient(
             return AuthOutcome.AuthInvalid
         }
         return parseInitiateAuth(result)
+    }
+
+    /** Redeem a scanned one-time QR code at the (unauthenticated) org endpoint; returns the web
+     *  session's refresh token on success, or null on any failure. Never logs the code/token. */
+    fun redeemQrCode(code: String): String? {
+        val url = "$orgBaseUrl/org/auth/qr/redeem"
+        val body = JSONObject().put("code", code).toString()
+        val res = runCatching { redeemHttp(url, body) }.getOrElse { return null }
+        if (res.code != 200) return null
+        return runCatching { JSONObject(res.body).optString("refreshToken").takeIf { it.isNotBlank() } }.getOrNull()
+    }
+
+    private fun defaultRedeemHttp(url: String, body: String): HttpResult {
+        val req = Request.Builder().url(url)
+            .header("Content-Type", "application/json")   // UNAUTHENTICATED — no Authorization header
+            .post(body.toRequestBody("application/json".toMediaType()))
+            .build()
+        OK_HTTP.newCall(req).execute().use { resp -> return HttpResult(resp.code, resp.body?.string().orEmpty()) }
     }
 
     private fun defaultHttp(target: String, body: String): HttpResult {

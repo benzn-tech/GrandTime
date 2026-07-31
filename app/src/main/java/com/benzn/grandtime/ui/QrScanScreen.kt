@@ -30,12 +30,17 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.benzn.grandtime.BuildConfig
+import com.benzn.grandtime.GrandTimeApp
+import com.benzn.grandtime.auth.QrLoginParser
+import com.benzn.grandtime.auth.SignInResult
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -43,26 +48,58 @@ import com.google.zxing.MultiFormatReader
 import com.google.zxing.NotFoundException
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import kotlinx.coroutines.launch
 
 /**
- * FEASIBILITY PROBE (QR-login step 1): prove that a pure-Java ZXing decode over a Camera2
- * YUV_420_888 stream works on the F2SP (armeabi 32-bit, no Play Services). This is NOT the final
- * login flow — it just opens the camera, decodes any QR in view, and shows the raw text so we can
- * confirm decode reliability before building the real passwordless custom-auth flow.
+ * Passwordless sign-in: scans the login QR shown by the web app, parses it (`QrLoginParser`),
+ * checks it's for this build's environment, then signs in by redeeming the one-time code for a
+ * refresh token and running REFRESH_TOKEN_AUTH (`AuthManager.signInWithQrCode`). On success
+ * `onSignedIn` is invoked and the caller dismisses this screen; on failure the status line
+ * explains why and scanning re-arms so a freshly generated code can be retried without leaving
+ * the screen.
  */
 @Composable
-fun QrScanScreen() {
+fun QrScanScreen(onSignedIn: () -> Unit) {
     val context = LocalContext.current
-    var status by remember { mutableStateOf("Point the camera at a QR code") }
-    var decoded by remember { mutableStateOf<String?>(null) }
-    var frames by remember { mutableStateOf(0) }
+    val auth = remember { (context.applicationContext as GrandTimeApp).authManager }
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf("Point the camera at the login QR") }
+    // `busy` serializes sign-in attempts (ignore decodes while one is in flight); `lastAttempted`
+    // remembers the last raw string we already acted on so an identical code still sitting in
+    // frame isn't re-parsed/re-submitted every frame — only a genuinely new/changed code (a fresh
+    // QR) is attempted again. Together these replace the old permanent found=true latch, which let
+    // onDecoded fire exactly once ever and would have left the user stuck after a failed sign-in.
+    var busy by remember { mutableStateOf(false) }
+    var lastAttempted by remember { mutableStateOf<String?>(null) }
 
     val scanner = remember {
         QrScanner(
             context = context,
             onStatus = { status = it },
-            onFrame = { frames++ },
-            onDecoded = { text -> decoded = text; status = "Decoded ✓" },
+            onFrame = {},
+            onDecoded = { raw ->
+                if (busy || raw == lastAttempted) return@QrScanner
+                lastAttempted = raw
+                val payload = QrLoginParser.parse(raw)
+                when {
+                    payload == null -> status = "Not a FieldSight login code — try again"
+                    payload.env != BuildConfig.QR_ENV && BuildConfig.QR_ENV == "prod" ->
+                        status = "This code is for a different environment"
+                    else -> {
+                        busy = true
+                        status = "Signing in…"
+                        scope.launch {
+                            when (val r = auth.signInWithQrCode(payload.code)) {
+                                SignInResult.Success -> onSignedIn()
+                                is SignInResult.Failure -> { status = r.message; busy = false }
+                                SignInResult.NewPasswordRequired -> {
+                                    status = "Set your password in the web app first"; busy = false
+                                }
+                            }
+                        }
+                    }
+                }
+            },
         )
     }
 
@@ -108,11 +145,6 @@ fun QrScanScreen() {
         }
         Column(Modifier.padding(16.dp)) {
             Text(status, style = MaterialTheme.typography.titleMedium)
-            Text("Frames analysed: $frames", style = MaterialTheme.typography.bodySmall)
-            decoded?.let {
-                Text("Content:", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 12.dp))
-                Text(it, style = MaterialTheme.typography.bodyMedium)
-            }
         }
     }
 }
@@ -131,7 +163,6 @@ private class QrScanner(
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
     private var stopped = false
-    private var found = false
 
     private val zxing = MultiFormatReader().apply {
         setHints(
@@ -146,7 +177,6 @@ private class QrScanner(
     fun start(holder: SurfaceHolder) {
         if (thread != null) return
         stopped = false
-        found = false
         thread = HandlerThread("qr-scan").also { it.start() }
         handler = Handler(thread!!.looper)
 
@@ -205,7 +235,6 @@ private class QrScanner(
 
     private fun analyse(r: ImageReader) {
         val image = r.acquireLatestImage() ?: return
-        if (found) { image.close(); return }
         try {
             val plane = image.planes[0]
             val buf = plane.buffer
@@ -228,8 +257,10 @@ private class QrScanner(
             } finally {
                 zxing.reset()
             }
-            if (result != null && !found) {
-                found = true
+            // No permanent latch here — every successfully-decoded frame is reported. The composable
+            // (onDecoded above) is responsible for de-duplicating repeat decodes of the same code and
+            // re-arming after a failed sign-in attempt.
+            if (result != null) {
                 onDecoded(result.text)
             }
         } catch (e: Exception) {
