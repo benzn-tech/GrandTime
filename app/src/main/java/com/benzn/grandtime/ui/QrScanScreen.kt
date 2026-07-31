@@ -52,10 +52,11 @@ import kotlinx.coroutines.launch
 
 /**
  * Passwordless sign-in: scans the login QR shown by the web app, parses it (`QrLoginParser`),
- * checks it's for this build's environment, then signs in via Cognito custom-auth
- * (`AuthManager.signInWithQrCode`). On success `onSignedIn` is invoked and the caller dismisses
- * this screen; on failure the status line explains why and scanning re-arms so a freshly
- * generated code can be retried without leaving the screen.
+ * checks it's for this build's environment, then signs in by redeeming the one-time code for a
+ * refresh token and running REFRESH_TOKEN_AUTH (`AuthManager.signInWithQrCode`). On success
+ * `onSignedIn` is invoked and the caller dismisses this screen; on failure the status line
+ * explains why and scanning re-arms so a freshly generated code can be retried without leaving
+ * the screen.
  */
 @Composable
 fun QrScanScreen(onSignedIn: () -> Unit) {

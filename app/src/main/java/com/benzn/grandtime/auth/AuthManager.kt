@@ -13,7 +13,8 @@ interface AuthManager {
     val loginState: StateFlow<LoginState>
     suspend fun silentLogin(): Boolean
     suspend fun signIn(username: String, password: String): SignInResult
-    /** Passwordless sign-in via a scanned QR code (Cognito custom auth). */
+    /** Passwordless sign-in via a scanned QR code (redeem the one-time code for a refresh token,
+     *  then REFRESH_TOKEN_AUTH). */
     suspend fun signInWithQrCode(code: String): SignInResult
     suspend fun signOut()
     /** SP4 上传用:内存 idToken 有效则返回,过期则刷新;失败返回 null。本期不调用。 */
