@@ -37,41 +37,32 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
      */
     override val coroutineContext = UPLOAD_DISPATCHER
 
-    /**
-     * Retry WITHOUT consuming the permanent-failure budget in [doWork]'s attempt cap.
-     *
-     * [Result.retry] increments runAttemptCount, and at 8 the record is abandoned for good.
-     * That budget exists to stop a genuinely broken upload retrying forever — but "the
-     * server is busy" is not broken, and burning the budget on backpressure is how good
-     * recordings got marked permanently failed while the backend was merely full. Instead,
-     * hand the record to a FRESH work request (attempt count back to zero) on a long delay,
-     * and let this instance end quietly.
-     */
-    private fun backOffWithoutSpendingBudget(): Result {
-        val recordId = inputData.getString("recordId") ?: return Result.failure()
-        WorkManagerUploadEnqueuer(applicationContext).enqueue(
-            recordId,
-            initialDelaySeconds = BUSY_BACKOFF_SECONDS,
-            replace = true,
-        )
-        return Result.success()      // superseded, not failed — the new request owns it now
-    }
-
     override suspend fun doWork(): Result {
         val recordId = inputData.getString("recordId") ?: return Result.failure()
         val app = applicationContext as GrandTimeApp
         val dao = CaptureDb.get(applicationContext).captureRecords()
         return try {
-            // #2: OneTimeWorkRequest has no built-in attempt cap — without this, a permanent
-            // (non-401) uploadUrl error would retry forever. Cap at 8 (~exponential backoff
-            // 30s..5h) and give up for good past that.
-            if (runAttemptCount >= 8) {
+            val record = dao.getById(recordId) ?: return Result.success()
+            // Before the age check, not after: an already-uploaded record is DONE, and a
+            // stray re-enqueue of an old one must not be re-labelled "failed".
+            if (record.uploadStatus == "uploaded") return Result.success()
+
+            // #2: OneTimeWorkRequest has no built-in attempt cap, so something must stop a
+            // genuinely doomed upload retrying forever. This used to be a count (8 attempts),
+            // which conflated two very different situations: eight attempts against a broken
+            // request means broken, but eight attempts against a busy backend means the
+            // backend was busy eight times — and on 2026-08-03 that spent a good recording's
+            // entire budget while the server was merely full, abandoning it for good.
+            //
+            // Age is the honest bound. A recording that still cannot upload a week after it
+            // was made is dead however many attempts that took, and a backend outage of any
+            // plausible length no longer costs us data. WorkManager's own exponential backoff
+            // caps at 5h, so a doomed record costs on the order of tens of requests over that
+            // week, not one every few minutes.
+            if (System.currentTimeMillis() - record.startedAt > GIVE_UP_AFTER_MS) {
                 dao.markUploadStatus(recordId, "failed")
                 return Result.failure()
             }
-
-            val record = dao.getById(recordId) ?: return Result.success()
-            if (record.uploadStatus == "uploaded") return Result.success()
 
             // #1: a fresh/headless worker process (reboot / process-death wakeup) starts with
             // AppState.loginState defaulted to LoggedOut. silentLogin() restores the accurate
@@ -120,8 +111,11 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                     Result.retry()
                 }
                 is RecordingsApiClient.UploadUrlResult.Busy -> {
+                    // Retry on WorkManager's own exponential backoff. Safe to do freely
+                    // now that the give-up rule is age-based: a busy backend no longer
+                    // eats a budget that a broken request should have spent.
                     dao.markUploadStatus(recordId, "failed")
-                    backOffWithoutSpendingBudget()
+                    Result.retry()
                 }
                 is RecordingsApiClient.UploadUrlResult.Error -> {
                     dao.markUploadStatus(recordId, "failed")
@@ -135,10 +129,10 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                         dao.markMissing(listOf(recordId))
                         return Result.failure()
                     }
-                    // #5: a failed PUT does NOT mean S3 rejected the bytes. OK_HTTP caps the
-                    // whole call at 60s, so a large chunk on a congested link can be fully
-                    // received by S3 and still surface here as a failure — the client simply
-                    // stopped waiting for the response. That is exactly how 69 of one device's
+                    // #5: a failed PUT does NOT mean S3 rejected the bytes. Any client-side
+                    // give-up (write stall, socket reset, process pressure) can happen after
+                    // S3 has already received the body — S3 keeps what it got, we just never
+                    // saw the response. That is exactly how 69 of one device's
                     // recordings ended up present in S3 with their row never completed on
                     // 2026-08-03. So try `complete` anyway: it is idempotent, and if the
                     // object really is there this finishes the upload instead of re-sending
@@ -158,7 +152,7 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                         // it orphans the recording (file in S3, backend row pending forever).
                         RecordingsApiClient.isTransient(status) -> {
                             dao.markUploadStatus(recordId, "failed")
-                            backOffWithoutSpendingBudget()
+                            Result.retry()
                         }
                         else -> {
                             // A real 4xx from complete (or a PUT that genuinely never landed).
@@ -184,11 +178,10 @@ private val UPLOAD_DISPATCHER =
     kotlinx.coroutines.Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_UPLOADS)
 
 /**
- * How long to stand down when the server signals backpressure. Long enough that a backlog
- * does not simply re-storm the same full queue, short enough that an unattended device still
- * drains the same evening.
+ * How long an un-uploaded recording stays worth retrying. See [UploadWorker.doWork]'s #2
+ * for why the bound is age rather than an attempt count.
  */
-internal const val BUSY_BACKOFF_SECONDS = 300L
+internal const val GIVE_UP_AFTER_MS = 7L * 24 * 60 * 60 * 1000
 
 /** Backend `kind` must be one of video/audio/photo; frame-grab rows are photos taken mid-recording. */
 internal fun uploadKind(kind: String): String = if (kind == "frame-grab") "photo" else kind
