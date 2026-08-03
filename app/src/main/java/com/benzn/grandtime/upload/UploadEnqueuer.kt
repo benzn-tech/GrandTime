@@ -20,7 +20,24 @@ interface UploadEnqueuer {
      * [requireUnmetered] true restricts the upload to an unmetered (Wi-Fi) network instead of
      * any connected network — used for video when the user enabled the Wi-Fi-only setting.
      */
-    fun enqueue(recordId: String, initialDelaySeconds: Long = 0, requireUnmetered: Boolean = false)
+    /**
+     * [replace] forces this request to take over from any work already queued for the same
+     * record. Leave it false for automatic enqueues (dedup is what you want there); set it
+     * for anything the USER just asked for.
+     *
+     * Why it exists: unique work uses [ExistingWorkPolicy.KEEP], which drops the new request
+     * whenever the existing one is unfinished — and a worker sitting in exponential backoff
+     * after [androidx.work.ListenableWorker.Result.retry] IS unfinished, for up to 5 hours.
+     * So "Retry failed" showed its toast and then did nothing at all, which is exactly when a
+     * user reaches for it. KEEP was chosen before any retry button existed (it was there to
+     * coalesce duplicate automatic enqueues); the button was added later and inherited it.
+     */
+    fun enqueue(
+        recordId: String,
+        initialDelaySeconds: Long = 0,
+        requireUnmetered: Boolean = false,
+        replace: Boolean = false,
+    )
 }
 
 /**
@@ -28,7 +45,12 @@ interface UploadEnqueuer {
  * (e.g. a stray retry hook) coalesce instead of running the upload twice.
  */
 class WorkManagerUploadEnqueuer(private val context: Context) : UploadEnqueuer {
-    override fun enqueue(recordId: String, initialDelaySeconds: Long, requireUnmetered: Boolean) {
+    override fun enqueue(
+        recordId: String,
+        initialDelaySeconds: Long,
+        requireUnmetered: Boolean,
+        replace: Boolean,
+    ) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(if (requireUnmetered) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .build()
@@ -39,7 +61,10 @@ class WorkManagerUploadEnqueuer(private val context: Context) : UploadEnqueuer {
         if (initialDelaySeconds > 0) {
             builder.setInitialDelay(initialDelaySeconds, TimeUnit.SECONDS)
         }
-        WorkManager.getInstance(context)
-            .enqueueUniqueWork("upload_$recordId", ExistingWorkPolicy.KEEP, builder.build())
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "upload_$recordId",
+            if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
+            builder.build(),
+        )
     }
 }

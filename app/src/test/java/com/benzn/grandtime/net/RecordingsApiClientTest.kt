@@ -22,9 +22,22 @@ class RecordingsApiClientTest {
         )
     }
 
-    @Test fun `4xx5xx maps to Error`() {
+    @Test fun `5xx maps to Busy — server backpressure, not a broken upload`() {
+        val r = RecordingsApiClient.parseUploadUrl(HttpResult(503, "throttled"))
+        assertTrue(r is RecordingsApiClient.UploadUrlResult.Busy)
+        assertEquals(503, (r as RecordingsApiClient.UploadUrlResult.Busy).code)
+    }
+
+    @Test fun `429 maps to Busy`() {
         assertTrue(
-            RecordingsApiClient.parseUploadUrl(HttpResult(500, "boom"))
+            RecordingsApiClient.parseUploadUrl(HttpResult(429, "slow down"))
+                is RecordingsApiClient.UploadUrlResult.Busy
+        )
+    }
+
+    @Test fun `client 4xx maps to Error`() {
+        assertTrue(
+            RecordingsApiClient.parseUploadUrl(HttpResult(403, "forbidden"))
                 is RecordingsApiClient.UploadUrlResult.Error,
         )
     }
@@ -78,7 +91,7 @@ class RecordingsApiClientTest {
             override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
         }
         val client = RecordingsApiClient("https://api.example.com/prod/api", fake)
-        assertTrue(client.complete("idtok", "r1", 1234L))
+        assertTrue(client.completeStatus("idtok", "r1", 1234L) in 200..299)
     }
 
     // T13: complete() 可选携带 gpsTrack —— 字符串还原成 JSONArray 放进 body,后端得真数组(非二次转义字符串)。
@@ -92,11 +105,11 @@ class RecordingsApiClientTest {
             override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
         }
         val client = RecordingsApiClient("https://api.example.com/prod/api", fake)
-        val ok = client.complete(
+        val ok = client.completeStatus(
             "idtok", "r1", 1234L,
             gpsTrack = """[{"t":1,"lat":-36.85,"lon":174.76}]""",
         )
-        assertTrue(ok)
+        assertTrue(ok in 200..299)
         val json = org.json.JSONObject(sentBody)
         val arr = json.getJSONArray("gpsTrack")
         assertEquals(1, arr.length())
@@ -116,7 +129,7 @@ class RecordingsApiClientTest {
             override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
         }
         val client = RecordingsApiClient("https://api.example.com/prod/api", fake)
-        assertTrue(client.complete("idtok", "r1", 1234L))
+        assertTrue(client.completeStatus("idtok", "r1", 1234L) in 200..299)
         assertTrue(!org.json.JSONObject(sentBody).has("gpsTrack"))
     }
 
@@ -131,8 +144,27 @@ class RecordingsApiClientTest {
             override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
         }
         val client = RecordingsApiClient("https://api.example.com/prod/api", fake)
-        val ok = client.complete("idtok", "r1", 1234L, gpsTrack = "not valid json{{{")
+        val ok = client.completeStatus("idtok", "r1", 1234L, gpsTrack = "not valid json{{{") in 200..299
         assertTrue(ok)
         assertTrue(!org.json.JSONObject(sentBody).has("gpsTrack"))
+    }
+
+    // The line between "the server is busy" and "this request is wrong" decides whether a
+    // failure spends the record's 8-attempt permanent-failure budget. Getting it wrong is
+    // how good recordings were abandoned on 2026-08-03 while the backend was merely full.
+    @Test fun `isTransient covers no-response, 429 and 5xx only`() {
+        assertTrue(RecordingsApiClient.isTransient(RecordingsApiClient.NO_RESPONSE))
+        assertTrue(RecordingsApiClient.isTransient(429))
+        assertTrue(RecordingsApiClient.isTransient(500))
+        assertTrue(RecordingsApiClient.isTransient(502))
+        assertTrue(RecordingsApiClient.isTransient(503))
+        assertTrue(RecordingsApiClient.isTransient(504))
+        // Success and genuine client errors are NOT transient — retrying them unchanged
+        // can never help.
+        assertTrue(!RecordingsApiClient.isTransient(200))
+        assertTrue(!RecordingsApiClient.isTransient(400))
+        assertTrue(!RecordingsApiClient.isTransient(401))
+        assertTrue(!RecordingsApiClient.isTransient(403))
+        assertTrue(!RecordingsApiClient.isTransient(409))
     }
 }

@@ -52,6 +52,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * How many un-uploaded records the startup sweep re-enqueues. Sized to clear a full day's
+ * offline backlog (a 2-hour audio session is ~260 chunks), which the previous cap of 10 could
+ * not — leaving a user staring at "failed" with no workable way to recover them.
+ * Network burst control is [com.benzn.grandtime.upload.MAX_CONCURRENT_UPLOADS], not this.
+ */
+private const val STARTUP_SWEEP_CAP = 400
+
 class CoreService : LifecycleService() {
 
     companion object {
@@ -219,9 +227,14 @@ class CoreService : LifecycleService() {
                     if (java.io.File(rec.filePath).exists()) onDisk.add(rec)
                     else dao.markMissing(listOf(rec.id))   // 已删文件:标 missing,排除出后续扫描
                 }
-                // **封顶补扫**:只补最近 10 条磁盘存在的,避免大 backlog 灌爆 WorkManager/网络栈、
-                // 拖垮实时上传;更旧的留给用户在 Files 里手动点角标补传。实时上传仍 delay=0。
-                onDisk.sortedByDescending { it.startedAt }.take(10)
+                // **封顶补扫**:避免大 backlog 灌爆 WorkManager/网络栈、拖垮实时上传;
+                // 更旧的留给用户在 Files 里手动点角标补传。实时上传仍 delay=0。
+                //
+                // 2026-08-03: 上限原本是 10。一次离线两小时的录制留下 131 个待传分片,
+                // 重启 App 只能捞回 10 个,用户看着"失败"却没有可行的补救路径。
+                // 现在并发已由 UploadWorker 的 MAX_CONCURRENT_UPLOADS 封顶(不再靠这个
+                // 数字间接限流),所以这里可以放宽到能真正清空一天的积压。
+                onDisk.sortedByDescending { it.startedAt }.take(STARTUP_SWEEP_CAP)
                     .forEach {
                         enq.enqueue(
                             it.id,
