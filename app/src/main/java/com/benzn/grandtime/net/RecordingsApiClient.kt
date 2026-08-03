@@ -38,7 +38,7 @@ class RealHttp : HttpFns {
             .header("Content-Type", contentType)
             .put(file.asRequestBody(contentType.toMediaTypeOrNull()))
             .build()
-        OK_HTTP.newCall(req).execute().use { resp ->
+        UPLOAD_HTTP.newCall(req).execute().use { resp ->
             return resp.code
         }
     }
@@ -47,12 +47,31 @@ class RealHttp : HttpFns {
         // OkHttp's per-operation read/write timeouts default to 10s. The SP-Ask voice
         // endpoint does STT + RAG + realtime TTS server-side before responding (well over
         // 10s), so a 10s read timeout severed the call with a spurious network error; raise
-        // read/write above APIGW's 29s ceiling. Also protects large S3 uploads (write).
+        // read/write above APIGW's 29s ceiling.
         private val OK_HTTP = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(35, TimeUnit.SECONDS)
             .writeTimeout(35, TimeUnit.SECONDS)
             .callTimeout(60, TimeUnit.SECONDS)
+            .build()
+
+        /**
+         * Body uploads to S3 get NO overall call deadline — only per-operation ones.
+         *
+         * `callTimeout` is a wall clock over the entire call, so it scales with FILE SIZE,
+         * not with health: a 40 MB video on a site link needs minutes of perfectly healthy
+         * transfer and would be cut off at 60s with the bytes already in flight. That is not
+         * hypothetical — S3 keeps whatever it received, so the object lands while the client
+         * reports failure, which is how uploads ended up present in S3 with their row never
+         * completed. (The 60s cap was written when this client only spoke to API Gateway; the
+         * later comment claiming writeTimeout "also protects large S3 uploads" had it
+         * backwards — writeTimeout is the protection, callTimeout is the hazard.)
+         *
+         * Stalls are still caught: writeTimeout fires when no progress is made on a single
+         * socket write for 35s, which is the condition we actually want to abort on.
+         */
+        private val UPLOAD_HTTP = OK_HTTP.newBuilder()
+            .callTimeout(0, TimeUnit.MILLISECONDS)   // 0 = no overall deadline
             .build()
     }
 }
