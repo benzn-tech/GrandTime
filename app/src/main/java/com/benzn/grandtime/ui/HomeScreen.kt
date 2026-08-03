@@ -221,7 +221,14 @@ fun HomeScreen() {
                                     unit.segments.filter { it.uploadStatus != "uploaded" }.map { it.id }
                                 }
                                 coroutineScope.launch {
-                                    idsToRetry.forEach { WorkManagerUploadEnqueuer(context).enqueue(it) }
+                                    // replace=true: the user asked for this NOW. Without it the
+                                    // request is dropped whenever the record is already sitting
+                                    // in exponential backoff (up to 5h), which is precisely when
+                                    // someone presses "Retry failed" — the toast appeared and
+                                    // nothing happened.
+                                    idsToRetry.forEach {
+                                        WorkManagerUploadEnqueuer(context).enqueue(it, replace = true)
+                                    }
                                     Toast.makeText(
                                         context,
                                         "Retrying ${failedUnits.size} recordings",

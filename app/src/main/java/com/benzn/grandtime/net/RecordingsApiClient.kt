@@ -83,6 +83,16 @@ class RecordingsApiClient(
     sealed interface UploadUrlResult {
         data class Ok(val recordingId: String, val uploadUrl: String, val s3Key: String) : UploadUrlResult
         data object AuthExpired : UploadUrlResult
+        /**
+         * Server-side backpressure or a transient network failure — "try again later", NOT
+         * "this upload is broken". Kept distinct from [Error] because the two deserve
+         * different retry budgets: on 2026-08-03 the account-wide Lambda concurrency limit
+         * turned a reconnecting device's backlog into 1547 throttles, API Gateway answered
+         * 5XX, and the worker spent its whole 8-attempt allowance on a queue that was simply
+         * full. Treating that as a permanent failure is how uploads got abandoned while the
+         * server was merely busy.
+         */
+        data class Busy(val code: Int) : UploadUrlResult
         data class Error(val message: String) : UploadUrlResult
     }
 
@@ -101,7 +111,7 @@ class RecordingsApiClient(
         req.codec?.let { body.put("codec", it) }
 
         val result = runCatching { http.postJson("$baseUrl/org/recordings/upload-url", idToken, body.toString()) }
-            .getOrElse { return UploadUrlResult.Error("network") }
+            .getOrElse { return UploadUrlResult.Busy(0) }   // no response at all -> transient
         return parseUploadUrl(result)
     }
 
@@ -110,7 +120,13 @@ class RecordingsApiClient(
         return code in 200..299
     }
 
-    fun complete(idToken: String, recordingId: String, sizeBytes: Long?, gpsTrack: String? = null): Boolean {
+    /**
+     * @return the HTTP status, or [NO_RESPONSE] when the call never produced one. Callers
+     * need the code, not just a boolean: a `complete` lost to server backpressure must be
+     * retried without spending the record's permanent-failure budget, whereas a 4xx means
+     * this request will never succeed as-is.
+     */
+    fun completeStatus(idToken: String, recordingId: String, sizeBytes: Long?, gpsTrack: String? = null): Int {
         val body = JSONObject()
         sizeBytes?.let { body.put("sizeBytes", it) }
         // T13: gpsTrack 是 DB 里存的 JSON 数组字符串(GpsTracker.snapshotTrackJson),这里还原成
@@ -122,13 +138,24 @@ class RecordingsApiClient(
         }
         val result = runCatching {
             http.postJson("$baseUrl/org/recordings/$recordingId/complete", idToken, body.toString())
-        }.getOrElse { return false }
-        return result.code in 200..299
+        }.getOrElse { return NO_RESPONSE }
+        return result.code
     }
 
     companion object {
+        /** No HTTP status was ever obtained (socket/DNS/timeout). Transient by definition. */
+        const val NO_RESPONSE = 0
+
+        /**
+         * "The server is busy / we never got through", as opposed to "this request is wrong".
+         * 429 is an explicit rate limit; 5xx behind API Gateway is what a throttled Lambda
+         * surfaces as (the invocation never runs, so it isn't a real server error either).
+         */
+        fun isTransient(code: Int): Boolean = code == NO_RESPONSE || code == 429 || code in 500..599
+
         fun parseUploadUrl(r: HttpResult): UploadUrlResult {
             if (r.code == 401) return UploadUrlResult.AuthExpired
+            if (isTransient(r.code)) return UploadUrlResult.Busy(r.code)
             return runCatching {
                 if (r.code !in 200..299) return@runCatching UploadUrlResult.Error("HTTP ${r.code}: ${r.body}")
                 val json = JSONObject(r.body)

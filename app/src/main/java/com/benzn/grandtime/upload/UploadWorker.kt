@@ -22,6 +22,41 @@ import java.time.Instant
  */
 class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
 
+    /**
+     * Caps how many uploads this process runs at once, process-wide.
+     *
+     * WorkManager does NOT bound this for us: CoroutineWorker launches on its own
+     * [coroutineContext] and returns the WorkManager executor thread immediately, so the
+     * pool size is not the limit — JobScheduler decides, and it happily starts ~20.
+     *
+     * Why it matters: a device coming back online releases its whole backlog at once. On
+     * 2026-08-03 that meant a burst of ~520 API calls against an account whose Lambda
+     * concurrency limit is 10; the device DDoSed its own backend, got 5XX for 88% of the
+     * burst, and lost data it had successfully recorded. Two at a time still saturates a
+     * site link but keeps each request inside its timeout and keeps the server reachable.
+     */
+    override val coroutineContext = UPLOAD_DISPATCHER
+
+    /**
+     * Retry WITHOUT consuming the permanent-failure budget in [doWork]'s attempt cap.
+     *
+     * [Result.retry] increments runAttemptCount, and at 8 the record is abandoned for good.
+     * That budget exists to stop a genuinely broken upload retrying forever — but "the
+     * server is busy" is not broken, and burning the budget on backpressure is how good
+     * recordings got marked permanently failed while the backend was merely full. Instead,
+     * hand the record to a FRESH work request (attempt count back to zero) on a long delay,
+     * and let this instance end quietly.
+     */
+    private fun backOffWithoutSpendingBudget(): Result {
+        val recordId = inputData.getString("recordId") ?: return Result.failure()
+        WorkManagerUploadEnqueuer(applicationContext).enqueue(
+            recordId,
+            initialDelaySeconds = BUSY_BACKOFF_SECONDS,
+            replace = true,
+        )
+        return Result.success()      // superseded, not failed — the new request owns it now
+    }
+
     override suspend fun doWork(): Result {
         val recordId = inputData.getString("recordId") ?: return Result.failure()
         val app = applicationContext as GrandTimeApp
@@ -84,6 +119,10 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                     dao.markUploadStatus(recordId, "failed")
                     Result.retry()
                 }
+                is RecordingsApiClient.UploadUrlResult.Busy -> {
+                    dao.markUploadStatus(recordId, "failed")
+                    backOffWithoutSpendingBudget()
+                }
                 is RecordingsApiClient.UploadUrlResult.Error -> {
                     dao.markUploadStatus(recordId, "failed")
                     Result.retry()
@@ -96,23 +135,38 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                         dao.markMissing(listOf(recordId))
                         return Result.failure()
                     }
-                    val put = client.putFile(urlResult.uploadUrl, contentType, file)
-                    if (!put) {
-                        dao.markUploadStatus(recordId, "failed")
-                        return Result.retry()
+                    // #5: a failed PUT does NOT mean S3 rejected the bytes. OK_HTTP caps the
+                    // whole call at 60s, so a large chunk on a congested link can be fully
+                    // received by S3 and still surface here as a failure — the client simply
+                    // stopped waiting for the response. That is exactly how 69 of one device's
+                    // recordings ended up present in S3 with their row never completed on
+                    // 2026-08-03. So try `complete` anyway: it is idempotent, and if the
+                    // object really is there this finishes the upload instead of re-sending
+                    // the whole file. If the object is absent the backend just stays pending
+                    // and we retry the PUT on the next attempt.
+                    // Return value deliberately ignored — `complete` below is the real
+                    // verdict on whether the object made it (see the comment above).
+                    client.putFile(urlResult.uploadUrl, contentType, file)
+                    val status = client.completeStatus(
+                        idToken, urlResult.recordingId, file.length(), gpsTrack = record.gpsTrack)
+                    when {
+                        status in 200..299 -> {
+                            dao.markUploadStatus(recordId, "uploaded")
+                            Result.success()
+                        }
+                        // #4: complete's outcome must be honored — marking "uploaded" without
+                        // it orphans the recording (file in S3, backend row pending forever).
+                        RecordingsApiClient.isTransient(status) -> {
+                            dao.markUploadStatus(recordId, "failed")
+                            backOffWithoutSpendingBudget()
+                        }
+                        else -> {
+                            // A real 4xx from complete (or a PUT that genuinely never landed).
+                            // Retry within the normal budget; #2's cap eventually gives up.
+                            dao.markUploadStatus(recordId, "failed")
+                            Result.retry()
+                        }
                     }
-                    // #4: complete()'s bool must be honored — if the backend never finalizes the
-                    // recording row, marking "uploaded" here would orphan it (file sits in S3,
-                    // backend row stays pending, and nothing ever retries). The whole flow is
-                    // idempotent (upload-url on clientUuid, re-PUT overwrites the same S3 key,
-                    // complete is idempotent), so retrying complete is safe; bounded by #2's cap.
-                    val done = client.complete(idToken, urlResult.recordingId, file.length(), gpsTrack = record.gpsTrack)
-                    if (!done) {
-                        dao.markUploadStatus(recordId, "failed")
-                        return Result.retry()
-                    }
-                    dao.markUploadStatus(recordId, "uploaded")
-                    Result.success()
                 }
             }
         } catch (e: Exception) {
@@ -121,6 +175,20 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
         }
     }
 }
+
+/** Concurrent uploads per process. See [UploadWorker.coroutineContext]. */
+internal const val MAX_CONCURRENT_UPLOADS = 2
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+private val UPLOAD_DISPATCHER =
+    kotlinx.coroutines.Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_UPLOADS)
+
+/**
+ * How long to stand down when the server signals backpressure. Long enough that a backlog
+ * does not simply re-storm the same full queue, short enough that an unattended device still
+ * drains the same evening.
+ */
+internal const val BUSY_BACKOFF_SECONDS = 300L
 
 /** Backend `kind` must be one of video/audio/photo; frame-grab rows are photos taken mid-recording. */
 internal fun uploadKind(kind: String): String = if (kind == "frame-grab") "photo" else kind

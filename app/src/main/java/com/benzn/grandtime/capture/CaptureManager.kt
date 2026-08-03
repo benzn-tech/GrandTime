@@ -52,7 +52,12 @@ class CaptureManager(
     private val notify: (String) -> Unit,
     private val probe: (String) -> Unit,
     private val uploadEnqueuer: UploadEnqueuer = object : UploadEnqueuer {
-        override fun enqueue(recordId: String, initialDelaySeconds: Long, requireUnmetered: Boolean) {}
+        override fun enqueue(
+            recordId: String,
+            initialDelaySeconds: Long,
+            requireUnmetered: Boolean,
+            replace: Boolean,
+        ) {}
     },
 ) : MicHandover {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { ChunkNaming.sessionId(UUID.randomUUID().toString()) })

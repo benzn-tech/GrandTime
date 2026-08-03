@@ -220,7 +220,8 @@ fun FilesScreen() {
                             if (unit.segments.all { it.uploadStatus == "uploaded" }) {
                                 Toast.makeText(context, "Already uploaded", Toast.LENGTH_SHORT).show()
                             } else {
-                                unit.ids.forEach { WorkManagerUploadEnqueuer(context).enqueue(it) }
+                                // replace=true — a manual tap must preempt any pending backoff (see UploadEnqueuer).
+                                unit.ids.forEach { WorkManagerUploadEnqueuer(context).enqueue(it, replace = true) }
                                 val label = if (unit.isGroup) {
                                     "recording (${unit.segmentCount} segments)"
                                 } else {
@@ -377,7 +378,11 @@ private fun RecordingUploadStatusBadge(unit: RecordingUnit, modifier: Modifier =
             .background(Color(0x99000000))
             .let { base ->
                 if (enqueueableIds.isNotEmpty()) {
-                    base.clickable { enqueueableIds.forEach { id -> WorkManagerUploadEnqueuer(context).enqueue(id) } }
+                    base.clickable {
+                        enqueueableIds.forEach { id ->
+                            WorkManagerUploadEnqueuer(context).enqueue(id, replace = true)
+                        }
+                    }
                 } else {
                     base
                 }
