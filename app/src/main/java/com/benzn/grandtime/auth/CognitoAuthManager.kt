@@ -111,7 +111,10 @@ class CognitoAuthManager(
         AppState.loginState.value = _loginState.value
         AppState.mediaScope.value = mediaScope
         scope.launch(Dispatchers.IO) {
-            runCatching { dao.backfillAuthorSub(sub) }
+            // Deliberately NOT backfilling authorSub here. Claiming every unowned row for
+            // whoever just signed in is what let one client's pending recordings upload
+            // under the next client's account, and this device is handed over monthly.
+            // Ownership is stamped at capture time now (CaptureManager.currentAuthorSub).
             runCatching {
                 val root = publicRoot()
                 MediaMigrator.migrateFolder(

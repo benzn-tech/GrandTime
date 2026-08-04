@@ -9,6 +9,7 @@ import com.benzn.grandtime.auth.CognitoClient
 import com.benzn.grandtime.auth.EncryptedTokenStore
 import com.benzn.grandtime.capture.MediaStorage
 import com.benzn.grandtime.db.CaptureDb
+import com.benzn.grandtime.device.DeviceIdentity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +31,14 @@ class GrandTimeApp : Application(), ImageLoaderFactory {
      * `rememberCoroutineScope`, which onDismiss() would cancel mid-write (dropping the selection).
      */
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    override fun onCreate() {
+        super.onCreate()
+        // Resolve the device's own identity before anything can make a request.
+        // Until this runs, DeviceIdentity reports nothing and the ledger reads
+        // the device as never-seen, which is true rather than wrong.
+        DeviceIdentity.init(this)
+    }
 
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .components { add(VideoFrameDecoder.Factory()) }

@@ -18,6 +18,7 @@ import com.benzn.grandtime.ask.AskManager
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureManager
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.ProbeEntry
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.SiteStore
@@ -223,9 +224,31 @@ class CoreService : LifecycleService() {
                 // Read once — the rescan is a single pass, no need to react to a mid-scan setting change.
                 val wifiOnly = SettingsStore(applicationContext.settingsDataStore).settings.first().videoUploadWifiOnly
                 val onDisk = mutableListOf<com.benzn.grandtime.db.CaptureRecord>()
-                for (rec in dao.listByUploadStatus(listOf("pending", "failed", "uploading"))) {
-                    if (java.io.File(rec.filePath).exists()) onDisk.add(rec)
-                    else dao.markMissing(listOf(rec.id))   // 已删文件:标 missing,排除出后续扫描
+                // Scoped to the signed-in account. The sweep uploads under whoever is signed
+                // in now, so an unscoped sweep sends the previous client's backlog under the
+                // new client's identity — and this device is handed between clients monthly.
+                // The 0.5.9 cap raise (10 -> 400) was right for draining a real offline
+                // backlog, but it also removed the accidental ceiling on how much could
+                // escape that way, so the filter is what makes the larger cap safe.
+                // No account signed in => sweep nothing. There is no correct owner to
+                // attribute these to.
+                val sweepAuthor = (AppState.loginState.value as? LoginState.LoggedIn)?.authorSub
+                if (sweepAuthor == null) {
+                    probe("startup sweep skipped — no signed-in account to attribute uploads to")
+                } else {
+                    for (rec in dao.listPendingForAuthor(
+                        listOf("pending", "failed", "uploading"), sweepAuthor,
+                    )) {
+                        if (java.io.File(rec.filePath).exists()) onDisk.add(rec)
+                        else dao.markMissing(listOf(rec.id))   // 已删文件:标 missing,排除出后续扫描
+                    }
+                    val orphans = dao.countOrphanedPending()
+                    if (orphans > 0) {
+                        // Recorded before ownership was stamped, so their recorder is unknown
+                        // and they can never be uploaded. Said out loud rather than silently
+                        // skipped, because silence here looks identical to "nothing pending".
+                        probe("$orphans unsent recording(s) have no known recorder and will not upload")
+                    }
                 }
                 // **封顶补扫**:避免大 backlog 灌爆 WorkManager/网络栈、拖垮实时上传;
                 // 更旧的留给用户在 Files 里手动点角标补传。实时上传仍 delay=0。

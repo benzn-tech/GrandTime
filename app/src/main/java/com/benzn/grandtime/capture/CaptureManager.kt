@@ -168,6 +168,18 @@ class CaptureManager(
         if (!ok) probe("mic handover: resume failed, segment audio stays silent")
     }
 
+    /**
+     * Who is recording this, stamped at capture time.
+     *
+     * Ownership used to be assigned at sign-in by claiming every unowned row,
+     * which on a device that rotates between clients handed one client's
+     * pending recordings to the next. Null here means nobody was signed in;
+     * that row is then uploadable by nobody, which is the correct outcome —
+     * guessing an owner is what caused the leak.
+     */
+    private fun currentAuthorSub(): String? =
+        (AppState.loginState.value as? LoginState.LoggedIn)?.authorSub
+
     private fun granted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
@@ -348,7 +360,7 @@ class CaptureManager(
                 id = recordId, kind = "video", filePath = file.absolutePath, fileName = file.name,
                 startedAt = startedAt, codec = result.codec, resolution = result.resolution,
                 segmentIndex = cmd.segmentIndex, sessionId = cmd.sessionId, createdAt = startedAt,
-                siteId = AppState.selectedSite.value?.id,
+                siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
             )
         )
         startSegmentTimer(settings.segmentSeconds)
@@ -461,7 +473,7 @@ class CaptureManager(
                     id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
                     startedAt = startedAt, endedAt = startedAt, sizeBytes = file.length(),
                     codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
-                    siteId = AppState.selectedSite.value?.id,
+                    siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
                 )
             )
             uploadEnqueuer.enqueue(recordId)
@@ -595,7 +607,7 @@ class CaptureManager(
                 id = id, kind = "audio", filePath = seg.file.absolutePath, fileName = seg.file.name,
                 startedAt = seg.startedAtMs, endedAt = seg.endedAtMs, durationMs = seg.endedAtMs - seg.startedAtMs,
                 sizeBytes = seg.file.length(), codec = "wav", segmentIndex = seg.index, sessionId = sessionId,
-                siteId = AppState.selectedSite.value?.id, createdAt = seg.startedAtMs,
+                siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(), createdAt = seg.startedAtMs,
             )
         )
         uploadEnqueuer.enqueue(id)
