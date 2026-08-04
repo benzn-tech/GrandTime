@@ -36,6 +36,14 @@ private class FakeDao : CaptureRecordDao {
             if (rows[i].authorSub == null) rows[i] = rows[i].copy(authorSub = sub)
         }
     }
+    override suspend fun listPendingForAuthor(statuses: List<String>, authorSub: String) =
+        rows.filter { it.uploadStatus in statuses && !it.missing && it.authorSub == authorSub }
+    override suspend fun countOrphanedPending() = rows.count {
+        it.uploadStatus in setOf("pending", "failed", "uploading") && !it.missing && it.authorSub == null
+    }
+    override suspend fun countPendingForAuthor(authorSub: String) = rows.count {
+        it.uploadStatus in setOf("pending", "failed", "uploading") && !it.missing && it.authorSub == authorSub
+    }
     override suspend fun setSiteId(id: String, siteId: String?) {
         val idx = rows.indexOfFirst { it.id == id }
         if (idx >= 0) rows[idx] = rows[idx].copy(siteId = siteId)
