@@ -19,6 +19,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,6 +39,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.device.DeviceIdentity
 import com.benzn.grandtime.core.AspectRatio
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.PhotoQuality
@@ -52,7 +54,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, WATERMARK, SCREEN_OFF, VIDEO_UPLOAD }
+private enum class SettingDialog { VIDEO_QUALITY, ASPECT_RATIO, SEGMENT, PHOTO_QUALITY, PHOTO_RESOLUTION, WATERMARK, SCREEN_OFF, VIDEO_UPLOAD, DEVICE_NUMBER }
 
 @Composable
 fun SettingsScreen(onOpen: (Screen) -> Unit) {
@@ -64,6 +66,9 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
     val auth = remember { (context.applicationContext as GrandTimeApp).authManager }
     var dialog by remember { mutableStateOf<SettingDialog?>(null) }
     var confirmSignOut by remember { mutableStateOf(false) }
+    // Held in state so the row updates the moment the dialog saves; the store
+    // itself is a plain read, not a Flow.
+    var deviceTag by remember { mutableStateOf(DeviceIdentity.assetTag()) }
     val versionName = remember {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
     }
@@ -101,6 +106,18 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
         GroupHeader("Keys")
         FsCard(contentPadding = 0.dp) {
             SettingRow("Key bindings", null) { onOpen(Screen.KEY_BINDINGS) }
+        }
+        GroupHeader("Device")
+        FsCard(contentPadding = 0.dp) {
+            // The number on the case is this device's authoritative identity in the
+            // ledger. Typed once in the life of the device, not per hand-over.
+            SettingRow("Device number", deviceTag ?: "Not set") {
+                dialog = SettingDialog.DEVICE_NUMBER
+            }
+            RowDivider()
+            // Shown so an administrator can match an unclaimed ledger row against
+            // the machine in front of them.
+            SettingRow("Device code", DeviceIdentity.shortCode().ifEmpty { "—" }, onClick = null)
         }
         GroupHeader("System")
         FsCard(contentPadding = 0.dp) {
@@ -146,6 +163,14 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
     }
 
     when (dialog) {
+        SettingDialog.DEVICE_NUMBER -> DeviceNumberDialog(
+            current = deviceTag,
+            onSave = {
+                DeviceIdentity.setAssetTag(it)
+                deviceTag = DeviceIdentity.assetTag()
+            },
+            onDismiss = { dialog = null },
+        )
         SettingDialog.VIDEO_QUALITY -> RadioDialog(
             title = "Video quality",
             options = VideoQuality.entries,
@@ -291,6 +316,47 @@ private fun SettingRow(
             )
         }
     }
+}
+
+/**
+ * Type the number printed on the case. This is the device's authoritative
+ * identity in the ledger — the ROM's own identifier may be shared across the
+ * whole fleet, so the label is what distinguishes one machine from another.
+ */
+@Composable
+private fun DeviceNumberDialog(
+    current: String?,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(current.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Device number") },
+        text = {
+            Column {
+                Text(
+                    "The number printed on this device's case.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    placeholder = { Text("FS-01") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = text.isNotBlank(),
+                onClick = { onSave(text); onDismiss() },
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
