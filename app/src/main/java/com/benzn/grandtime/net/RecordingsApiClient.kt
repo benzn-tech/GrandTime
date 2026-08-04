@@ -26,6 +26,7 @@ class RealHttp : HttpFns {
         val req = Request.Builder().url(url)
             .header("Authorization", authToken)
             .header("Content-Type", "application/json")
+            .apply { attachDeviceHeaders(this) }
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .build()
         OK_HTTP.newCall(req).execute().use { resp ->

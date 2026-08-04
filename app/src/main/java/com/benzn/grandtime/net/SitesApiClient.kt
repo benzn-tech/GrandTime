@@ -19,6 +19,7 @@ class RealSitesHttp : SitesHttpFns {
     override fun getJson(url: String, authToken: String): HttpResult {
         val req = Request.Builder().url(url)
             .header("Authorization", authToken)
+            .apply { attachDeviceHeaders(this) }
             .get()
             .build()
         OK_HTTP.newCall(req).execute().use { resp ->
