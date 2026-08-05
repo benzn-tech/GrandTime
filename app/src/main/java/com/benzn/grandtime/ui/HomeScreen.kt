@@ -57,6 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.capture.MediaStorage
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.keymap.KeyAction
 import com.benzn.grandtime.capture.GroupExit
 import com.benzn.grandtime.capture.sessionIdOrNull
 import com.benzn.grandtime.core.LoginState
@@ -85,6 +86,7 @@ fun HomeScreen() {
     var showMeetingCode by remember { mutableStateOf(false) }
     var showMeetingExit by remember { mutableStateOf(false) }
     val promptingExit by AppState.meetingExitPrompt.collectAsStateWithLifecycle()
+    val resumePrompt by AppState.meetingResumePrompt.collectAsStateWithLifecycle()
     val zone = remember { ZoneId.systemDefault() }
     val startOfDay = startOfDayMillis(System.currentTimeMillis(), zone)
     val todaysRecords by remember(startOfDay) {
@@ -376,6 +378,17 @@ fun HomeScreen() {
                 // stopping someone else's recording by surprise.
                 if (GroupExit.resolve(decision).clearsGroup) AppState.pendingGroup.value = null
             }
+        }
+        if (resumePrompt) {
+            MeetingResumeDialog(
+                onResume = {
+                    AppState.meetingResumePrompt.value = false
+                    // A plain start: the group is already cleared, so this is a
+                    // fresh solo session by construction rather than by intent.
+                    AppState.screenCaptureActions.tryEmit(KeyAction.START_STOP_AUDIO)
+                },
+                onDismiss = { AppState.meetingResumePrompt.value = false },
+            )
         }
         if (showSitePicker) {
             SitePickerDialog(onDismiss = { showSitePicker = false })

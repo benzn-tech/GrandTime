@@ -96,6 +96,33 @@ fun MeetingExitDialog(onDecision: (GroupExit.Decision) -> Unit) {
     )
 }
 
+/**
+ * Shown after another device ended the meeting and this one stopped.
+ *
+ * States what already happened before asking anything — the recording stopped
+ * without the user touching it, and an unexplained stop is how people lose
+ * trust in a recorder. Resuming starts a fresh SOLO recording; post-meeting
+ * audio never lands in the meeting.
+ */
+@Composable
+fun MeetingResumeDialog(onResume: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Meeting ended", style = MaterialTheme.typography.titleLarge) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Recording stopped. Start a new one?",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                BigChoice("Start recording", onResume)
+                BigChoice("Not now", onDismiss)
+            }
+        },
+        confirmButton = {},
+    )
+}
+
 @Composable
 private fun BigChoice(label: String, onClick: () -> Unit) {
     Button(

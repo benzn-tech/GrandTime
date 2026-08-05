@@ -62,6 +62,19 @@ object AppState {
      */
     val meetingExitPrompt = MutableStateFlow(false)
 
+    /**
+     * Someone else in the meeting ended it — this device should stop.
+     *
+     * Emitted by the upload worker, which is where the signal arrives (the
+     * server has no other channel to a device that is not holding a connection
+     * open). A SharedFlow rather than a flag because it is an event: acting on
+     * it twice would stop a recording the user has since restarted.
+     */
+    val meetingEndedElsewhere = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** True while asking whether to start a fresh recording after the meeting ended. */
+    val meetingResumePrompt = MutableStateFlow(false)
+
     /** 工地列表缓存(启动时由 CoreService 在补扫前预取,SitePickerDialog 直接读,秒开)。 */
     val availableSites = MutableStateFlow<List<com.benzn.grandtime.net.SitesApiClient.SiteOption>>(emptyList())
 

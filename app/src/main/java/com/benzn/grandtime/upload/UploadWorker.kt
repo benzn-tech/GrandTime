@@ -141,8 +141,13 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                     // Return value deliberately ignored — `complete` below is the real
                     // verdict on whether the object made it (see the comment above).
                     client.putFile(urlResult.uploadUrl, contentType, file)
-                    val status = client.completeStatus(
+                    val completed = client.completeStatus(
                         idToken, urlResult.recordingId, file.length(), gpsTrack = record.gpsTrack)
+                    val status = completed.code
+                    // Multi-device merge: the upload response is the only way the
+                    // server can reach a device that is not holding a connection
+                    // open. Handled by CaptureManager, which owns the recorder.
+                    if (completed.groupEnded) AppState.meetingEndedElsewhere.tryEmit(Unit)
                     when {
                         status in 200..299 -> {
                             dao.markUploadStatus(recordId, "uploaded")

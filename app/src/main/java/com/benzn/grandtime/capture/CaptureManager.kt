@@ -122,6 +122,10 @@ class CaptureManager(
                 runCatching { migrator.migrate() }
             }
         }
+        // Someone else ended the meeting. Stop here too, then ask about resuming.
+        scope.launch {
+            AppState.meetingEndedElsewhere.collect { onMeetingEndedElsewhere() }
+        }
         // 预览挂/摘:录像态且 UI 给了 surface 才挂;否则摘。setPreviewSurface 只切 GL 目标,
         // 不动相机会话(录像不中断)。distinctUntilChanged 防每次段滚动重复挂。
         scope.launch {
@@ -243,6 +247,35 @@ class CaptureManager(
      * recording across two meetings. null = solo recording.
      */
     @Volatile private var activeGroupId: String? = null
+
+    /**
+     * Another device answered "the meeting has ended".
+     *
+     * Guarded on still being in a group, because the signal arrives on EVERY
+     * chunk uploaded after the end — several per device — and acting twice would
+     * stop a recording the user has since restarted.
+     *
+     * The group is cleared BEFORE stopping, so the stop cannot be attributed to
+     * the meeting that just ended, and so a recording started immediately
+     * afterwards is a fresh solo session. Post-meeting audio must never land in
+     * the meeting.
+     */
+    private suspend fun onMeetingEndedElsewhere() {
+        if (AppState.pendingGroup.value == null) return
+        AppState.pendingGroup.value = null
+        meetingPromptJob?.cancel()
+        AppState.meetingExitPrompt.value = false
+        when (core.state) {
+            is CaptureState.RecordingVideo, is CaptureState.PausedVideo ->
+                execute(core.onAction(KeyAction.END_VIDEO))
+            is CaptureState.RecordingAudio, is CaptureState.PausedAudio ->
+                execute(core.onAction(KeyAction.END_AUDIO))
+            CaptureState.Idle -> Unit
+        }
+        runCatching { meetingPromptSound.play() }
+        // Asked rather than assumed: ending a meeting is not finishing work.
+        AppState.meetingResumePrompt.value = true
+    }
 
     private var meetingPromptJob: Job? = null
     private val meetingPromptSound by lazy { MeetingPromptSound(context) }
