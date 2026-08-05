@@ -99,15 +99,18 @@ fun QrScanScreen(onSignedIn: () -> Unit) {
 @Composable
 fun QrJoinMeetingScreen(onJoined: () -> Unit) {
     QrScanScaffold(prompt = "Point the camera at the meeting code") { raw, setStatus ->
-        val groupId = SessionGroup.parse(raw)
-        if (groupId == null) {
+        when (val scan = SessionGroup.parse(raw, env = BuildConfig.QR_ENV)) {
             // Wrong code, not a broken one: a login QR reaches here whenever
             // someone opens the wrong scanner. Say which kind is expected.
-            setStatus("Not a meeting code — try again")
-        } else {
-            AppState.pendingGroup.value =
-                GroupExit.PendingGroup(groupId, heldSinceMillis = System.currentTimeMillis())
-            onJoined()
+            SessionGroup.Scan.NotAMeetingCode -> setStatus("Not a meeting code — try again")
+            // Re-scanning cannot fix this one, so do not invite it.
+            SessionGroup.Scan.WrongEnvironment ->
+                setStatus("That device is on a different build — both must be dev or both prod")
+            is SessionGroup.Scan.Ok -> {
+                AppState.pendingGroup.value = GroupExit.PendingGroup(
+                    scan.groupId, heldSinceMillis = System.currentTimeMillis())
+                onJoined()
+            }
         }
     }
 }

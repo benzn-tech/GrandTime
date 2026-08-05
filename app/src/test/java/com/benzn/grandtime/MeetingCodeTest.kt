@@ -42,8 +42,8 @@ class MeetingCodeTest {
 
     @Test
     fun aDisplayedMeetingCodeScansBackToTheSameSession() {
-        val shown = SessionGroup.format(sid)
-        assertEquals(sid, SessionGroup.parse(decode(shown, 512)))
+        val shown = SessionGroup.format(sid, env = "prod")
+        assertEquals(SessionGroup.Scan.Ok(sid), SessionGroup.parse(decode(shown, 512), env = "prod"))
     }
 
     @Test
@@ -51,13 +51,15 @@ class MeetingCodeTest {
         // The F2SP screen is small and the dialog does not fill it. If the
         // payload ever outgrows what fits at this size, this fails here rather
         // than as "the camera won't pick it up" on site.
-        assertEquals(sid, SessionGroup.parse(decode(SessionGroup.format(sid), 256)))
+        assertEquals(SessionGroup.Scan.Ok(sid),
+                     SessionGroup.parse(decode(SessionGroup.format(sid, env = "prod"), 256), env = "prod"))
     }
 
     @Test
     fun aLoginCodeIsNotMistakenForAMeetingCode() {
         // Both flows show a QR on the same hardware. Reading one with the other
         // scanner must fail cleanly, not join a group named after a login code.
-        assertEquals(null, SessionGroup.parse(decode("fs-login:abc123", 512)))
+        assertEquals(SessionGroup.Scan.NotAMeetingCode,
+                     SessionGroup.parse(decode("fs-login:abc123", 512), env = "prod"))
     }
 }

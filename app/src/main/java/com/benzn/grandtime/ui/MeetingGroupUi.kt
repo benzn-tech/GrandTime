@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
+import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.capture.GroupExit
 import com.benzn.grandtime.capture.SessionGroup
 
@@ -39,7 +40,9 @@ private val BUTTON_HEIGHT = 64.dp
 @Composable
 fun MeetingCodeDialog(sessionId: String, onDismiss: () -> Unit) {
     val bitmap = remember(sessionId) {
-        MeetingCode.bitmap(SessionGroup.format(sessionId), sizePx = 512).asImageBitmap()
+        MeetingCode.bitmap(
+            SessionGroup.format(sessionId, env = BuildConfig.QR_ENV), sizePx = 512,
+        ).asImageBitmap()
     }
     AlertDialog(
         onDismissRequest = onDismiss,

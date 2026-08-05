@@ -2,7 +2,6 @@ package com.benzn.grandtime
 
 import com.benzn.grandtime.capture.SessionGroup
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -15,57 +14,101 @@ import org.junit.Test
  */
 class SessionGroupTest {
     private val sid = "a".repeat(32)
+    private val NOPE = SessionGroup.Scan.NotAMeetingCode
 
     @Test
     fun formatsWithNamespacePrefix() {
-        assertEquals("fs1:$sid", SessionGroup.format(sid))
+        assertEquals("fs1:test:$sid", SessionGroup.format(sid, env = "test"))
     }
 
     @Test
     fun parsesItsOwnFormat() {
-        assertEquals(sid, SessionGroup.parse("fs1:$sid"))
+        assertEquals(SessionGroup.Scan.Ok(sid), SessionGroup.parse("fs1:test:$sid", env = "test"))
     }
 
     @Test
     fun roundTrips() {
-        assertEquals(sid, SessionGroup.parse(SessionGroup.format(sid)))
+        assertEquals(SessionGroup.Scan.Ok(sid),
+                     SessionGroup.parse(SessionGroup.format(sid, env = "prod"), env = "prod"))
     }
 
     @Test
     fun rejectsAnotherAppsCode() {
-        assertNull(SessionGroup.parse("https://example.com"))
-        assertNull(SessionGroup.parse("random text"))
+        assertEquals(NOPE, SessionGroup.parse("https://example.com", env = "test"))
+        assertEquals(NOPE, SessionGroup.parse("random text", env = "test"))
     }
 
     @Test
     fun rejectsABareSessionIdWithNoPrefix() {
         // Without the guard, any 32-hex string on any QR code would join a group.
-        assertNull(SessionGroup.parse(sid))
+        assertEquals(NOPE, SessionGroup.parse(sid, env = "test"))
     }
 
     @Test
     fun rejectsTheLoginQrSoTheWrongScanCannotJoinAGroup() {
-        assertNull(SessionGroup.parse("fsqr1:somecode:prod"))
+        assertEquals(NOPE, SessionGroup.parse("fsqr1:somecode:prod", env = "test"))
     }
 
     @Test
     fun rejectsAMalformedSessionId() {
-        assertNull(SessionGroup.parse("fs1:not-hex"))
-        assertNull(SessionGroup.parse("fs1:" + "a".repeat(31)))   // too short
-        assertNull(SessionGroup.parse("fs1:" + "a".repeat(33)))   // too long
-        assertNull(SessionGroup.parse("fs1:" + "A".repeat(32)))   // uppercase — backend requires lowercase
+        assertEquals(NOPE, SessionGroup.parse("fs1:test:not-hex", env = "test"))
+        assertEquals(NOPE, SessionGroup.parse("fs1:test:" + "a".repeat(31), env = "test"))   // too short
+        assertEquals(NOPE, SessionGroup.parse("fs1:test:" + "a".repeat(33), env = "test"))   // too long
+        assertEquals(NOPE, SessionGroup.parse("fs1:test:" + "A".repeat(32), env = "test"))   // uppercase
     }
 
     @Test
     fun toleratesSurroundingWhitespace() {
         // Some scanners append a newline.
-        assertEquals(sid, SessionGroup.parse("  fs1:$sid\n"))
+        assertEquals(SessionGroup.Scan.Ok(sid), SessionGroup.parse("  fs1:test:$sid\n", env = "test"))
     }
 
     @Test
     fun rejectsNullAndEmpty() {
-        assertNull(SessionGroup.parse(null))
-        assertNull(SessionGroup.parse(""))
-        assertNull(SessionGroup.parse("   "))
+        assertEquals(NOPE, SessionGroup.parse(null, env = "test"))
+        assertEquals(NOPE, SessionGroup.parse("", env = "test"))
+        assertEquals(NOPE, SessionGroup.parse("   ", env = "test"))
+    }
+
+    // ---- the environment tag ------------------------------------------------
+    //
+    // Devices on different flavours talk to different backends and different
+    // databases. Without a tag in the payload, a prod device scanning a dev
+    // device's code succeeds, both record happily, the two groups land in two
+    // separate databases, and NOTHING merges — with no error anywhere to
+    // explain it. The login QR already refuses a cross-environment code; this
+    // is the same guard for the same reason.
+
+    @Test
+    fun aCodeFromTheSameEnvironmentJoins() {
+        val code = SessionGroup.format(sid, env = "test")
+        assertEquals(SessionGroup.Scan.Ok(sid), SessionGroup.parse(code, env = "test"))
+    }
+
+    @Test
+    fun aCodeFromTheOtherEnvironmentIsRefusedAndSaysSo() {
+        // Distinguished from "not a meeting code" on purpose: the user needs to
+        // be told to match the builds, not to scan again harder.
+        val code = SessionGroup.format(sid, env = "prod")
+        assertEquals(SessionGroup.Scan.WrongEnvironment, SessionGroup.parse(code, env = "test"))
+    }
+
+    @Test
+    fun aLoginCodeIsStillJustNotAMeetingCode() {
+        assertEquals(SessionGroup.Scan.NotAMeetingCode,
+                     SessionGroup.parse("fs-login:abc", env = "test"))
+    }
+
+    @Test
+    fun aMalformedSessionIdIsNotAMeetingCode() {
+        assertEquals(SessionGroup.Scan.NotAMeetingCode,
+                     SessionGroup.parse("fs1:test:nothex", env = "test"))
+    }
+
+    @Test
+    fun theTagTravelsInTheCodeItself() {
+        // Pinning the wire format: it is rendered into a QR on one device and
+        // read on another, so the two halves can only agree by construction.
+        assertEquals("fs1:test:$sid", SessionGroup.format(sid, env = "test"))
     }
 }
