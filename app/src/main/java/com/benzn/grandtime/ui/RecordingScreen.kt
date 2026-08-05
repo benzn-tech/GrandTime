@@ -24,6 +24,7 @@ import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.settingsDataStore
 import com.benzn.grandtime.capture.CaptureState
+import com.benzn.grandtime.capture.sessionIdOrNull
 import com.benzn.grandtime.keymap.KeyAction
 import kotlinx.coroutines.delay
 
@@ -54,6 +55,17 @@ fun RecordingScreen() {
             AppState.previewSurface.value = null
         }
     }
+
+    // Video recording takes over the whole screen, so the invite control has to
+    // live HERE. On Home it was unreachable by construction: it needs a live
+    // session, and having one is exactly what navigates away from Home.
+    val group by AppState.pendingGroup.collectAsStateWithLifecycle()
+    var showMeetingCode by remember { mutableStateOf(false) }
+    // Always the GROUP's id, never this device's. A device that already joined
+    // and then showed its own session id would open a SECOND group, and the two
+    // halves of one meeting would never merge. For the lead the two are the
+    // same value, so this is one rule rather than a special case.
+    val codeId = group?.groupId ?: capture.sessionIdOrNull()
 
     val settingsStore = remember { SettingsStore(context.settingsDataStore) }
     val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = RecordingSettings())
@@ -90,6 +102,16 @@ fun RecordingScreen() {
         ) {
             // Pause/Resume and End both emit directly via screenCaptureActions — CoreService dispatches
             // to CaptureManager, same pipeline as a physical short-press (pause/resume) / long-press (end).
+            if (codeId != null) {
+                Button(
+                    onClick = { showMeetingCode = true },
+                    modifier = Modifier.height(56.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary,
+                    ),
+                ) { Text("Invite") }
+            }
             Button(
                 onClick = { AppState.screenCaptureActions.tryEmit(KeyAction.START_STOP_VIDEO) },
                 modifier = Modifier.height(56.dp),
@@ -105,6 +127,11 @@ fun RecordingScreen() {
                     containerColor = MaterialTheme.colorScheme.error, contentColor = Color.White,
                 ),
             ) { Text("End meeting") }
+        }
+        if (showMeetingCode) {
+            val id = codeId
+            if (id == null) showMeetingCode = false
+            else MeetingCodeDialog(sessionId = id, onDismiss = { showMeetingCode = false })
         }
     }
 }

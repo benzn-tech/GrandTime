@@ -320,7 +320,11 @@ fun HomeScreen() {
             Spacer(Modifier.height(12.dp))
             FsCard {
                 FsCardTitle("Meeting")
-                val sessionId = capture.sessionIdOrNull()
+                // Always the GROUP's id, never this device's: a device that
+                // already joined and then showed its own session id would open
+                // a SECOND group, and the two halves of one meeting would never
+                // merge. For the lead the two are the same value.
+                val codeId = group?.groupId ?: capture.sessionIdOrNull()
                 if (group != null) {
                     Text(
                         "Recording as part of a meeting",
@@ -328,38 +332,42 @@ fun HomeScreen() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { showMeetingExit = true },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = MaterialTheme.shapes.small,
-                    ) { Text("End or leave", style = MaterialTheme.typography.bodyMedium) }
-                } else {
+                }
+                if (codeId != null) {
                     Button(
                         onClick = { showMeetingCode = true },
-                        enabled = sessionId != null,
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         shape = MaterialTheme.shapes.small,
                     ) { Text("Invite a device", style = MaterialTheme.typography.bodyMedium) }
-                    if (sessionId == null) {
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (group == null) {
+                    if (codeId == null) {
                         // The code IS the session id, so there is nothing to show
                         // before one exists. Say that instead of a dead button.
                         Text(
-                            "Start recording first",
+                            "Start recording first to invite",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        Spacer(Modifier.height(8.dp))
                     }
-                    Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { showJoinScanner = true },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         shape = MaterialTheme.shapes.small,
                     ) { Text("Join a meeting", style = MaterialTheme.typography.bodyMedium) }
+                } else {
+                    Button(
+                        onClick = { showMeetingExit = true },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = MaterialTheme.shapes.small,
+                    ) { Text("End or leave", style = MaterialTheme.typography.bodyMedium) }
                 }
             }
         }
         if (showMeetingCode) {
-            val sid = capture.sessionIdOrNull()
+            val sid = AppState.pendingGroup.value?.groupId ?: capture.sessionIdOrNull()
             if (sid == null) showMeetingCode = false
             else MeetingCodeDialog(sessionId = sid, onDismiss = { showMeetingCode = false })
         }
