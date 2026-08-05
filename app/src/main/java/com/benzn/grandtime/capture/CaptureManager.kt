@@ -244,8 +244,36 @@ class CaptureManager(
      */
     @Volatile private var activeGroupId: String? = null
 
+    private var meetingPromptJob: Job? = null
+    private val meetingPromptSound by lazy { MeetingPromptSound(context) }
+
+    /**
+     * Ask, 20s after this stop, whether the meeting has ended — the backstop for
+     * everyone simply forgetting.
+     *
+     * Cancelled by the next start, so an immediate restart never gets asked; and
+     * re-checked at fire time, because the twenty seconds are exactly when the
+     * answer stops being wanted (see [MeetingPrompt.shouldAsk]).
+     */
+    private fun scheduleMeetingPrompt() {
+        meetingPromptJob?.cancel()
+        if (AppState.pendingGroup.value == null) return
+        meetingPromptJob = scope.launch {
+            delay(MeetingPrompt.DELAY_MILLIS)
+            val recording = core.state !is CaptureState.Idle
+            if (!MeetingPrompt.shouldAsk(AppState.pendingGroup.value, recording, System.currentTimeMillis())) return@launch
+            AppState.meetingExitPrompt.value = true
+            runCatching {
+                if (!meetingPromptSound.play()) probe("meeting prompt: no voice line bundled, vibrated instead")
+            }
+        }
+    }
+
     /** Best-effort session_open — fire-and-forget, never blocks capture. No-op if not logged in. */
     private fun fireSessionOpen(sessionId: String, kind: String, startedAtMillis: Long) {
+        // A new recording answers the question by itself: they are not done.
+        meetingPromptJob?.cancel()
+        AppState.meetingExitPrompt.value = false
         val groupId = GroupExit.activeGroupId(AppState.pendingGroup.value, startedAtMillis)
         activeGroupId = groupId
         // Everything (incl. the `as GrandTimeApp` cast) runs inside the IO launch + runCatching so
@@ -271,6 +299,7 @@ class CaptureManager(
         AppState.pendingGroup.value?.let {
             AppState.pendingGroup.value = it.copy(heldSinceMillis = endedAtMillis)
         }
+        scheduleMeetingPrompt()
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp

@@ -84,6 +84,7 @@ fun HomeScreen() {
     var showJoinScanner by remember { mutableStateOf(false) }
     var showMeetingCode by remember { mutableStateOf(false) }
     var showMeetingExit by remember { mutableStateOf(false) }
+    val promptingExit by AppState.meetingExitPrompt.collectAsStateWithLifecycle()
     val zone = remember { ZoneId.systemDefault() }
     val startOfDay = startOfDayMillis(System.currentTimeMillis(), zone)
     val todaysRecords by remember(startOfDay) {
@@ -360,9 +361,13 @@ fun HomeScreen() {
             if (sid == null) showMeetingCode = false
             else MeetingCodeDialog(sessionId = sid, onDismiss = { showMeetingCode = false })
         }
+        // Raised by the 20s audio prompt after a stop; same dialog as the manual
+        // route so there is one place that decides what each answer does.
+        if (promptingExit && !showMeetingExit) showMeetingExit = true
         if (showMeetingExit) {
             MeetingExitDialog { decision ->
                 showMeetingExit = false
+                AppState.meetingExitPrompt.value = false
                 // Route through GroupExit rather than re-deciding here, so the UI
                 // cannot disagree with the tested rules about what each answer means.
                 // notifiesOthers is not honoured yet — stopping the other devices

@@ -53,6 +53,15 @@ object AppState {
      */
     val pendingGroup = MutableStateFlow<com.benzn.grandtime.capture.GroupExit.PendingGroup?>(null)
 
+    /**
+     * True while the "has the meeting ended?" question is outstanding.
+     *
+     * Raised by [com.benzn.grandtime.capture.CaptureManager] 20s after a stop and
+     * lowered by whichever screen answers it. Kept here rather than passed down
+     * because the person may be anywhere in the app when the prompt speaks.
+     */
+    val meetingExitPrompt = MutableStateFlow(false)
+
     /** 工地列表缓存(启动时由 CoreService 在补扫前预取,SitePickerDialog 直接读,秒开)。 */
     val availableSites = MutableStateFlow<List<com.benzn.grandtime.net.SitesApiClient.SiteOption>>(emptyList())
 
