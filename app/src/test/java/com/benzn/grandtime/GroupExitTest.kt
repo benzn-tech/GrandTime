@@ -3,6 +3,7 @@ package com.benzn.grandtime
 import com.benzn.grandtime.capture.GroupExit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -88,5 +89,49 @@ class GroupExitTest {
         // must not read as "still fresh" in a way that silently keeps a stale
         // group alive — and regardless, the server guard is what actually holds.
         assertFalse(GroupExit.hasExpired(lastStopAtMillis = 10 * MIN, nowMillis = 0))
+    }
+
+    // ---- reading the pending group -----------------------------------------
+    //
+    // Expiry is enforced HERE rather than by each caller remembering to check
+    // it. A call site that forgets would silently send a stale group id, which
+    // is the exact failure this whole mechanism exists to prevent — so the only
+    // way to read the group is a way that cannot skip the check.
+
+    @Test
+    fun aMeetingLongerThanTheWindowSurvivesBecauseTheClockRefreshes() {
+        // A three-hour meeting recorded continuously must NOT expire at 15 min.
+        // The timestamp is "when the expiry clock started", refreshed on every
+        // stop — not "when I joined". Naming it after joining would make this
+        // case look correct in review and fail in the field.
+        val g = GroupExit.PendingGroup("b".repeat(32), heldSinceMillis = 170 * MIN)
+        assertEquals("b".repeat(32), GroupExit.activeGroupId(g, nowMillis = 180 * MIN))
+    }
+
+    @Test
+    fun activeGroupIdReturnsTheGroupWhileItIsFresh() {
+        val g = GroupExit.PendingGroup("b".repeat(32), heldSinceMillis = 0)
+        assertEquals("b".repeat(32), GroupExit.activeGroupId(g, nowMillis = 5 * MIN))
+    }
+
+    @Test
+    fun activeGroupIdReturnsNullOnceExpired() {
+        val g = GroupExit.PendingGroup("b".repeat(32), heldSinceMillis = 0)
+        assertNull(GroupExit.activeGroupId(g, nowMillis = 16 * MIN))
+    }
+
+    @Test
+    fun activeGroupIdOfNothingIsNull() {
+        assertNull(GroupExit.activeGroupId(null, nowMillis = 0))
+    }
+
+    @Test
+    fun theNextDaysRecordingNeverCarriesYesterdaysGroup() {
+        // THE guarantee, at the device layer: a device that kept a group
+        // overnight must not attach it to tomorrow's recording. (The server
+        // enforces this too, on its own clock, because this check trusts the
+        // device's — see lead_is_joinable / group_span_ok.)
+        val g = GroupExit.PendingGroup("b".repeat(32), heldSinceMillis = 0)
+        assertNull(GroupExit.activeGroupId(g, nowMillis = 22 * 60 * MIN))
     }
 }

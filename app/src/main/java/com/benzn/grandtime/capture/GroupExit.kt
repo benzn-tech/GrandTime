@@ -83,4 +83,27 @@ object GroupExit {
      */
     fun hasExpired(lastStopAtMillis: Long, nowMillis: Long): Boolean =
         nowMillis - lastStopAtMillis > EXPIRY_MILLIS
+
+    /**
+     * A group this device is currently part of.
+     *
+     * [heldSinceMillis] is **when the expiry clock started**, refreshed on every
+     * recording stop — not when the device joined. A three-hour meeting recorded
+     * continuously must not expire at the 15-minute mark.
+     */
+    data class PendingGroup(val groupId: String, val heldSinceMillis: Long)
+
+    /**
+     * The group id to attach to a recording starting at [nowMillis], or null.
+     *
+     * Every read of the group goes through here so that expiry cannot be
+     * skipped. A caller that fetched the raw id and forgot to check would attach
+     * a stale group — silently merging a different day's audio into a finished
+     * meeting, which is the exact failure this whole mechanism exists to
+     * prevent. Making the unchecked read impossible is cheaper than remembering.
+     */
+    fun activeGroupId(pending: PendingGroup?, nowMillis: Long): String? {
+        val group = pending ?: return null
+        return if (hasExpired(group.heldSinceMillis, nowMillis)) null else group.groupId
+    }
 }

@@ -20,11 +20,22 @@ class SessionsApiClient(
     private val http: HttpFns = RealHttp(),
 ) {
     /** @return true iff the server returned 2xx; any failure/exception → false (best-effort). */
-    fun open(idToken: String, sessionId: String, startedAtMillis: Long, kind: String, siteId: String?): Boolean {
+    fun open(
+        idToken: String,
+        sessionId: String,
+        startedAtMillis: Long,
+        kind: String,
+        siteId: String?,
+        groupId: String? = null,
+    ): Boolean {
         val body = JSONObject()
             .put("startedAt", iso(startedAtMillis))
             .put("kind", kind)
         siteId?.let { body.put("siteId", it) }
+        // Multi-device merge: the lead device's session id, from a QR scan.
+        // Omitted rather than sent as null for a solo recording, so the solo
+        // request stays byte-identical to what it was before this existed.
+        groupId?.let { body.put("groupId", it) }
         return post("$baseUrl/org/sessions/$sessionId/open", idToken, body)
     }
 

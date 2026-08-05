@@ -234,8 +234,20 @@ class CaptureManager(
         AppState.captureState.value = core.state
     }
 
+    /**
+     * The group this recording belongs to, resolved once at record-start.
+     *
+     * Held rather than re-read per segment: a session emits a segment every 30s,
+     * and re-reading would let the one segment that happens to cross the expiry
+     * boundary carry a different group id than its siblings — splitting a single
+     * recording across two meetings. null = solo recording.
+     */
+    @Volatile private var activeGroupId: String? = null
+
     /** Best-effort session_open — fire-and-forget, never blocks capture. No-op if not logged in. */
     private fun fireSessionOpen(sessionId: String, kind: String, startedAtMillis: Long) {
+        val groupId = GroupExit.activeGroupId(AppState.pendingGroup.value, startedAtMillis)
+        activeGroupId = groupId
         // Everything (incl. the `as GrandTimeApp` cast) runs inside the IO launch + runCatching so
         // nothing can throw onto the capture coroutine — this fires at record-start before the
         // segment is even opened (Opus review: keep the capture path crash-proof).
@@ -244,13 +256,21 @@ class CaptureManager(
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
                 val siteId = AppState.selectedSite.value?.id
                 val token = app.authManager.freshIdToken() ?: return@launch
-                sessionsApi.open(token, sessionId, startedAtMillis, kind, siteId)
+                sessionsApi.open(token, sessionId, startedAtMillis, kind, siteId, groupId)
             }
         }
     }
 
     /** Best-effort session_close (intent "idle" — deliberate-End is P0-c) — fire-and-forget. */
     private fun fireSessionClose(sessionId: String, endedAtMillis: Long, intent: String = "idle") {
+        activeGroupId = null
+        // Restart the expiry clock. The group deliberately OUTLIVES the recording —
+        // a meeting where everyone stops to walk to the next building is still one
+        // meeting, and expiring here would force a pointless re-scan. What ends the
+        // group is the user answering the prompt, or 15 min of nothing.
+        AppState.pendingGroup.value?.let {
+            AppState.pendingGroup.value = it.copy(heldSinceMillis = endedAtMillis)
+        }
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
@@ -360,6 +380,7 @@ class CaptureManager(
                 id = recordId, kind = "video", filePath = file.absolutePath, fileName = file.name,
                 startedAt = startedAt, codec = result.codec, resolution = result.resolution,
                 segmentIndex = cmd.segmentIndex, sessionId = cmd.sessionId, createdAt = startedAt,
+                groupId = activeGroupId,
                 siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
             )
         )
@@ -473,6 +494,7 @@ class CaptureManager(
                     id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
                     startedAt = startedAt, endedAt = startedAt, sizeBytes = file.length(),
                     codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
+                    groupId = activeGroupId,
                     siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
                 )
             )
@@ -607,6 +629,7 @@ class CaptureManager(
                 id = id, kind = "audio", filePath = seg.file.absolutePath, fileName = seg.file.name,
                 startedAt = seg.startedAtMs, endedAt = seg.endedAtMs, durationMs = seg.endedAtMs - seg.startedAtMs,
                 sizeBytes = seg.file.length(), codec = "wav", segmentIndex = seg.index, sessionId = sessionId,
+                groupId = activeGroupId,
                 siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(), createdAt = seg.startedAtMs,
             )
         )

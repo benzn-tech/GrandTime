@@ -71,4 +71,40 @@ class SessionsApiClientTest {
         }
         assertFalse(SessionsApiClient("https://api.example/prod/api", throwing).open("TOK", sid, startMs, "video", null))
     }
+
+    // ---- multi-device groups (spec 2026-08-04) ----------------------------
+
+    @Test fun open_sends_groupId_when_the_device_joined_a_meeting() {
+        val fake = FakeHttp(200)
+        val lead = "b".repeat(32)
+        SessionsApiClient("https://api.example/prod/api", fake).open(
+            idToken = "TOK", sessionId = sid, startedAtMillis = startMs,
+            kind = "audio", siteId = null, groupId = lead,
+        )
+        assertEquals(lead, JSONObject(fake.body!!).getString("groupId"))
+    }
+
+    @Test fun open_omits_groupId_for_a_solo_recording() {
+        // The solo path must be byte-identical to before: a `groupId: null` in
+        // the body would reach the backend as an explicit value rather than an
+        // absent field.
+        val fake = FakeHttp(200)
+        SessionsApiClient("https://api.example/prod/api", fake).open(
+            idToken = "TOK", sessionId = sid, startedAtMillis = startMs,
+            kind = "audio", siteId = null,
+        )
+        assertFalse(JSONObject(fake.body!!).has("groupId"))
+    }
+
+    @Test fun open_still_works_without_the_new_argument() {
+        // Every existing caller passes five arguments. The new one is
+        // defaulted, so they keep compiling and keep behaving identically.
+        val fake = FakeHttp(200)
+        val ok = SessionsApiClient("https://api.example/prod/api", fake).open(
+            idToken = "TOK", sessionId = sid, startedAtMillis = startMs,
+            kind = "audio", siteId = "site-1",
+        )
+        assertTrue(ok)
+        assertFalse(JSONObject(fake.body!!).has("groupId"))
+    }
 }
