@@ -44,6 +44,37 @@ object AppState {
     /** 当前选中的工地(SiteStore 恢复的持久化选择)。 */
     val selectedSite = MutableStateFlow<SelectedSite?>(null)
 
+    /**
+     * Multi-device merge: the group this device is currently part of, if any.
+     *
+     * Read it through [com.benzn.grandtime.capture.GroupExit.activeGroupId], never
+     * directly — that is what enforces expiry, and a stale group id silently
+     * merges the wrong day's audio into a finished meeting.
+     */
+    val pendingGroup = MutableStateFlow<com.benzn.grandtime.capture.GroupExit.PendingGroup?>(null)
+
+    /**
+     * True while the "has the meeting ended?" question is outstanding.
+     *
+     * Raised by [com.benzn.grandtime.capture.CaptureManager] 20s after a stop and
+     * lowered by whichever screen answers it. Kept here rather than passed down
+     * because the person may be anywhere in the app when the prompt speaks.
+     */
+    val meetingExitPrompt = MutableStateFlow(false)
+
+    /**
+     * Someone else in the meeting ended it — this device should stop.
+     *
+     * Emitted by the upload worker, which is where the signal arrives (the
+     * server has no other channel to a device that is not holding a connection
+     * open). A SharedFlow rather than a flag because it is an event: acting on
+     * it twice would stop a recording the user has since restarted.
+     */
+    val meetingEndedElsewhere = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** True while asking whether to start a fresh recording after the meeting ended. */
+    val meetingResumePrompt = MutableStateFlow(false)
+
     /** 工地列表缓存(启动时由 CoreService 在补扫前预取,SitePickerDialog 直接读,秒开)。 */
     val availableSites = MutableStateFlow<List<com.benzn.grandtime.net.SitesApiClient.SiteOption>>(emptyList())
 

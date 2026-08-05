@@ -41,6 +41,9 @@ import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.auth.QrLoginParser
 import com.benzn.grandtime.auth.SignInResult
+import com.benzn.grandtime.capture.GroupExit
+import com.benzn.grandtime.capture.SessionGroup
+import com.benzn.grandtime.core.AppState
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -62,13 +65,73 @@ import kotlinx.coroutines.launch
 fun QrScanScreen(onSignedIn: () -> Unit) {
     val context = LocalContext.current
     val auth = remember { (context.applicationContext as GrandTimeApp).authManager }
+    QrScanScaffold(prompt = "Point the camera at the login QR") { raw, setStatus ->
+        val payload = QrLoginParser.parse(raw)
+        when {
+            payload == null -> setStatus("Not a FieldSight login code — try again")
+            payload.env != BuildConfig.QR_ENV && BuildConfig.QR_ENV == "prod" ->
+                setStatus("This code is for a different environment")
+            else -> {
+                setStatus("Signing in…")
+                when (val r = auth.signInWithQrCode(payload.code)) {
+                    SignInResult.Success -> onSignedIn()
+                    is SignInResult.Failure -> setStatus(r.message)
+                    SignInResult.NewPasswordRequired ->
+                        setStatus("Set your password in the web app first")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Join a multi-device meeting by scanning the lead device's code.
+ *
+ * Shares [QrScanScaffold] with sign-in rather than owning a second camera: the
+ * two flows differ only in how the decoded string is interpreted, and a copied
+ * scanner would drift on the parts that are easy to get wrong (frame dedup,
+ * orientation lock, teardown).
+ *
+ * Joining only records the intent — the group is attached to a recording when
+ * one starts, and the server independently refuses a lead that is stale or
+ * belongs to another company.
+ */
+@Composable
+fun QrJoinMeetingScreen(onJoined: () -> Unit) {
+    QrScanScaffold(prompt = "Point the camera at the meeting code") { raw, setStatus ->
+        when (val scan = SessionGroup.parse(raw, env = BuildConfig.QR_ENV)) {
+            // Wrong code, not a broken one: a login QR reaches here whenever
+            // someone opens the wrong scanner. Say which kind is expected.
+            SessionGroup.Scan.NotAMeetingCode -> setStatus("Not a meeting code — try again")
+            // Re-scanning cannot fix this one, so do not invite it.
+            SessionGroup.Scan.WrongEnvironment ->
+                setStatus("That device is on a different build — both must be dev or both prod")
+            is SessionGroup.Scan.Ok -> {
+                AppState.pendingGroup.value = GroupExit.PendingGroup(
+                    scan.groupId, heldSinceMillis = System.currentTimeMillis())
+                onJoined()
+            }
+        }
+    }
+}
+
+/**
+ * Camera surface + decode plumbing shared by every QR flow.
+ *
+ * [onCode] runs at most once per distinct code and never concurrently with
+ * itself. Both properties live here rather than in each caller because both
+ * were bugs once: without dedup, a code sitting in frame is re-submitted every
+ * frame; without serialization, a slow sign-in gets a second attempt stacked
+ * behind it. A caller cannot opt out of either by forgetting.
+ */
+@Composable
+private fun QrScanScaffold(
+    prompt: String,
+    onCode: suspend (raw: String, setStatus: (String) -> Unit) -> Unit,
+) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var status by remember { mutableStateOf("Point the camera at the login QR") }
-    // `busy` serializes sign-in attempts (ignore decodes while one is in flight); `lastAttempted`
-    // remembers the last raw string we already acted on so an identical code still sitting in
-    // frame isn't re-parsed/re-submitted every frame — only a genuinely new/changed code (a fresh
-    // QR) is attempted again. Together these replace the old permanent found=true latch, which let
-    // onDecoded fire exactly once ever and would have left the user stuck after a failed sign-in.
+    var status by remember { mutableStateOf(prompt) }
     var busy by remember { mutableStateOf(false) }
     var lastAttempted by remember { mutableStateOf<String?>(null) }
 
@@ -80,23 +143,15 @@ fun QrScanScreen(onSignedIn: () -> Unit) {
             onDecoded = { raw ->
                 if (busy || raw == lastAttempted) return@QrScanner
                 lastAttempted = raw
-                val payload = QrLoginParser.parse(raw)
-                when {
-                    payload == null -> status = "Not a FieldSight login code — try again"
-                    payload.env != BuildConfig.QR_ENV && BuildConfig.QR_ENV == "prod" ->
-                        status = "This code is for a different environment"
-                    else -> {
-                        busy = true
-                        status = "Signing in…"
-                        scope.launch {
-                            when (val r = auth.signInWithQrCode(payload.code)) {
-                                SignInResult.Success -> onSignedIn()
-                                is SignInResult.Failure -> { status = r.message; busy = false }
-                                SignInResult.NewPasswordRequired -> {
-                                    status = "Set your password in the web app first"; busy = false
-                                }
-                            }
-                        }
+                busy = true
+                scope.launch {
+                    try {
+                        onCode(raw) { status = it }
+                    } finally {
+                        // Re-arm even if the handler threw: leaving the screen
+                        // stuck on a dead scanner is worse than a retry, and a
+                        // failed attempt must not end the session.
+                        busy = false
                     }
                 }
             },

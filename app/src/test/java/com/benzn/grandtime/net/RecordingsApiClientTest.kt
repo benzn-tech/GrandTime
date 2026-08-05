@@ -91,7 +91,7 @@ class RecordingsApiClientTest {
             override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
         }
         val client = RecordingsApiClient("https://api.example.com/prod/api", fake)
-        assertTrue(client.completeStatus("idtok", "r1", 1234L) in 200..299)
+        assertTrue(client.completeStatus("idtok", "r1", 1234L).code in 200..299)
     }
 
     // T13: complete() 可选携带 gpsTrack —— 字符串还原成 JSONArray 放进 body,后端得真数组(非二次转义字符串)。
@@ -109,7 +109,7 @@ class RecordingsApiClientTest {
             "idtok", "r1", 1234L,
             gpsTrack = """[{"t":1,"lat":-36.85,"lon":174.76}]""",
         )
-        assertTrue(ok in 200..299)
+        assertTrue(ok.code in 200..299)
         val json = org.json.JSONObject(sentBody)
         val arr = json.getJSONArray("gpsTrack")
         assertEquals(1, arr.length())
@@ -129,7 +129,7 @@ class RecordingsApiClientTest {
             override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
         }
         val client = RecordingsApiClient("https://api.example.com/prod/api", fake)
-        assertTrue(client.completeStatus("idtok", "r1", 1234L) in 200..299)
+        assertTrue(client.completeStatus("idtok", "r1", 1234L).code in 200..299)
         assertTrue(!org.json.JSONObject(sentBody).has("gpsTrack"))
     }
 
@@ -144,7 +144,7 @@ class RecordingsApiClientTest {
             override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
         }
         val client = RecordingsApiClient("https://api.example.com/prod/api", fake)
-        val ok = client.completeStatus("idtok", "r1", 1234L, gpsTrack = "not valid json{{{") in 200..299
+        val ok = client.completeStatus("idtok", "r1", 1234L, gpsTrack = "not valid json{{{").code in 200..299
         assertTrue(ok)
         assertTrue(!org.json.JSONObject(sentBody).has("gpsTrack"))
     }
@@ -166,5 +166,88 @@ class RecordingsApiClientTest {
         assertTrue(!RecordingsApiClient.isTransient(401))
         assertTrue(!RecordingsApiClient.isTransient(403))
         assertTrue(!RecordingsApiClient.isTransient(409))
+    }
+
+    // ---- the group-ended signal riding on the upload (spec 2026-08-04) ------
+    //
+    // This is the only channel back to a device with no open connection. What
+    // matters most here is that it can never affect the upload verdict itself:
+    // a misread body costs one missed prompt, whereas an exception would turn a
+    // successful upload into a retry of the whole file.
+
+    private fun clientReturning(code: Int, body: String) = RecordingsApiClient(
+        "https://api.example.com/prod/api",
+        object : HttpFns {
+            override fun postJson(url: String, authToken: String, jsonBody: String) =
+                HttpResult(code, body)
+            override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
+        },
+    )
+
+    @Test fun `complete reports groupEnded when the server says so`() {
+        val r = clientReturning(200, """{"ok":true,"groupEnded":true}""")
+            .completeStatus("idtok", "r1", 1234L)
+        assertTrue(r.groupEnded)
+        assertEquals(200, r.code)
+    }
+
+    @Test fun `a solo complete is not group-ended`() {
+        // The overwhelmingly common response, unchanged by this feature.
+        assertTrue(!clientReturning(200, """{"ok":true}""").completeStatus("idtok", "r1", 1L).groupEnded)
+    }
+
+    @Test fun `a malformed body still yields the status code`() {
+        // A body the client cannot parse must not cost the upload its verdict.
+        val r = clientReturning(200, "<html>gateway</html>").completeStatus("idtok", "r1", 1L)
+        assertEquals(200, r.code)
+        assertTrue(!r.groupEnded)
+    }
+
+    @Test fun `an empty body still yields the status code`() {
+        val r = clientReturning(200, "").completeStatus("idtok", "r1", 1L)
+        assertEquals(200, r.code)
+        assertTrue(!r.groupEnded)
+    }
+
+    @Test fun `a throttled complete stays transient and not group-ended`() {
+        // 429/5xx is the BUG-43 path: it must keep spending retry budget the way
+        // it always did, and never be read as a meeting instruction.
+        val r = clientReturning(429, "").completeStatus("idtok", "r1", 1L)
+        assertTrue(RecordingsApiClient.isTransient(r.code))
+        assertTrue(!r.groupEnded)
+    }
+
+    // ---- the group riding on the upload -------------------------------------
+
+    @Test fun `upload-url carries the group when the recording has one`() {
+        var sent = ""
+        val client = RecordingsApiClient("https://api.example.com/prod/api", object : HttpFns {
+            override fun postJson(url: String, authToken: String, jsonBody: String): HttpResult {
+                sent = jsonBody
+                return HttpResult(200, """{"recordingId":"r","uploadUrl":"u","s3Key":"k"}""")
+            }
+            override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
+        })
+        client.uploadUrl("idtok", UploadUrlReq(
+            kind = "audio", clientUuid = "c", fileName = "f.wav", contentType = "audio/wav",
+            startedAt = "2026-08-06T09:00:00+12:00", groupId = "b".repeat(32)))
+        assertEquals("b".repeat(32), org.json.JSONObject(sent).getString("groupId"))
+    }
+
+    @Test fun `a solo upload-url body is unchanged`() {
+        // Most uploads. They have no part in this feature and their request
+        // must not gain a field.
+        var sent = ""
+        val client = RecordingsApiClient("https://api.example.com/prod/api", object : HttpFns {
+            override fun postJson(url: String, authToken: String, jsonBody: String): HttpResult {
+                sent = jsonBody
+                return HttpResult(200, """{"recordingId":"r","uploadUrl":"u","s3Key":"k"}""")
+            }
+            override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
+        })
+        client.uploadUrl("idtok", UploadUrlReq(
+            kind = "audio", clientUuid = "c", fileName = "f.wav", contentType = "audio/wav",
+            startedAt = "2026-08-06T09:00:00+12:00"))
+        assertTrue(!org.json.JSONObject(sent).has("groupId"))
     }
 }

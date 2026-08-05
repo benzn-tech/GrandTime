@@ -28,4 +28,8 @@ data class CaptureRecord(
     val createdAt: Long,
     val gpsTrack: String? = null,
     val missing: Boolean = false,
+    // 多设备合并(spec 2026-08-04):主设备的 session id。
+    // 持久化而不是"只发出去",是因为 /open 是 best-effort、失败即丢,而工地离线是常态。
+    // 组关系一旦丢失无法事后重建,所以它必须跟着录音行走。null = 单机录制。
+    val groupId: String? = null,
 )

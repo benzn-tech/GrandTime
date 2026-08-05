@@ -122,6 +122,10 @@ class CaptureManager(
                 runCatching { migrator.migrate() }
             }
         }
+        // Someone else ended the meeting. Stop here too, then ask about resuming.
+        scope.launch {
+            AppState.meetingEndedElsewhere.collect { onMeetingEndedElsewhere() }
+        }
         // 预览挂/摘:录像态且 UI 给了 surface 才挂;否则摘。setPreviewSurface 只切 GL 目标,
         // 不动相机会话(录像不中断)。distinctUntilChanged 防每次段滚动重复挂。
         scope.launch {
@@ -234,8 +238,77 @@ class CaptureManager(
         AppState.captureState.value = core.state
     }
 
+    /**
+     * The group this recording belongs to, resolved once at record-start.
+     *
+     * Held rather than re-read per segment: a session emits a segment every 30s,
+     * and re-reading would let the one segment that happens to cross the expiry
+     * boundary carry a different group id than its siblings — splitting a single
+     * recording across two meetings. null = solo recording.
+     */
+    @Volatile private var activeGroupId: String? = null
+
+    /**
+     * Another device answered "the meeting has ended".
+     *
+     * Guarded on still being in a group, because the signal arrives on EVERY
+     * chunk uploaded after the end — several per device — and acting twice would
+     * stop a recording the user has since restarted.
+     *
+     * The group is cleared BEFORE stopping, so the stop cannot be attributed to
+     * the meeting that just ended, and so a recording started immediately
+     * afterwards is a fresh solo session. Post-meeting audio must never land in
+     * the meeting.
+     */
+    private suspend fun onMeetingEndedElsewhere() {
+        if (AppState.pendingGroup.value == null) return
+        AppState.pendingGroup.value = null
+        meetingPromptJob?.cancel()
+        AppState.meetingExitPrompt.value = false
+        when (core.state) {
+            is CaptureState.RecordingVideo, is CaptureState.PausedVideo ->
+                execute(core.onAction(KeyAction.END_VIDEO))
+            is CaptureState.RecordingAudio, is CaptureState.PausedAudio ->
+                execute(core.onAction(KeyAction.END_AUDIO))
+            CaptureState.Idle -> Unit
+        }
+        runCatching { meetingPromptSound.play() }
+        // Asked rather than assumed: ending a meeting is not finishing work.
+        AppState.meetingResumePrompt.value = true
+    }
+
+    private var meetingPromptJob: Job? = null
+    private val meetingPromptSound by lazy { MeetingPromptSound(context) }
+
+    /**
+     * Ask, 20s after this stop, whether the meeting has ended — the backstop for
+     * everyone simply forgetting.
+     *
+     * Cancelled by the next start, so an immediate restart never gets asked; and
+     * re-checked at fire time, because the twenty seconds are exactly when the
+     * answer stops being wanted (see [MeetingPrompt.shouldAsk]).
+     */
+    private fun scheduleMeetingPrompt() {
+        meetingPromptJob?.cancel()
+        if (AppState.pendingGroup.value == null) return
+        meetingPromptJob = scope.launch {
+            delay(MeetingPrompt.DELAY_MILLIS)
+            val recording = core.state !is CaptureState.Idle
+            if (!MeetingPrompt.shouldAsk(AppState.pendingGroup.value, recording, System.currentTimeMillis())) return@launch
+            AppState.meetingExitPrompt.value = true
+            runCatching {
+                if (!meetingPromptSound.play()) probe("meeting prompt: no voice line bundled, vibrated instead")
+            }
+        }
+    }
+
     /** Best-effort session_open — fire-and-forget, never blocks capture. No-op if not logged in. */
     private fun fireSessionOpen(sessionId: String, kind: String, startedAtMillis: Long) {
+        // A new recording answers the question by itself: they are not done.
+        meetingPromptJob?.cancel()
+        AppState.meetingExitPrompt.value = false
+        val groupId = GroupExit.activeGroupId(AppState.pendingGroup.value, startedAtMillis)
+        activeGroupId = groupId
         // Everything (incl. the `as GrandTimeApp` cast) runs inside the IO launch + runCatching so
         // nothing can throw onto the capture coroutine — this fires at record-start before the
         // segment is even opened (Opus review: keep the capture path crash-proof).
@@ -244,13 +317,22 @@ class CaptureManager(
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
                 val siteId = AppState.selectedSite.value?.id
                 val token = app.authManager.freshIdToken() ?: return@launch
-                sessionsApi.open(token, sessionId, startedAtMillis, kind, siteId)
+                sessionsApi.open(token, sessionId, startedAtMillis, kind, siteId, groupId)
             }
         }
     }
 
     /** Best-effort session_close (intent "idle" — deliberate-End is P0-c) — fire-and-forget. */
     private fun fireSessionClose(sessionId: String, endedAtMillis: Long, intent: String = "idle") {
+        activeGroupId = null
+        // Restart the expiry clock. The group deliberately OUTLIVES the recording —
+        // a meeting where everyone stops to walk to the next building is still one
+        // meeting, and expiring here would force a pointless re-scan. What ends the
+        // group is the user answering the prompt, or 15 min of nothing.
+        AppState.pendingGroup.value?.let {
+            AppState.pendingGroup.value = it.copy(heldSinceMillis = endedAtMillis)
+        }
+        scheduleMeetingPrompt()
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
@@ -360,6 +442,7 @@ class CaptureManager(
                 id = recordId, kind = "video", filePath = file.absolutePath, fileName = file.name,
                 startedAt = startedAt, codec = result.codec, resolution = result.resolution,
                 segmentIndex = cmd.segmentIndex, sessionId = cmd.sessionId, createdAt = startedAt,
+                groupId = activeGroupId,
                 siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
             )
         )
@@ -473,6 +556,7 @@ class CaptureManager(
                     id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
                     startedAt = startedAt, endedAt = startedAt, sizeBytes = file.length(),
                     codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
+                    groupId = activeGroupId,
                     siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
                 )
             )
@@ -607,6 +691,7 @@ class CaptureManager(
                 id = id, kind = "audio", filePath = seg.file.absolutePath, fileName = seg.file.name,
                 startedAt = seg.startedAtMs, endedAt = seg.endedAtMs, durationMs = seg.endedAtMs - seg.startedAtMs,
                 sizeBytes = seg.file.length(), codec = "wav", segmentIndex = seg.index, sessionId = sessionId,
+                groupId = activeGroupId,
                 siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(), createdAt = seg.startedAtMs,
             )
         )

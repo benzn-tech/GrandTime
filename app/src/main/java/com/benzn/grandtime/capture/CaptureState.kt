@@ -13,3 +13,19 @@ sealed interface CaptureState {
      *  shift the origin forward by the pause duration so the timer counts actual recording time. */
     data class PausedAudio(val sessionId: String, val startedAtMillis: Long, val pausedAtMillis: Long) : CaptureState
 }
+
+/**
+ * The session this state belongs to, or null when idle.
+ *
+ * Exists so callers stop re-deriving it with a `when` over five branches — one
+ * of which is always the branch someone forgets. The meeting code shown to
+ * another device must be the CURRENT session's id, and a paused recording is
+ * still that session.
+ */
+fun CaptureState.sessionIdOrNull(): String? = when (this) {
+    is CaptureState.RecordingVideo -> sessionId
+    is CaptureState.PausedVideo -> sessionId
+    is CaptureState.RecordingAudio -> sessionId
+    is CaptureState.PausedAudio -> sessionId
+    CaptureState.Idle -> null
+}

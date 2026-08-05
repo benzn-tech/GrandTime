@@ -89,6 +89,16 @@ data class UploadUrlReq(
     val sizeBytes: Long? = null,
     val resolution: String? = null,
     val codec: String? = null,
+    /**
+     * The meeting group this recording belongs to (multi-device merge).
+     *
+     * Sent HERE as well as on /open because /open is fire-and-forget and being
+     * offline is normal on a site: a device can join a meeting with no signal
+     * and not reach the server for hours. The upload is the one call guaranteed
+     * to arrive eventually, so the group rides on it too. The server only ever
+     * fills the value, never clears it, so the two paths cannot fight.
+     */
+    val groupId: String? = null,
 )
 
 /**
@@ -129,6 +139,9 @@ class RecordingsApiClient(
         req.sizeBytes?.let { body.put("sizeBytes", it) }
         req.resolution?.let { body.put("resolution", it) }
         req.codec?.let { body.put("codec", it) }
+        // Omitted rather than sent as null for a solo recording, so the solo
+        // request stays byte-identical to what it was before this existed.
+        req.groupId?.let { body.put("groupId", it) }
 
         val result = runCatching { http.postJson("$baseUrl/org/recordings/upload-url", idToken, body.toString()) }
             .getOrElse { return UploadUrlResult.Busy(0) }   // no response at all -> transient
@@ -146,7 +159,12 @@ class RecordingsApiClient(
      * retried without spending the record's permanent-failure budget, whereas a 4xx means
      * this request will never succeed as-is.
      */
-    fun completeStatus(idToken: String, recordingId: String, sizeBytes: Long?, gpsTrack: String? = null): Int {
+    fun completeStatus(
+        idToken: String,
+        recordingId: String,
+        sizeBytes: Long?,
+        gpsTrack: String? = null,
+    ): CompleteResult {
         val body = JSONObject()
         sizeBytes?.let { body.put("sizeBytes", it) }
         // T13: gpsTrack 是 DB 里存的 JSON 数组字符串(GpsTracker.snapshotTrackJson),这里还原成
@@ -158,9 +176,33 @@ class RecordingsApiClient(
         }
         val result = runCatching {
             http.postJson("$baseUrl/org/recordings/$recordingId/complete", idToken, body.toString())
-        }.getOrElse { return NO_RESPONSE }
-        return result.code
+        }.getOrElse { return CompleteResult(NO_RESPONSE, groupEnded = false) }
+        return CompleteResult(result.code, groupEnded = parseGroupEnded(result.body))
     }
+
+    /**
+     * Multi-device merge: did the server say the meeting has ended?
+     *
+     * The upload is the only channel back to a device with no open connection,
+     * so this signal rides on a response the client previously discarded.
+     *
+     * Absent, malformed, or unparseable → false. This must never be able to
+     * change what `completeStatus` reports about the upload itself: a body the
+     * client cannot read is a missed prompt, whereas a thrown exception here
+     * would turn a successful upload into a retry of the whole file.
+     */
+    private fun parseGroupEnded(body: String?): Boolean = runCatching {
+        JSONObject(body ?: "").optBoolean("groupEnded", false)
+    }.getOrDefault(false)
+
+    /**
+     * The outcome of a `complete`.
+     *
+     * [code] is what it always was, so `isTransient` and the whole retry budget
+     * are untouched. [groupEnded] is a passenger: the server has no other way to
+     * reach a device that is not holding a connection open.
+     */
+    data class CompleteResult(val code: Int, val groupEnded: Boolean)
 
     companion object {
         /** No HTTP status was ever obtained (socket/DNS/timeout). Transient by definition. */
