@@ -43,8 +43,33 @@ class Camera2Pipeline(
     // cameras, which is false — playback provably needs a 90° hint (T1 device probe + acceptance).
     // Reading the characteristic silently flipped orientationHint/JPEG_ORIENTATION to 0 for every
     // session after the first camera open (first session kept this default and looked fine).
-    // Photo JPEG orientation hint (camera HAL writes EXIF rotation for stills).
+    // Kept for the GL/muxer pair only — GlRecordPipeline.WM_ROTATION_DEG must
+    // stay equal to it, so this value is NOT free to change.
     private val sensorOrientation = 90
+
+    // Stills get 0, and that is a measured value rather than a copy of the one
+    // above. The comment this replaces said the HAL "writes EXIF rotation for
+    // stills" — it does not. A real photo off prod
+    // (users/Sam_Yu/pictures/2026-08-05/…jpg) reads:
+    //
+    //     stored pixels    1944 x 2592   (PORTRAIT)
+    //     EXIF Orientation 0             (not even a valid value; 1..8)
+    //
+    // The sensor is 5MP 4:3, so upright is 2592x1944. This HAL BAKES
+    // JPEG_ORIENTATION into the pixels and writes no usable tag, so asking for
+    // 90 physically rotated every photo a quarter turn — and took the
+    // watermark with it, landing it on the right-hand edge of the real scene
+    // instead of along the bottom.
+    //
+    // CaptureManager.stampPhotoWatermark was built on the opposite assumption
+    // ("像素不转、tag 转"): it reads the tag, rotates the bitmap upright, then
+    // stamps. With the tag absent it rotates nothing and stamps the bottom of
+    // an already-rotated frame, which is exactly the reported symptom.
+    //
+    // 0 matches videoOrientationHint, and for the same reason: on this ROM the
+    // camera already delivers upright landscape. The video path learned this;
+    // the photo path had not.
+    private val photoJpegOrientation = 0
     // Video needs NO playback rotation: the GL pipeline already renders camera frames upright
     // (verified on device — raw 960x720 frames are upright landscape). So the muxer orientationHint
     // is 0 and the encoder watermark is drawn un-prerotated (prerotate=false), making the recorded
@@ -254,7 +279,7 @@ class Camera2Pipeline(
                     }, handler)
                     val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                         addTarget(reader.surface)
-                        set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                        set(CaptureRequest.JPEG_ORIENTATION, photoJpegOrientation)
                         set(CaptureRequest.JPEG_QUALITY, jpegQuality.toByte())
                         set(CaptureRequest.FLASH_MODE, if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
                     }.build()

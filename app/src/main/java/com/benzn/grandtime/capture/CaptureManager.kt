@@ -601,11 +601,17 @@ class CaptureManager(
     }
 
     /**
-     * 照片水印:解码 → 若 EXIF orientation 隐含旋转(本机 takePhoto 写 JPEG_ORIENTATION=sensorOrientation,
-     * 像素不转、tag 转,查看器里才正立)则先转正(Matrix.postRotate,90/180/270;镜像变体按其旋转分量处理,
+     * 照片水印:解码 → 若 EXIF orientation 隐含旋转则先转正(Matrix.postRotate,90/180/270;镜像变体按其旋转分量处理,
      * 本机不镜像)→ Canvas 底部叠 WatermarkRenderer.render 出的水印带(按图片宽,此时"底部"=转正后真底部)
      * → 重压 JPEG(质量与拍照/降采样同一档)。转正过的图 tag 写回 NORMAL(1,像素已正);未转正维持原
      * 行为(原样回写 tag,absent 则不写)。IO 线程。失败整体吞掉(runCatching):没水印的照片也比丢照片强。
+     *
+     * 这段原本写着"本机 takePhoto 像素不转、tag 转",那是错的,并且正是照片被转 90°、水印跑到右侧的原因。
+     * 实测 prod 上一张真实照片:存储像素 1944x2592(竖),EXIF Orientation = 0(连合法值都不是,合法是 1..8)。
+     * 传感器 5MP 4:3 正立应是 2592x1944,所以本机 HAL 是把 JPEG_ORIENTATION **烤进像素**、不写可用 tag。
+     * 于是这里读不到旋转 → 不转正 → 把水印盖在一张已经被转过的竖图底部 = 真实场景的右边缘。
+     * 修法在 Camera2Pipeline:photoJpegOrientation = 0(与 videoOrientationHint 同理)。此处逻辑保持不变——
+     * 它对"真的写了 tag"的设备仍然正确,只是在本机不会触发。
      */
     private suspend fun stampPhotoWatermark(file: File, quality: Int, epochMillis: Long) = withContext(Dispatchers.IO) {
         runCatching {
