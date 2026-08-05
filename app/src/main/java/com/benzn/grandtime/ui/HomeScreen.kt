@@ -11,6 +11,7 @@ import android.os.Environment
 import android.os.StatFs
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -56,6 +57,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.capture.MediaStorage
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.capture.GroupExit
+import com.benzn.grandtime.capture.sessionIdOrNull
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.ResourceStatus
 import com.benzn.grandtime.core.WarnLevel
@@ -77,6 +80,10 @@ fun HomeScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var showSitePicker by remember { mutableStateOf(false) }
+    val group by AppState.pendingGroup.collectAsStateWithLifecycle()
+    var showJoinScanner by remember { mutableStateOf(false) }
+    var showMeetingCode by remember { mutableStateOf(false) }
+    var showMeetingExit by remember { mutableStateOf(false) }
     val zone = remember { ZoneId.systemDefault() }
     val startOfDay = startOfDayMillis(System.currentTimeMillis(), zone)
     val todaysRecords by remember(startOfDay) {
@@ -94,6 +101,22 @@ fun HomeScreen() {
             nowMillis = System.currentTimeMillis()
             delay(1000)
         }
+    }
+
+    // Full-screen while scanning, mirroring the sign-in scanner: the camera needs
+    // the whole surface, and back returns here rather than leaving the app.
+    BackHandler(enabled = showJoinScanner) { showJoinScanner = false }
+    if (showJoinScanner) {
+        Column(Modifier.fillMaxSize()) {
+            AppTopBar(
+                title = "Scan meeting code",
+                showBack = true,
+                onBack = { showJoinScanner = false },
+                serviceRunning = running,
+            )
+            QrJoinMeetingScreen(onJoined = { showJoinScanner = false })
+        }
+        return
     }
 
     var setupComplete by remember { mutableStateOf(isSetupComplete(context)) }
@@ -288,6 +311,65 @@ fun HomeScreen() {
                         }
                     }
                 }
+            }
+        }
+        if (login is LoginState.LoggedIn) {
+            Spacer(Modifier.height(12.dp))
+            FsCard {
+                FsCardTitle("Meeting")
+                val sessionId = capture.sessionIdOrNull()
+                if (group != null) {
+                    Text(
+                        "Recording as part of a meeting",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { showMeetingExit = true },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = MaterialTheme.shapes.small,
+                    ) { Text("End or leave", style = MaterialTheme.typography.bodyMedium) }
+                } else {
+                    Button(
+                        onClick = { showMeetingCode = true },
+                        enabled = sessionId != null,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = MaterialTheme.shapes.small,
+                    ) { Text("Invite a device", style = MaterialTheme.typography.bodyMedium) }
+                    if (sessionId == null) {
+                        // The code IS the session id, so there is nothing to show
+                        // before one exists. Say that instead of a dead button.
+                        Text(
+                            "Start recording first",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { showJoinScanner = true },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = MaterialTheme.shapes.small,
+                    ) { Text("Join a meeting", style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
+        }
+        if (showMeetingCode) {
+            val sid = capture.sessionIdOrNull()
+            if (sid == null) showMeetingCode = false
+            else MeetingCodeDialog(sessionId = sid, onDismiss = { showMeetingCode = false })
+        }
+        if (showMeetingExit) {
+            MeetingExitDialog { decision ->
+                showMeetingExit = false
+                // Route through GroupExit rather than re-deciding here, so the UI
+                // cannot disagree with the tested rules about what each answer means.
+                // notifiesOthers is not honoured yet — stopping the other devices
+                // needs the upload-response channel (Task 13). Until then this ends
+                // the meeting on THIS device only, which under-merges rather than
+                // stopping someone else's recording by surprise.
+                if (GroupExit.resolve(decision).clearsGroup) AppState.pendingGroup.value = null
             }
         }
         if (showSitePicker) {
