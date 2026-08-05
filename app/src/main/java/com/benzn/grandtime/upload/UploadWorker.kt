@@ -101,6 +101,10 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                 sizeBytes = record.sizeBytes.takeIf { it > 0 },
                 resolution = record.resolution,
                 codec = record.codec,
+                // From the row, not from live state: this worker can run long
+                // after the recording, and the group it belonged to may since
+                // have ended. The row is what remembers.
+                groupId = record.groupId,
             )
 
             when (val urlResult = client.uploadUrl(idToken, req)) {

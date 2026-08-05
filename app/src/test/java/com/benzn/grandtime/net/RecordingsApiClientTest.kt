@@ -216,4 +216,38 @@ class RecordingsApiClientTest {
         assertTrue(RecordingsApiClient.isTransient(r.code))
         assertTrue(!r.groupEnded)
     }
+
+    // ---- the group riding on the upload -------------------------------------
+
+    @Test fun `upload-url carries the group when the recording has one`() {
+        var sent = ""
+        val client = RecordingsApiClient("https://api.example.com/prod/api", object : HttpFns {
+            override fun postJson(url: String, authToken: String, jsonBody: String): HttpResult {
+                sent = jsonBody
+                return HttpResult(200, """{"recordingId":"r","uploadUrl":"u","s3Key":"k"}""")
+            }
+            override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
+        })
+        client.uploadUrl("idtok", UploadUrlReq(
+            kind = "audio", clientUuid = "c", fileName = "f.wav", contentType = "audio/wav",
+            startedAt = "2026-08-06T09:00:00+12:00", groupId = "b".repeat(32)))
+        assertEquals("b".repeat(32), org.json.JSONObject(sent).getString("groupId"))
+    }
+
+    @Test fun `a solo upload-url body is unchanged`() {
+        // Most uploads. They have no part in this feature and their request
+        // must not gain a field.
+        var sent = ""
+        val client = RecordingsApiClient("https://api.example.com/prod/api", object : HttpFns {
+            override fun postJson(url: String, authToken: String, jsonBody: String): HttpResult {
+                sent = jsonBody
+                return HttpResult(200, """{"recordingId":"r","uploadUrl":"u","s3Key":"k"}""")
+            }
+            override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
+        })
+        client.uploadUrl("idtok", UploadUrlReq(
+            kind = "audio", clientUuid = "c", fileName = "f.wav", contentType = "audio/wav",
+            startedAt = "2026-08-06T09:00:00+12:00"))
+        assertTrue(!org.json.JSONObject(sent).has("groupId"))
+    }
 }
