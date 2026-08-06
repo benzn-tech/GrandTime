@@ -1,6 +1,11 @@
 package com.benzn.grandtime
 
 import android.app.Application
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.decode.VideoFrameDecoder
@@ -10,8 +15,10 @@ import com.benzn.grandtime.auth.EncryptedTokenStore
 import com.benzn.grandtime.capture.MediaStorage
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.device.DeviceIdentity
+import com.benzn.grandtime.upload.DeviceStatusWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.SupervisorJob
 
 class GrandTimeApp : Application(), ImageLoaderFactory {
@@ -38,6 +45,26 @@ class GrandTimeApp : Application(), ImageLoaderFactory {
         // Until this runs, DeviceIdentity reports nothing and the ledger reads
         // the device as never-seen, which is true rather than wrong.
         DeviceIdentity.init(this)
+
+        // The backlog channel. Rare on purpose: a frozen record is not losing its retry
+        // budget while it waits, so nothing here is urgent — the value is that a device
+        // falling behind stops being invisible, not that it is noticed within the minute.
+        //
+        // KEEP, unlike the upload queue's REPLACE: a duplicate probe has nothing to rescue,
+        // so coalescing is exactly what you want.
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            DeviceStatusWorker.UNIQUE_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<DeviceStatusWorker>(
+                DeviceStatusWorker.INTERVAL_HOURS, TimeUnit.HOURS,
+            )
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .build(),
+        )
     }
 
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
