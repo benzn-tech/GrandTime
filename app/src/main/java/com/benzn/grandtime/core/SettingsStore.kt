@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -46,6 +47,7 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
         private val KEY_ASPECT_RATIO = stringPreferencesKey("aspect_ratio")
         private val KEY_WATERMARK = booleanPreferencesKey("watermark_enabled")
         private val KEY_VIDEO_UPLOAD_WIFI_ONLY = booleanPreferencesKey("video_upload_wifi_only")
+        private val KEY_LAST_SERVER_BUILD = stringPreferencesKey("last_server_build")
     }
 
     val settings: Flow<RecordingSettings> = dataStore.data.map { prefs ->
@@ -67,6 +69,20 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
             watermarkEnabled = prefs[KEY_WATERMARK] ?: true,
             videoUploadWifiOnly = prefs[KEY_VIDEO_UPLOAD_WIFI_ONLY] ?: true,
         )
+    }
+
+    /**
+     * The build the server last reported on a status probe.
+     *
+     * A freeze stamps it so a later redeploy can be recognised as "the thing that broke this
+     * may now be fixed". Null until the first probe answers — and null must never be read as
+     * "different from the current build" (see ThawDecision), or a record frozen before the
+     * first probe would thaw, refail and refreeze on every probe forever.
+     */
+    suspend fun lastKnownServerBuild(): String? = dataStore.data.first()[KEY_LAST_SERVER_BUILD]
+
+    suspend fun setLastKnownServerBuild(value: String) {
+        dataStore.edit { it[KEY_LAST_SERVER_BUILD] = value }
     }
 
     suspend fun setVideoQuality(value: VideoQuality) {
