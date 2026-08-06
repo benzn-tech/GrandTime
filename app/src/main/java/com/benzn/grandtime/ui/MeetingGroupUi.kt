@@ -2,6 +2,8 @@ package com.benzn.grandtime.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -115,7 +117,16 @@ fun MeetingExitDialog(onDecision: (GroupExit.Decision) -> Unit) {
         onDismissRequest = { onDecision(GroupExit.Decision.NOT_YET) },
         title = { Text("Has the meeting ended?", style = MaterialTheme.typography.titleLarge) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Scrollable, because this screen is 320x427 dp and three 64dp
+            // choices plus a title is close enough to the limit that "it fits"
+            // is a calculation rather than a fact. Two things on this same
+            // screen have already been laid out past the edge — the scanner's
+            // status and the meeting code — and the cost of being wrong here is
+            // that the user cannot end the meeting at all.
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 BigChoice("Yes — meeting ended") { onDecision(GroupExit.Decision.MEETING_ENDED) }
                 BigChoice("I'm leaving, others continue") { onDecision(GroupExit.Decision.I_AM_LEAVING) }
                 BigChoice("Not yet") { onDecision(GroupExit.Decision.NOT_YET) }
@@ -141,7 +152,10 @@ fun MeetingResumeDialog(onResume: () -> Unit, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Meeting ended", style = MaterialTheme.typography.titleLarge) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 Text(
                     "Recording stopped. Start a new one?",
                     style = MaterialTheme.typography.titleMedium,
