@@ -93,6 +93,17 @@ JVM-testable; `UploadWorker` itself is not.
 | `UploadUrlResult.Busy` (429/5xx/no response) | `transient` | — |
 | `isTransient(completeStatus)` | `transient` | — |
 | `freshIdToken()` null while `LoginState.LoggedOut` | `site_fixable` | `needs_login` |
+
+**One behaviour change this table makes that the old code did not have.** A dead
+session used to return `Result.failure()` — "the user must re-login before this
+can ever succeed, don't retry forever". Under this table it is `site_fixable`,
+so it returns `Result.retry()` and rides the same exponential backoff as
+everything else, bounded by the age rule rather than stopping outright. That is
+deliberate: the old behaviour meant a device signed out overnight abandoned its
+queue permanently, and nothing re-enqueued those rows except the boot sweep.
+The cost is that a signed-out device with a large backlog keeps waking to fail
+at `freshIdToken()`; the backoff cap (5h) and the concurrency cap (2) bound it.
+
 | `AuthExpired` **after** `freshIdToken()` returned a token | `operator_fixable` | `uploadurl_401` |
 | `Error(403, …)` from `upload-url` | `operator_fixable` | `uploadurl_403` |
 | `Error(code, …)` from `upload-url`, any other real code | `operator_fixable` | `uploadurl_<code>` |
@@ -138,10 +149,23 @@ must be updated in the same commit, or counts silently drop to zero:
 | `CaptureRecordDao.kt:76` (sign-out warning) | `IN ('pending','failed','uploading')` | add `'retrying','frozen'` |
 | `CaptureRecordDao.kt:61` (`listPendingForAuthor`) | caller-supplied status list | audit every call site |
 | `CaptureRecordDao.kt:86` (boot rescan) | caller-supplied status list | must **exclude** `frozen` and `dead` |
+| `RecordingGrouping.kt:47` (`aggregateUploadStatus`) | `any == "failed"` | `frozen`/`dead` → a `stuck` verdict, checked **before** `failed` |
+| `RecordingGrouping.kt:56` (`summarizeRecordingUploads`) | three buckets | fourth bucket for `stuck` |
+| `HomeScreen.kt:256` (Retry button) | filters `aggregate == "failed"` | unchanged, but now correctly excludes held recordings |
+| `FilesScreen.kt:370,373` (row icon, enqueueable ids) | `"failed"` → `!`, enqueues `pending`/`failed` | `retrying` → `!`; `frozen`/`dead` → `⏸` and **never enqueued** |
+| `CoreService.kt:240` (boot sweep) | `listOf("pending","failed","uploading")` | add `retrying`; **never** `frozen` |
+| `FilesReconcilerTest.kt`, `UploadQueueOwnershipTest.kt` | hardcode the status set | share one constant with the SQL |
 
 That `// unknown status values are ignored` comment is precisely how a
 "harmless rename" would delete the sign-out data-loss warning without a single
 failing test.
+
+Two of these were found by grepping for the literal after the rename, not by
+listing consumers up front — and both would have failed silently. The boot
+sweep would have swept frozen records back onto the queue on **every boot**,
+restarting exactly the retry loop the freeze exists to stop; the Files row
+would have offered a retry that spends a request to reach the same refusal
+while looking like it did something. Grep for the literal; do not trust a list.
 
 ### 4.3 `dead` versus `missing`
 
