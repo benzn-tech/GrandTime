@@ -57,6 +57,32 @@ class RecordingsApiClientTest {
         )
     }
 
+    // An Error used to keep its status only inside a human-readable message, so the upload
+    // path could not tell a 403 (an identity we must fix) from a 404 (a route that moved).
+    @Test fun `error carries the real http status`() {
+        val r = RecordingsApiClient.parseUploadUrl(HttpResult(403, """{"message":"denied"}"""))
+        assertEquals(403, (r as RecordingsApiClient.UploadUrlResult.Error).code)
+    }
+
+    @Test fun `malformed 2xx has no status code of its own`() {
+        val r = RecordingsApiClient.parseUploadUrl(HttpResult(200, "not json"))
+        assertEquals(0, (r as RecordingsApiClient.UploadUrlResult.Error).code)
+    }
+
+    @Test fun `missing recordingId has no status code of its own`() {
+        val r = RecordingsApiClient.parseUploadUrl(HttpResult(200, """{"uploadUrl":"https://x"}"""))
+        assertEquals(0, (r as RecordingsApiClient.UploadUrlResult.Error).code)
+    }
+
+    // Keeps Error meaning "the server answered and the answer was wrong". Silence is Busy,
+    // which is what lets the classifier treat an Error as ours to fix rather than the world's.
+    @Test fun `no response is still Busy, never Error`() {
+        assertTrue(
+            RecordingsApiClient.parseUploadUrl(HttpResult(RecordingsApiClient.NO_RESPONSE, ""))
+                is RecordingsApiClient.UploadUrlResult.Busy,
+        )
+    }
+
     @Test fun `uploadUrl wires injected HttpFns to Ok`() {
         val fake = object : HttpFns {
             override fun postJson(url: String, authToken: String, jsonBody: String): HttpResult {

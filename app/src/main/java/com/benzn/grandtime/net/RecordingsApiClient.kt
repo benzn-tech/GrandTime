@@ -123,7 +123,16 @@ class RecordingsApiClient(
          * server was merely busy.
          */
         data class Busy(val code: Int) : UploadUrlResult
-        data class Error(val message: String) : UploadUrlResult
+        /**
+         * A real response we cannot use. [code] is the HTTP status, or 0 when the response
+         * was 2xx but unusable (malformed body, no recordingId) — those have no status of
+         * their own to report.
+         *
+         * A total absence of response is [Busy], never this. So an Error always means the
+         * server answered and the answer was wrong, which is why the upload path treats it
+         * as ours to fix rather than something waiting will cure.
+         */
+        data class Error(val code: Int, val message: String) : UploadUrlResult
     }
 
     fun uploadUrl(idToken: String, req: UploadUrlReq): UploadUrlResult {
@@ -219,16 +228,16 @@ class RecordingsApiClient(
             if (r.code == 401) return UploadUrlResult.AuthExpired
             if (isTransient(r.code)) return UploadUrlResult.Busy(r.code)
             return runCatching {
-                if (r.code !in 200..299) return@runCatching UploadUrlResult.Error("HTTP ${r.code}: ${r.body}")
+                if (r.code !in 200..299) return@runCatching UploadUrlResult.Error(r.code, "HTTP ${r.code}: ${r.body}")
                 val json = JSONObject(r.body)
                 val recordingId = json.optString("recordingId")
-                if (recordingId.isBlank()) return@runCatching UploadUrlResult.Error("missing recordingId")
+                if (recordingId.isBlank()) return@runCatching UploadUrlResult.Error(0, "missing recordingId")
                 UploadUrlResult.Ok(
                     recordingId = recordingId,
                     uploadUrl = json.optString("uploadUrl"),
                     s3Key = json.optString("s3Key"),
                 )
-            }.getOrElse { UploadUrlResult.Error("malformed response") }
+            }.getOrElse { UploadUrlResult.Error(0, "malformed response") }
         }
     }
 }
