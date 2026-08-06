@@ -17,7 +17,10 @@ import android.util.Size
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -197,9 +200,28 @@ private fun QrScanScaffold(
                 },
                 modifier = Modifier.fillMaxSize(),
             )
-        }
-        Column(Modifier.padding(16.dp)) {
-            Text(status, style = MaterialTheme.typography.titleMedium)
+            // Overlaid on the preview, not placed under it.
+            //
+            // The F2SP screen is 480x640. A 4:3 preview is 360 tall, and with
+            // the app bar above and the nav bar below there is nothing left:
+            // a status line placed after the Box falls off the screen entirely.
+            // Every message this screen produces — "Not a meeting code",
+            // "different build", a sign-in failure — was therefore invisible on
+            // the only hardware that runs it, and a failed scan looked like a
+            // scanner that simply does nothing.
+            //
+            // Bottom of the preview is also where the user is already looking.
+            Text(
+                status,
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            )
         }
     }
 }
