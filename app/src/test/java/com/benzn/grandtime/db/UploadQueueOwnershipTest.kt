@@ -45,7 +45,7 @@ class UploadQueueOwnershipTest {
         createdAt = 0L,
     )
 
-    private val PENDING = setOf("pending", "failed", "uploading")
+    private val PENDING = UNSENT_STATUSES
 
     private fun sweepFor(rows: List<CaptureRecord>, account: String) =
         rows.filter { it.uploadStatus in PENDING && it.authorSub == account }
@@ -139,10 +139,10 @@ private class OwnershipFakeDao : CaptureRecordDao {
         rows.filter { it.uploadStatus in statuses && !it.missing && it.authorSub == authorSub }
 
     override suspend fun countOrphanedPending() =
-        rows.count { it.uploadStatus in setOf("pending", "failed", "uploading") && it.authorSub == null }
+        rows.count { it.uploadStatus in UNSENT_STATUSES && it.authorSub == null }
 
     override suspend fun countPendingForAuthor(authorSub: String) =
-        rows.count { it.uploadStatus in setOf("pending", "failed", "uploading") && it.authorSub == authorSub }
+        rows.count { it.uploadStatus in UNSENT_STATUSES && it.authorSub == authorSub }
 
     // --- everything else is irrelevant here ---
     override suspend fun insert(record: CaptureRecord) { rows.add(record) }
@@ -159,6 +159,48 @@ private class OwnershipFakeDao : CaptureRecordDao {
     override suspend fun markUploadStatus(id: String, status: String) {}
     override suspend fun listByUploadStatus(statuses: List<String>): List<CaptureRecord> =
         rows.filter { it.uploadStatus in statuses }
+    // --- v5 freeze/thaw surface (spec 2026-08-06) ---
+    override suspend fun freeze(id: String, cls: String, code: String, build: String?, sinceMs: Long, now: Long) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(
+            uploadStatus = "frozen", failureClass = cls, failureCode = code,
+            frozenAtBuild = build, frozenSinceMs = sinceMs, lastAttemptAt = now,
+        )
+    }
+    override suspend fun thaw(id: String, creditMs: Long) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(
+            uploadStatus = "pending", failureClass = null, failureCode = null,
+            frozenAtBuild = null, frozenSinceMs = null, frozenCreditMs = creditMs,
+        )
+    }
+    override suspend fun adoptFrozenBuild(id: String, build: String) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(frozenAtBuild = build)
+    }
+    override suspend fun markDead(id: String, cls: String, code: String, now: Long) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(
+            uploadStatus = "dead", failureClass = cls, failureCode = code, lastAttemptAt = now,
+        )
+    }
+    override suspend fun markRetrying(id: String, cls: String, code: String?, now: Long) {
+        val idx = rows.indexOfFirst { it.id == id }
+        if (idx >= 0) rows[idx] = rows[idx].copy(
+            uploadStatus = "retrying", failureClass = cls, failureCode = code, lastAttemptAt = now,
+        )
+    }
+    override suspend fun listFrozen(): List<CaptureRecord> =
+        rows.filter { it.uploadStatus == "frozen" && !it.missing }
+    override suspend fun oldestUnsentStartedAt(): Long? =
+        rows.filter { it.uploadStatus in setOf("pending", "uploading", "retrying", "frozen") && !it.missing }
+            .minOfOrNull { it.startedAt }
+    override suspend fun countDead(): Int = rows.count { it.uploadStatus == "dead" }
+    override suspend fun countUnsent(): Int =
+        rows.count { it.uploadStatus in setOf("pending", "uploading", "retrying") && !it.missing }
+    override suspend fun frozenFingerprints(): List<String> =
+        rows.filter { it.uploadStatus == "frozen" }.mapNotNull { it.failureCode }.distinct()
+
     override fun observeUploadStatusCounts(): Flow<List<CaptureRecordDao.UploadStatusCount>> = flowOf(emptyList())
     override fun observeUploadStatusCountsSince(sinceMs: Long): Flow<List<CaptureRecordDao.UploadStatusCount>> =
         flowOf(emptyList())

@@ -367,10 +367,17 @@ private fun RecordingUploadStatusBadge(unit: RecordingUnit, modifier: Modifier =
     val (symbol, color) = when (status) {
         "uploaded" -> "✓" to fs.successDot
         "uploading" -> "↑" to Color.White
-        "failed" -> "!" to MaterialTheme.colorScheme.error
+        "failed", "retrying" -> "!" to MaterialTheme.colorScheme.error
+        // Held for a fix only the office can make, or gone. Distinct from "!" because "!"
+        // invites a retry and these two cannot be helped by one.
+        "stuck", "frozen", "dead" -> "⏸" to Color(0xFFBDBDBD)
         else -> "…" to Color(0xFFBDBDBD) // pending (or, for a group, any non-uploaded/non-failed mix)
     }
-    val enqueueableIds = unit.segments.filter { it.uploadStatus == "pending" || it.uploadStatus == "failed" }.map { it.id }
+    // Frozen and dead rows are excluded: enqueueing them would spend a request to reach the
+    // same verdict, and the tap would look like it did something.
+    val enqueueableIds = unit.segments
+        .filter { it.uploadStatus == "pending" || it.uploadStatus == "failed" || it.uploadStatus == "retrying" }
+        .map { it.id }
     Row(
         modifier
             .padding(4.dp)

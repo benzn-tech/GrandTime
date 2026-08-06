@@ -229,6 +229,17 @@ fun HomeScreen() {
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
                         )
+                        // Waiting on a fix only the office can make. Shown as a number and
+                        // nothing more: there is no action here for whoever is on site, and
+                        // offering one would be offering nothing. Omitting it entirely would
+                        // be worse — the counts above would simply stop adding up.
+                        if (uploadSummary.stuck > 0) {
+                            Text(
+                                "Held ${uploadSummary.stuck}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     if (uploadSummary.allDone) {
                         Spacer(Modifier.height(8.dp))
