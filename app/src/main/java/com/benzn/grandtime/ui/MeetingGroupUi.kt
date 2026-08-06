@@ -5,7 +5,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.Alignment
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
@@ -44,34 +51,55 @@ fun MeetingCodeDialog(sessionId: String, onDismiss: () -> Unit) {
             SessionGroup.format(sessionId, env = BuildConfig.QR_ENV), sizePx = 512,
         ).asImageBitmap()
     }
-    AlertDialog(
+    // Full screen, not a normal dialog. The F2SP is 480x640 px at 240dpi, so
+    // 320x427 dp of logical space. A default AlertDialog spends ~160dp of that
+    // on title, caption and button before the code gets any, and the code was
+    // then taller than what was left — a QR missing its bottom rows does not
+    // scan, and the failure looks like the other device's camera.
+    //
+    // A Dialog rather than a screen swap so the recording preview underneath is
+    // never torn down: this is shown WHILE recording, from RecordingScreen.
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text("Scan to join this meeting", style = MaterialTheme.typography.titleLarge) },
-        text = {
-            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = "Meeting join code",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .background(Color.White)
-                        .padding(8.dp),
-                )
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Column(
+                Modifier.fillMaxSize().padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Text(
                     "On the other device: Join a meeting",
                     style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 12.dp),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
                 )
+                // weight(1f) — the code takes everything the caption and button
+                // leave, so it is as large as this screen can make it. Bigger is
+                // not cosmetic here: it is what the other camera has to resolve.
+                Box(
+                    Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "Meeting join code",
+                        modifier = Modifier
+                            .aspectRatio(1f)
+                            .background(Color.White)
+                            .padding(6.dp),
+                    )
+                }
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = MaterialTheme.shapes.small,
+                ) { Text("Done", style = MaterialTheme.typography.titleMedium) }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Done", style = MaterialTheme.typography.titleMedium)
-            }
-        },
-    )
+        }
+    }
 }
+
 
 /**
  * Asked after recording stops, and reachable manually.
