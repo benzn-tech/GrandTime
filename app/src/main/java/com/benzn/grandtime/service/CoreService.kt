@@ -236,8 +236,12 @@ class CoreService : LifecycleService() {
                 if (sweepAuthor == null) {
                     probe("startup sweep skipped — no signed-in account to attribute uploads to")
                 } else {
+                    // "frozen" and "dead" are deliberately absent. A frozen record is waiting
+                    // on a fix only the office can make, so sweeping it back onto the queue
+                    // would restart exactly the retry loop the freeze exists to stop — and
+                    // would do it on every boot. Only DeviceStatusWorker thaws.
                     for (rec in dao.listPendingForAuthor(
-                        listOf("pending", "failed", "uploading"), sweepAuthor,
+                        listOf("pending", "failed", "uploading", "retrying"), sweepAuthor,
                     )) {
                         if (java.io.File(rec.filePath).exists()) onDisk.add(rec)
                         else dao.markMissing(listOf(rec.id))   // 已删文件:标 missing,排除出后续扫描

@@ -46,7 +46,11 @@ fun groupIntoRecordingUnits(records: List<CaptureRecord>): List<RecordingUnit> {
  */
 fun RecordingUnit.aggregateUploadStatus(): String = when {
     segments.all { it.uploadStatus == "uploaded" } -> "uploaded"
-    segments.any { it.uploadStatus == "failed" } -> "failed"
+    // Checked before "failed": a recording holding even one segment that no retry can help
+    // must not be offered to the Retry button, which would do nothing and say it did.
+    segments.any { it.uploadStatus == "frozen" || it.uploadStatus == "dead" } -> "stuck"
+    // "failed" is the pre-v5 spelling of "retrying"; both mean another attempt is worth making.
+    segments.any { it.uploadStatus == "retrying" || it.uploadStatus == "failed" } -> "failed"
     else -> "pending"
 }
 
@@ -57,12 +61,14 @@ fun summarizeRecordingUploads(units: List<RecordingUnit>): UploadSummary {
     var uploaded = 0
     var inProgress = 0
     var failed = 0
+    var stuck = 0
     for (unit in units) {
         when (unit.aggregateUploadStatus()) {
             "uploaded" -> uploaded++
             "failed" -> failed++
+            "stuck" -> stuck++
             else -> inProgress++
         }
     }
-    return UploadSummary(uploaded, inProgress, failed)
+    return UploadSummary(uploaded, inProgress, failed, stuck)
 }

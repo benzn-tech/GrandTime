@@ -66,14 +66,14 @@ interface CaptureRecordDao {
     /** Unsent rows that can never be uploaded because their recorder is unknown. Surfaced, not hidden. */
     @Query(
         "SELECT COUNT(*) FROM capture_records WHERE " +
-            "uploadStatus IN ('pending','failed','uploading') AND missing = 0 AND authorSub IS NULL"
+            "uploadStatus IN ('pending','failed','uploading','retrying','frozen') AND missing = 0 AND authorSub IS NULL"
     )
     suspend fun countOrphanedPending(): Int
 
     /** How much this account leaves behind if it signs out now. */
     @Query(
         "SELECT COUNT(*) FROM capture_records WHERE " +
-            "uploadStatus IN ('pending','failed','uploading') AND missing = 0 AND authorSub = :authorSub"
+            "uploadStatus IN ('pending','failed','uploading','retrying','frozen') AND missing = 0 AND authorSub = :authorSub"
     )
     suspend fun countPendingForAuthor(authorSub: String): Int
 
@@ -85,6 +85,64 @@ interface CaptureRecordDao {
 
     @Query("SELECT * FROM capture_records WHERE uploadStatus IN (:statuses) AND missing = 0")
     suspend fun listByUploadStatus(statuses: List<String>): List<CaptureRecord>
+
+    @Query(
+        "UPDATE capture_records SET uploadStatus = 'frozen', failureClass = :cls, " +
+            "failureCode = :code, frozenAtBuild = :build, frozenSinceMs = :sinceMs, " +
+            "lastAttemptAt = :now WHERE id = :id"
+    )
+    suspend fun freeze(id: String, cls: String, code: String, build: String?, sinceMs: Long, now: Long)
+
+    @Query(
+        "UPDATE capture_records SET uploadStatus = 'pending', failureClass = NULL, " +
+            "failureCode = NULL, frozenAtBuild = NULL, frozenSinceMs = NULL, " +
+            "frozenCreditMs = :creditMs WHERE id = :id"
+    )
+    suspend fun thaw(id: String, creditMs: Long)
+
+    @Query("UPDATE capture_records SET frozenAtBuild = :build WHERE id = :id")
+    suspend fun adoptFrozenBuild(id: String, build: String)
+
+    @Query(
+        "UPDATE capture_records SET uploadStatus = 'dead', failureClass = :cls, " +
+            "failureCode = :code, lastAttemptAt = :now WHERE id = :id"
+    )
+    suspend fun markDead(id: String, cls: String, code: String, now: Long)
+
+    @Query(
+        "UPDATE capture_records SET uploadStatus = 'retrying', failureClass = :cls, " +
+            "failureCode = :code, lastAttemptAt = :now WHERE id = :id"
+    )
+    suspend fun markRetrying(id: String, cls: String, code: String?, now: Long)
+
+    @Query("SELECT * FROM capture_records WHERE uploadStatus = 'frozen' AND missing = 0")
+    suspend fun listFrozen(): List<CaptureRecord>
+
+    /** Oldest still-unsent recording, for the ledger's backlog age. Null when nothing waits. */
+    @Query(
+        "SELECT MIN(startedAt) FROM capture_records WHERE " +
+            "uploadStatus IN ('pending','uploading','retrying','frozen') AND missing = 0"
+    )
+    suspend fun oldestUnsentStartedAt(): Long?
+
+    /**
+     * Dead rows for the status probe. Deliberately NOT filtered on `missing`: a vanished
+     * file is invisible on the device by design, but the ledger must still hear about it.
+     */
+    @Query("SELECT COUNT(*) FROM capture_records WHERE uploadStatus = 'dead'")
+    suspend fun countDead(): Int
+
+    @Query(
+        "SELECT COUNT(*) FROM capture_records WHERE " +
+            "uploadStatus IN ('pending','uploading','retrying') AND missing = 0"
+    )
+    suspend fun countUnsent(): Int
+
+    @Query(
+        "SELECT DISTINCT failureCode FROM capture_records " +
+            "WHERE uploadStatus = 'frozen' AND failureCode IS NOT NULL"
+    )
+    suspend fun frozenFingerprints(): List<String>
 
     @Query("SELECT uploadStatus AS status, COUNT(*) AS n FROM capture_records WHERE missing = 0 GROUP BY uploadStatus")
     fun observeUploadStatusCounts(): Flow<List<UploadStatusCount>>
