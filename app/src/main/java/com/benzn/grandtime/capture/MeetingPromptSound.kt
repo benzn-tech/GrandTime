@@ -24,17 +24,43 @@ import android.os.Vibrator
  */
 class MeetingPromptSound(private val context: Context) {
 
-    /** 0 when no voice line is bundled. */
-    private val voiceResId: Int = context.resources.getIdentifier(
-        "meeting_prompt", "raw", context.packageName,
-    )
+    /**
+     * TWO lines, because there are two situations and they are not the same
+     * question.
+     *
+     * `meeting_prompt` — this device stopped, and nobody has said whether the
+     * meeting is over. It ASKS.
+     *
+     * `meeting_ended` — someone else already ended the meeting and this device
+     * was stopped for them. It TELLS. Asking here would invite an answer to a
+     * question that is already settled, and it would contradict the screen,
+     * which is offering to start a fresh recording rather than asking about the
+     * meeting at all.
+     *
+     * Both resolved by NAME so either can be dropped in later without a code
+     * change, and a missing one degrades to vibration rather than silence.
+     */
+    private fun res(name: String): Int =
+        context.resources.getIdentifier(name, "raw", context.packageName)
 
-    val hasVoiceLine: Boolean get() = voiceResId != 0
+    private val askResId: Int = res("meeting_prompt")
+    private val endedResId: Int = res("meeting_ended")
+
+    val hasVoiceLine: Boolean get() = askResId != 0
 
     private var player: MediaPlayer? = null
 
-    /** @return true if the spoken line played; false if it fell back to vibration. */
-    fun play(): Boolean {
+    /** Ask whether the meeting has ended. @return true if the line played. */
+    fun play(): Boolean = speak(askResId)
+
+    /**
+     * Say that the meeting was ended elsewhere. Falls back to the asking line
+     * only if it is the only one bundled — a slightly wrong sentence beats
+     * silence when the device has just stopped on its own.
+     */
+    fun playEnded(): Boolean = speak(if (endedResId != 0) endedResId else askResId)
+
+    private fun speak(voiceResId: Int): Boolean {
         if (voiceResId == 0) {
             vibrate()
             return false

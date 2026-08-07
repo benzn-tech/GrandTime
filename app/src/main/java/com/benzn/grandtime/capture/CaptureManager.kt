@@ -272,7 +272,10 @@ class CaptureManager(
                 execute(core.onAction(KeyAction.END_AUDIO))
             CaptureState.Idle -> Unit
         }
-        runCatching { meetingPromptSound.play() }
+        // The ENDED line, not the asking one: the meeting is already over,
+        // and the screen behind this is offering a fresh recording rather
+        // than asking about the meeting.
+        runCatching { meetingPromptSound.playEnded() }
         // Asked rather than assumed: ending a meeting is not finishing work.
         AppState.meetingResumePrompt.value = true
     }
