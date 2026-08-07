@@ -66,7 +66,7 @@ class CaptureManager(
     private val torch = TorchController(context, pipeline)
     private val volume = VolumeCycler(context)
     private val storage = MediaStorage({ MediaStorage.publicRoot(context) }, scopeProvider = { AppState.mediaScope.value })
-    private val sounds = CaptureSounds()
+    private val sounds = CaptureSounds(context)
     private val gps = GpsTracker(context)
     private val sessionsApi = com.benzn.grandtime.net.SessionsApiClient(com.benzn.grandtime.BuildConfig.ORG_API_BASE_URL)
 
@@ -720,7 +720,8 @@ class CaptureManager(
         audioResumeIndex = audio.lastSegmentIndex + 1
         // 暂停期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
         if (!pipeline.isRecording) pipeline.release()
-        sounds.stopRecording()
+        // Pause, not stop: the session stays open and a resume continues it.
+        sounds.stopRecording(speak = false)
     }
 
     /** Resume: restart the recorder continuing the SAME session at the next segment index — no
