@@ -186,7 +186,7 @@ showing the current take and a live dBFS meter so the operator can see the mic i
 alive without having to interact between takes (posture must not change mid-run).
 
 Output goes to a single timestamped folder in external storage:
-`probe_{NN}_{configName}_{sampleRate}.wav`, a sibling `.json` per take with the
+`probe_{run}_{NN}_{configName}_{sampleRate}.wav`, a sibling `.json` per take with the
 `OpenedMic` report and measured peak/RMS, and one `capabilities.json`.
 
 **The probe writes local files only.** It does not insert Room rows, does not
@@ -227,10 +227,25 @@ from a loudspeaker.
 
 **Setup.** A speaker (or second phone) playing a fixed clip, on a taped floor mark,
 ~3 m from a second taped mark where the operator stands. Device worn in its normal
-chest position. The clip is 8 s of clean speech followed by 7 s of the real
-2026-08-07 site conversation (`c0002`, 18–23 s, looped) — the clean half answers
-"does the noise suppressor damage speech", the site half answers "does this help
-on our actual material".
+chest position.
+
+**The playback material must be homogeneous, and there are two runs.** The speaker
+loops freely and is not synchronised to the start of a take, so a clip that changed
+character partway through would feed different content to the same analysis window
+in different takes — take 1's "0–5 s" window could contain clean speech while take
+2's contained site conversation, and the six takes would no longer be comparable at
+the few-dB resolution this decision needs. Each source is therefore a single kind of
+speech, 60 s long so that any 15 s take is fully covered without alignment:
+
+- **Run A — `A_clean_speech_60s.wav`**: clean produced speech (the app's own recorded
+  voice lines, concatenated with even spacing), −18.2 dBFS, no clipping. Answers
+  *does the noise suppressor damage speech.*
+- **Run B — `B_site_conversation_60s.wav`**: the real 2026-08-07 site conversation
+  (`c0002`, 18–25 s), high-passed at 120 Hz and loudness-normalised, −19.6 dBFS.
+  Answers *does this help on our actual material.*
+
+All six takes run against A, then all six against B. Twelve takes, ~6 minutes of
+recording. Comparisons are only ever made within a run.
 
 **Each 15 s take, identically:**
 
@@ -242,7 +257,12 @@ on our actual material".
 
 Between takes: do not change clothing, move the speaker, adjust its volume, or
 shift the device. The app runs all six takes without operator input for exactly
-this reason.
+this reason. Between runs A and B only the playback file changes; the speaker,
+its volume, and both floor marks stay put.
+
+The probe therefore takes a run label (A or B) before starting, and writes it into
+every filename and metadata record, so a mislabelled run cannot be silently
+compared against the wrong baseline.
 
 ## Decision criteria
 
