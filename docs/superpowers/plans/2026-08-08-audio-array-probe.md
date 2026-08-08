@@ -620,7 +620,7 @@ Behaviour must not change. `AskRecorder` calls `start(file)` and is not touched.
 
 **Interfaces:**
 - Consumes: `AudioCaptureConfig.DEFAULT_STANDALONE` (Task 1), `openMic`, `OpenedMic` (Task 3).
-- Produces: `AudioRecorder.start(file, segmentBytes, overlapBytes, startIndex, clockMs, nextFile, onSegment, config)` — `config` is the new trailing parameter defaulting to `AudioCaptureConfig.DEFAULT_STANDALONE`; `AudioRecorder.lastReportJson: String?` for the probe.
+- Produces: `AudioRecorder.start(file, segmentBytes, overlapBytes, startIndex, clockMs, nextFile, onSegment, config)` — `config` is the new trailing parameter defaulting to `AudioCaptureConfig.DEFAULT_STANDALONE`. Nothing else is produced — see Step 1 for why there is deliberately no `lastReportJson` field.
 
 - [ ] **Step 1: Add the config parameter and the opened-mic field**
 
