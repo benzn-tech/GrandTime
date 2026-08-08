@@ -1,13 +1,13 @@
 """Turn a pulled AudioProbe folder into the decision table.
 
-Usage:  python tools/audio_probe_analysis.py <folder-with-block-S> <folder-with-block-F>
+Usage:  python tools/audio_probe_analysis.py <folder-with-block-S> <folder-with-block-F> [folder-with-block-N]
 
 Criteria (docs/superpowers/specs/2026-08-08-audio-array-probe-design.md):
   1. SNR improves by >= 6 dB over take 1
   2. speech-band/full-band ratio drops by < 3 dB vs take 1
-  3. clipping fraction < 0.1 %
+  3. clipping fraction < 0.1 %, over blocks S and N (block N is optional here -- see below)
   4. (block N, judged separately) the counting phrase transcribes no worse than baseline
-The run is void unless take 10 reproduces take 1 within 2 dB.
+The run is void unless take 10 reproduces take 1 within 2 dB (on SNR AND level).
 
 Output is deliberately ASCII only: this runs on a GBK console where non-ASCII prints as mojibake.
 """
@@ -76,7 +76,10 @@ def takes(folder):
             else:
                 rec["sr"] = sr
                 rec["speech"] = db(band_rms(d, sr, *SPEECH_BAND))
-                rec["full"] = db(band_rms(d, sr, 20, sr // 2))
+                # Capped at 8000 Hz (the 16 kHz baseline's Nyquist) so every take's shape criterion
+                # is computed over the SAME denominator band -- otherwise the 44.1 kHz takes get a
+                # wider 20..22050 Hz denominator and criterion 2 partly measures sample rate.
+                rec["full"] = db(band_rms(d, sr, 20, min(sr // 2, 8000)))
                 if sr > 16000:
                     rec["mid"] = db(band_rms(d, sr, 4000, 8000))
                     rec["hf"] = db(band_rms(d, sr, 8000, min(sr // 2, 16000)))
@@ -88,6 +91,7 @@ def main():
         print(__doc__)
         return 1
     S, F = takes(sys.argv[1]), takes(sys.argv[2])
+    N = takes(sys.argv[3]) if len(sys.argv) > 3 else None
     if not S or not F:
         print("no takes found - check the folder paths")
         return 1
@@ -105,24 +109,36 @@ def main():
     b_snr = S[base]["speech"] - F[base]["speech"]
     b_shape = S[base]["speech"] - S[base]["full"]
 
+    if N is None:
+        print("(criterion 3 clipping: block N not supplied -- only S/F clipping checked, the spec")
+        print(" names S/N; pass a third folder argument to also check block N)")
     print("%2s %-16s%6s%9s%9s%8s%7s%8s%7s  %s" % (
         "#", "config", "rate", "speech", "noise", "SNR", "dSNR", "dShape", "clip%", "verdict"))
     for idx in sorted(S):
         t = S[idx]
-        if t["error"] or idx not in F or F[idx]["error"] or F[idx]["speech"] is None:
+        if t["error"] or t["speech"] is None or idx not in F or F[idx]["error"] or F[idx]["speech"] is None:
             why = t["error"] or (F.get(idx, {}).get("error")) or "missing in the other block"
             print("%2d %-16s%6d  %s" % (idx, t["name"], t["rate"], "NOT MEASURED: " + str(why)))
             continue
         snr = t["speech"] - F[idx]["speech"]
         shape = t["speech"] - t["full"]
         d_snr, d_shape = snr - b_snr, shape - b_shape
-        clip = max(t["clip"], F[idx]["clip"]) * 100
+        clip_frac = max(t["clip"], F[idx]["clip"])
+        if N is not None and idx in N and N[idx]["error"] is None:
+            clip_frac = max(clip_frac, N[idx]["clip"])
+        clip = clip_frac * 100
         verdict = "PASS" if (d_snr >= 6.0 and d_shape > -3.0 and clip < 0.1) else ""
         if idx == base:
             verdict = "baseline"
         if idx == 10:
-            drift = abs(d_snr)
-            verdict = "control drift %.1f dB" % drift + ("" if drift <= 2.0 else "  *** RUN VOID ***")
+            # Spec voids the run on EITHER SNR drift or level drift: a scene change that moves
+            # speech and friction together (e.g. everyone stepped back) cancels in SNR but shows
+            # up as a level shift, and would otherwise pass this control unnoticed.
+            snr_drift = abs(d_snr)
+            level_drift = abs(t["full"] - S[base]["full"])
+            void = snr_drift > 2.0 or level_drift > 2.0
+            verdict = "control drift SNR %.1f dB, level %.1f dB" % (snr_drift, level_drift) + (
+                "  *** RUN VOID ***" if void else "")
 
         short_bits = []
         p = short_tag(t)

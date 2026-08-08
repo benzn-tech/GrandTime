@@ -1,11 +1,8 @@
 package com.benzn.grandtime.capture
 
 import android.content.Context
-import android.media.AudioFormat
 import android.media.AudioRecord
-import android.media.MediaRecorder
 import java.io.File
-import java.io.IOException
 import kotlin.concurrent.thread
 
 /** Standalone recorder: WAV 16 kHz mono 16-bit PCM (the pipeline ingests .wav). Public

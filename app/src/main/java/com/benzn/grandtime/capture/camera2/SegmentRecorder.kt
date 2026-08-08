@@ -2,13 +2,11 @@ package com.benzn.grandtime.capture.camera2
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import android.media.MediaRecorder
 import android.view.Surface
 import com.benzn.grandtime.capture.AudioCaptureConfig
 import com.benzn.grandtime.capture.OpenedMic
@@ -182,6 +180,7 @@ class SegmentRecorder(private val context: Context, private val probe: (String) 
                 probe("音频启动失败(paused),本段降为纯视频")
                 audioEnabled = false
                 runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
+                runCatching { audioOpened?.stopAndRelease() }; audioOpened = null
                 audioRecord = null; audioCodec = null
             }
             return

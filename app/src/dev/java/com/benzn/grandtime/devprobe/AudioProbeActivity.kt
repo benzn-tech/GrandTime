@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /**
  * Dev-only. Runs one block of the probe per press and writes the takes to app-specific storage.
@@ -96,7 +97,7 @@ class AudioProbeActivity : ComponentActivity() {
                             val dir = runCatching {
                                 runner.runBlock(block) { take, dbfs ->
                                     status = "Block ${block.label} — take ${take.index} " +
-                                        "${take.name}: %.1f dBFS".format(dbfs)
+                                        "${take.name}: %.1f dBFS".format(Locale.US, dbfs)
                                 }
                             }
                             running = false

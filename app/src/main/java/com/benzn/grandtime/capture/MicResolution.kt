@@ -1,6 +1,7 @@
 package com.benzn.grandtime.capture
 
 import android.media.AudioDeviceInfo
+import java.util.Locale
 
 /** A flattened AudioDeviceInfo, so the selection decision can be tested without a device. */
 data class InputDevice(
@@ -37,7 +38,7 @@ fun jsonString(value: String): String {
             '\n' -> sb.append("\\n")
             '\r' -> sb.append("\\r")
             '\t' -> sb.append("\\t")
-            else -> if (c < ' ') sb.append("\\u%04x".format(c.code)) else sb.append(c)
+            else -> if (c < ' ') sb.append("\\u%04x".format(Locale.US, c.code)) else sb.append(c)
         }
     }
     sb.append('"')
