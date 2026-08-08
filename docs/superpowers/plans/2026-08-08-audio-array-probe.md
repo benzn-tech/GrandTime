@@ -16,7 +16,14 @@
 - **No Google Play Services.**
 - Build with `JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"`.
 - **Work in the worktree `C:/gt-audio-probe`** (branch `feat/audio-array-probe`, off `origin/main`), not in the Dropbox checkout. Gradle occasionally fails with `Could not delete '...build...'` — rerun once, it is not a real failure.
-- Unit tests: `./gradlew testProdDebugUnitTest` and `./gradlew testDevDebugUnitTest`.
+- **`local.properties` already exists in the worktree** (copied from the Dropbox checkout, since it is gitignored and worktrees do not inherit ignored files) and contains
+  `sdk.dir=C\:\\Users\\camil\\AppData\\Local\\Android\\Sdk`. `ANDROID_HOME` is not set on this
+  machine, so without that file every gradle command fails with `SDK location not found`. If it
+  goes missing, copy it again rather than retyping it — naive single backslashes produce a
+  cryptic `java.io.IOException` about invalid path syntax.
+- **The repo is CRLF throughout** (`core.autocrlf=true`). Use the Edit tool for the before/after
+  replacements in Tasks 4–5; any scripted replacement must normalise line endings first.
+- Unit tests: `./gradlew testProdDebugUnitTest` (481 existing cases) and `./gradlew testDevDebugUnitTest`.
 - **The probe must never upload.** No Room writes, no WorkManager enqueue, no recordings API call.
 - **Prod behaviour must not change in this plan.** Every default reproduces today's values; changing them happens after measurement.
 
@@ -583,7 +590,7 @@ object MicCapabilities {
 cd /c/gt-audio-probe && ./gradlew compileProdDebugKotlin testProdDebugUnitTest
 ```
 
-Expected: BUILD SUCCESSFUL, all existing tests pass (163 before this plan; Tasks 1–2 add 11).
+Expected: BUILD SUCCESSFUL, all tests pass — 481 existing cases plus the 11 added by Tasks 1–2.
 
 - [ ] **Step 4: Commit**
 
@@ -614,16 +621,11 @@ In `AudioRecorder.kt`, replace the field declaration block (currently `private v
     private var opened: OpenedMic? = null
 ```
 
-and delete the now-unused `import android.media.AudioRecord` only if no other reference remains
-(the segmented worker signatures take `rec: AudioRecord`, so the import stays).
+Keep `import android.media.AudioRecord` — the segmented worker signatures still take
+`rec: AudioRecord`.
 
-Add below `val isRecording`:
-
-```kotlin
-    /** The last openMic report, for the dev probe. Null until start() has succeeded once. */
-    var lastReportJson: String? = null
-        private set
-```
+Do **not** add a `lastReportJson` field. The probe calls `openMic` directly and would never read
+it, so it would be dead code written off the caller thread without synchronisation.
 
 Change the `start` signature by appending one parameter:
 
@@ -656,12 +658,6 @@ with:
         opened = om
         val rec = om.record
         val buf = om.bufferBytes
-```
-
-Then, immediately after `rec.startRecording()`, add:
-
-```kotlin
-        lastReportJson = om.reportJson() // routing facts are only true once recording has started
 ```
 
 - [ ] **Step 3: Replace the two release paths**
@@ -775,9 +771,10 @@ Replace `buildMic()`:
     private fun buildMic(): OpenedMic = openMic(context, AudioCaptureConfig.DEFAULT_VIDEO)
 ```
 
-- [ ] **Step 3: Update the three call sites**
+- [ ] **Step 3: Update the construction call site**
 
-In `prepare()`, replace:
+In **`setupAudio()`** (not `prepare()` — the text below is unique, but look in the right method),
+replace:
 
 ```kotlin
         audioRecord = try {
@@ -847,18 +844,69 @@ with:
             true
 ```
 
-- [ ] **Step 4: Release through the OpenedMic in the stop path**
+- [ ] **Step 4: Release through the OpenedMic in `stop()` — as ONE edit, not two**
 
-Find the terminal audio cleanup in `stop()` (the `audioRecord?.stop()` / `release()` pair) and
-replace it with:
+`stop()` deliberately splits stopping from releasing, and collapsing them would reintroduce the
+use-after-release the existing comments were written to prevent. **Leave the `stop()` call where
+it is.** Only the release moves.
+
+Do **not** touch this line:
 
 ```kotlin
-        runCatching { audioOpened?.stopAndRelease() }
-        audioOpened = null
-        audioRecord = null
+        runCatching { audioRecord?.stop() }              // 先停录音,解开可能阻塞的 read
 ```
 
-- [ ] **Step 5: Pass the Context at the one construction site**
+It runs *before* `audioThread?.join(2500)` so a blocked `read()` can unblock. Replace only this
+later line, which runs *after* the joins:
+
+```kotlin
+        runCatching { audioRecord?.release() }            // release 放到 join 之后,避免 use-after-release
+```
+
+with:
+
+```kotlin
+        runCatching { audioOpened?.stopAndRelease() }      // release 放到 join 之后,避免 use-after-release
+        audioOpened = null
+```
+
+`audioRecord = null` is already handled a few lines below (`audioRecord = null; audioCodec = null`)
+— do not add another.
+
+- [ ] **Step 5: Release through the OpenedMic in the two `setupAudio()` failure paths**
+
+These two also release the record directly. Left alone, they would strand `audioOpened` holding a
+released record with live app-created effects — the exact defect this task exists to prevent, and
+the first path runs on every segment rollover during a Site Voice handover.
+
+In the `startAudioPaused` branch, replace:
+
+```kotlin
+                runCatching { audioRecord?.release() } // free the mic setupAudio() built; loop is silent
+                audioRecord = null
+```
+
+with:
+
+```kotlin
+                runCatching { audioOpened?.stopAndRelease() } // free the mic setupAudio() built; loop is silent
+                audioOpened = null
+                audioRecord = null
+```
+
+In the audio-start-failure branch, replace:
+
+```kotlin
+            runCatching { audioRecord?.stop() }; runCatching { audioRecord?.release() }
+```
+
+with:
+
+```kotlin
+            runCatching { audioOpened?.stopAndRelease() }; audioOpened = null
+```
+
+- [ ] **Step 6: Pass the Context at the one construction site**
 
 There is exactly one, `app/src/main/java/com/benzn/grandtime/capture/camera2/Camera2Pipeline.kt:213`.
 `Camera2Pipeline` already holds `private val context: Context` (line 29), so use that field —
@@ -884,7 +932,7 @@ cd /c/gt-audio-probe && grep -rn "SegmentRecorder(" app/src/main/java --include=
 
 Expected: only the declaration in `SegmentRecorder.kt` and the line just edited.
 
-- [ ] **Step 6: Guard the rate coupling and build**
+- [ ] **Step 7: Guard the rate coupling and build**
 
 Add to `SegmentRecorder`'s companion, directly under `AUDIO_SAMPLE_RATE`:
 
@@ -906,7 +954,7 @@ cd /c/gt-audio-probe && ./gradlew compileProdDebugKotlin compileDevDebugKotlin t
 
 Expected: BUILD SUCCESSFUL, all tests PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add app/src/main/java/com/benzn/grandtime/capture/camera2/SegmentRecorder.kt \
@@ -1245,14 +1293,19 @@ class ProbeRunner(private val context: Context) {
             runCatching { recordTake(block, take, seconds, dir, onProgress) }
                 .onFailure { e ->
                     // A configuration this board refuses is a result, not a crash. Record why and
-                    // carry on, so one unsupported take cannot cost the whole block.
-                    File(dir, "probe_${block.label}_%02d_%s.json".format(take.index, take.name))
-                        .writeText(jsonObject(listOf(
-                            "block" to jsonString(block.label),
-                            "index" to "${take.index}",
-                            "name" to jsonString(take.name),
-                            "error" to jsonString(e.message ?: e.javaClass.simpleName),
-                        )))
+                    // carry on, so one unsupported take cannot cost the whole block. Same base name
+                    // as a successful take (rate included) so the analysis finds it — a refusal
+                    // that never reaches the table would read as "not tested".
+                    val base = "probe_${block.label}_%02d_%s_%d".format(
+                        take.index, take.name, take.config.sampleRate
+                    )
+                    File(dir, "$base.json").writeText(jsonObject(listOf(
+                        "block" to jsonString(block.label),
+                        "index" to "${take.index}",
+                        "name" to jsonString(take.name),
+                        "rate" to "${take.config.sampleRate}",
+                        "error" to jsonString(e.message ?: e.javaClass.simpleName),
+                    )))
                 }
             delay(gapMs)
         }
@@ -1405,6 +1458,11 @@ class AudioProbeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A block runs ~2.2 minutes with the operator forbidden to touch the device. If the screen
+        // timed out this activity would leave the foreground, and on API 33 a backgrounded app's
+        // AudioRecord is silenced — later takes would record digital zeros with no error at all,
+        // poisoning the comparison invisibly.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -1558,20 +1616,23 @@ Create `tools/audio_probe_analysis.py`:
 ```python
 """Turn a pulled AudioProbe folder into the decision table.
 
-Usage:  python tools/audio_probe_analysis.py <folder-with-block-S> <folder-with-block-F> [<folder-with-block-N>]
+Usage:  python tools/audio_probe_analysis.py <folder-with-block-S> <folder-with-block-F>
 
 Criteria (docs/superpowers/specs/2026-08-08-audio-array-probe-design.md):
   1. SNR improves by >= 6 dB over take 1
   2. speech-band/full-band ratio drops by < 3 dB vs take 1
   3. clipping fraction < 0.1 %
-  4. (block N, checked separately) the counting phrase transcribes no worse than baseline
-The run is void unless take 10 reproduces take 1 within 2 dB on both SNR and level.
+  4. (block N, judged separately) the counting phrase transcribes no worse than baseline
+The run is void unless take 10 reproduces take 1 within 2 dB.
+
+Output is deliberately ASCII only: this runs on a GBK console where non-ASCII prints as mojibake.
 """
 import glob, json, os, re, sys, wave
 import numpy as np
 
 ROLL_IN_S = 2.0          # discard while AGC converges
 SPEECH_BAND = (300, 3400)
+NAME_RE = re.compile(r"probe_([SFN])_(\d\d)_([a-z0-9_]+)_(\d+)\.(wav|json)$")
 
 def load(path):
     with wave.open(path, "rb") as w:
@@ -1580,34 +1641,41 @@ def load(path):
     return sr, d[int(ROLL_IN_S * sr):]
 
 def band_rms(d, sr, lo, hi):
+    """Band-limited RMS. The Hann window costs a constant ~4.3 dB of coherent gain, so these
+    absolute values sit below the per-take dBFS in the JSON. Every criterion is a delta between
+    two numbers computed this same way, so the bias cancels -- do not 'reconcile' the two."""
     if len(d) < 1024:
         return 1e-12
     f = np.fft.rfft(d * np.hanning(len(d)))
     fr = np.fft.rfftfreq(len(d), 1 / sr)
     m = (fr >= lo) & (fr < hi)
-    # Parseval: band energy back to an equivalent time-domain RMS
     return float(np.sqrt((np.abs(f[m]) ** 2).sum() / (len(d) * len(d) / 2)))
 
 def db(x):
     return 20 * np.log10(max(float(x), 1e-12))
 
 def takes(folder):
+    """Every take in a block, keyed by index -- including takes that only produced an error JSON,
+    which is how a configuration the board refused stays visible instead of reading as untested."""
     out = {}
-    for p in sorted(glob.glob(os.path.join(folder, "probe_*_*.wav"))):
-        m = re.search(r"probe_([SFN])_(\d\d)_([a-z0-9_]+)_(\d+)\.wav$", os.path.basename(p))
+    for p in sorted(glob.glob(os.path.join(folder, "probe_*.json"))):
+        m = NAME_RE.search(os.path.basename(p))
         if not m:
             continue
-        idx = int(m.group(2))
-        sr, d = load(p)
-        meta_path = p[:-4] + ".json"
-        meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
-        out[idx] = dict(
-            name=m.group(3), rate=int(m.group(4)), sr=sr, data=d, meta=meta,
-            speech=db(band_rms(d, sr, *SPEECH_BAND)),
-            full=db(band_rms(d, sr, 20, sr // 2)),
-            clip=float(meta.get("clippedFraction", 0.0)),
-            hf=db(band_rms(d, sr, 8000, min(sr // 2, 22050))) if sr > 16000 else None,
-        )
+        meta = json.load(open(p))
+        rec = dict(name=m.group(3), rate=int(m.group(4)), meta=meta,
+                   error=meta.get("error"), speech=None, full=None, hf=None, mid=None,
+                   clip=float(meta.get("clippedFraction", 0.0)))
+        wav = p[:-5] + ".wav"
+        if rec["error"] is None and os.path.exists(wav):
+            sr, d = load(wav)
+            rec["sr"] = sr
+            rec["speech"] = db(band_rms(d, sr, *SPEECH_BAND))
+            rec["full"] = db(band_rms(d, sr, 20, sr // 2))
+            if sr > 16000:
+                rec["mid"] = db(band_rms(d, sr, 4000, 8000))
+                rec["hf"] = db(band_rms(d, sr, 8000, min(sr // 2, 16000)))
+        out[int(m.group(2))] = rec
     return out
 
 def main():
@@ -1616,46 +1684,73 @@ def main():
         return 1
     S, F = takes(sys.argv[1]), takes(sys.argv[2])
     if not S or not F:
-        print("no takes found — check the folder paths")
+        print("no takes found - check the folder paths")
         return 1
 
     base = 1
+    if base not in S or base not in F or S[base]["speech"] is None or F[base]["speech"] is None:
+        print("take 1 (the baseline) is missing or failed in block S or F -- every criterion is")
+        print("relative to it, so there is nothing to compare against. Re-record the run.")
+        for label, src in (("S", S), ("F", F)):
+            e = src.get(base, {}).get("error")
+            if e:
+                print("  block %s take 1 error: %s" % (label, e))
+        return 1
+
     b_snr = S[base]["speech"] - F[base]["speech"]
     b_shape = S[base]["speech"] - S[base]["full"]
 
-    print(f"{'#':>2} {'config':<16}{'rate':>6}{'speech':>9}{'noise':>9}{'SNR':>8}"
-          f"{'dSNR':>7}{'dShape':>8}{'clip%':>7}  verdict")
+    print("%2s %-16s%6s%9s%9s%8s%7s%8s%7s  %s" % (
+        "#", "config", "rate", "speech", "noise", "SNR", "dSNR", "dShape", "clip%", "verdict"))
     for idx in sorted(S):
-        if idx not in F:
-            print(f"{idx:>2} {S[idx]['name']:<16} MISSING in block F")
+        t = S[idx]
+        if t["error"] or idx not in F or F[idx]["error"] or F[idx]["speech"] is None:
+            why = t["error"] or (F.get(idx, {}).get("error")) or "missing in the other block"
+            print("%2d %-16s%6d  %s" % (idx, t["name"], t["rate"], "NOT MEASURED: " + str(why)))
             continue
-        snr = S[idx]["speech"] - F[idx]["speech"]
-        shape = S[idx]["speech"] - S[idx]["full"]
+        snr = t["speech"] - F[idx]["speech"]
+        shape = t["speech"] - t["full"]
         d_snr, d_shape = snr - b_snr, shape - b_shape
-        clip = max(S[idx]["clip"], F[idx]["clip"]) * 100
-        ok = d_snr >= 6.0 and d_shape > -3.0 and clip < 0.1
-        verdict = "PASS" if ok else ""
+        clip = max(t["clip"], F[idx]["clip"]) * 100
+        verdict = "PASS" if (d_snr >= 6.0 and d_shape > -3.0 and clip < 0.1) else ""
         if idx == base:
             verdict = "baseline"
         if idx == 10:
             drift = abs(d_snr)
-            verdict = f"control drift {drift:.1f} dB" + ("" if drift <= 2.0 else "  *** RUN VOID ***")
-        print(f"{idx:>2} {S[idx]['name']:<16}{S[idx]['rate']:>6}{S[idx]['speech']:>9.1f}"
-              f"{F[idx]['speech']:>9.1f}{snr:>8.1f}{d_snr:>+7.1f}{d_shape:>+8.1f}{clip:>7.3f}  {verdict}")
+            verdict = "control drift %.1f dB" % drift + ("" if drift <= 2.0 else "  *** RUN VOID ***")
+        print("%2d %-16s%6d%9.1f%9.1f%8.1f%+7.1f%+8.1f%7.3f  %s" % (
+            idx, t["name"], t["rate"], t["speech"], F[idx]["speech"], snr, d_snr, d_shape, clip, verdict))
 
-    print("\n44.1 kHz takes — energy above 8 kHz (a 16 kHz capture upsampled to 44.1 k shows none):")
-    for idx in sorted(S):
-        if S[idx]["rate"] > 16000:
-            hf = S[idx]["hf"]
-            print(f"  {idx:>2} {S[idx]['name']:<16} {hf:>7.1f} dBFS"
-                  f"   {'genuine 44.1k' if hf > -90 else 'LIKELY UPSAMPLED FROM 16k'}")
+    print("")
+    print("44.1 kHz takes -- really wideband, or 16 kHz upsampled?")
+    print("Judged against take 7 (MIC @44.1k), a genuine wideband capture from the same board in")
+    print("the same scene. An absolute threshold does not work (resampler imaging measures around")
+    print("-77 dBFS), and neither does an in-take band ratio: these recordings have almost no")
+    print("4-8 kHz content to use as a reference, so that would be noise compared against noise.")
+    ref = S.get(7)
+    if ref is None or ref.get("hf") is None:
+        print("  take 7 is missing or failed -- no reference, so this cannot be judged.")
+    elif ref["hf"] <= -100:
+        print("  take 7 itself has no energy above 8 kHz (%.1f dBFS): the scene carries nothing up"
+              % ref["hf"])
+        print("  there, so upsampling is INCONCLUSIVE from this run rather than ruled out.")
+    else:
+        print("  reference: take 7 %s, 8-16 kHz = %.1f dBFS" % (ref["name"], ref["hf"]))
+        for idx in sorted(S):
+            t = S[idx]
+            if idx == 7 or t["rate"] <= 16000 or t.get("hf") is None:
+                continue
+            rel = t["hf"] - ref["hf"]
+            tag = "LIKELY UPSAMPLED FROM 16k" if rel < -20 else "wideband"
+            print("  %2d %-16s 8-16k %7.1f dBFS  %+6.1f dB vs take 7  %s" % (
+                idx, t["name"], t["hf"], rel, tag))
 
-    print("\nerrors reported by the device:")
-    for src, label in ((S, "S"), (F, "F")):
-        for idx in sorted(src):
-            err = src[idx]["meta"].get("error")
-            if err:
-                print(f"  block {label} take {idx} {src[idx]['name']}: {err}")
+    errs = [(lbl, i, src[i]) for lbl, src in (("S", S), ("F", F)) for i in sorted(src) if src[i]["error"]]
+    if errs:
+        print("")
+        print("configurations this board refused:")
+        for lbl, i, t in errs:
+            print("  block %s take %2d %-16s %s" % (lbl, i, t["name"], t["error"]))
 
     return 0
 
@@ -1704,7 +1799,15 @@ normal chest position. Copy `Dropbox/temp/fieldsight-audio/probe-source/A_clean_
 to the playback device and set a volume that is comfortably audible at the operator's mark. **Do
 not move or re-level anything for the rest of the run.**
 
-- [ ] **Step 3: Record the three blocks**
+- [ ] **Step 3: Confirm the mic-busy guard actually fires**
+
+Thirty seconds, because the guard is a claim this plan has not measured. Start a normal recording
+in the prod app, then press *Run block S* in `AudioProbe`. Expected: it refuses with "Mic is
+busy". If it runs anyway, `getActiveRecordingConfigurations()` does not see across packages here —
+note that, stop the prod recording, and treat "nothing else is recording" as an operator
+responsibility for the rest of the session. Delete whatever that trial wrote before continuing.
+
+- [ ] **Step 4: Record the three blocks**
 
 Open `AudioProbe`, grant the microphone, then, without changing clothing, posture or speaker
 placement between blocks:
@@ -1715,7 +1818,7 @@ placement between blocks:
 3. **Block N** — playback still stopped, press *Run block N*, and say "one two three four five six
    seven eight nine ten" once per take, at a steady pace, following the on-screen take counter.
 
-- [ ] **Step 4: Pull the results**
+- [ ] **Step 5: Pull the results**
 
 ```bash
 ADB="$LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
@@ -1725,7 +1828,7 @@ MSYS_NO_PATHCONV=1 "$ADB" pull //sdcard/Android/data/com.benzn.grandtime.dev/fil
   /c/Users/camil/Dropbox/temp/fieldsight-audio/probe-results
 ```
 
-- [ ] **Step 5: Score it**
+- [ ] **Step 6: Score it**
 
 ```bash
 cd /c/gt-audio-probe
@@ -1738,7 +1841,7 @@ Check the control line first: if take 10 drifted more than 2 dB from take 1, **t
 re-record rather than reading the table. Then read `capabilities.json` for the fitted microphone
 part (`description`), which determines whether this unit is the −41 or the −26 dBFS/Pa variant.
 
-- [ ] **Step 6: Report, then decide**
+- [ ] **Step 7: Report, then decide**
 
 Post the table. Adopting a winner is a separate change — `DEFAULT_STANDALONE` and/or
 `DEFAULT_VIDEO` in `AudioCaptureConfig.kt` — made only after all four criteria hold, and followed
@@ -1778,3 +1881,38 @@ plan uses `bufferFloorBytes` because the existing sites compute `max(getMinBuffe
 floor)` and `getMinBufferSize` is device-dependent, so only the floor can be pinned by a JVM test.
 Storing an absolute size would have made the "defaults unchanged" test either untestable or
 wrong.
+
+**Amended after review.** Every code block was applied to a scratch copy, compiled on both flavors
+and run against both suites, so the corrections below are measured rather than argued:
+
+- The worktree had no `local.properties`, so the very first gradle command failed with `SDK
+  location not found`. Copied in from the Dropbox checkout and documented in Global Constraints,
+  escaping trap included.
+- Task 5 Step 4 said to replace "the `stop()`/`release()` pair" in `SegmentRecorder.stop()`. There
+  is no pair: the two calls sit nine lines apart, one before the thread joins and one after, each
+  carrying a comment explaining why. Collapsing them would have reintroduced a use-after-release.
+  Now two precise edits that leave the `stop()` call untouched.
+- Task 5 missed two further release sites in `setupAudio()` — the `startAudioPaused` branch, which
+  runs on every segment rollover during a Site Voice handover, and the audio-start-failure branch.
+  Both would have stranded `audioOpened` holding a released record with live effects, which is the
+  very defect the task exists to prevent. Now Step 5.
+- Task 8 had nothing keeping the screen on. A block runs ~2.2 minutes untouched; a screen timeout
+  backgrounds the activity and API 33 silences a backgrounded `AudioRecord`, so later takes would
+  record digital zeros with no error at all. Added `FLAG_KEEP_SCREEN_ON`.
+- The 44.1 kHz upsampling test was wrong twice. The original absolute threshold (`hf > -90`)
+  labelled a measured upsampled file "genuine" — resampler imaging sits near −77 dBFS. Its first
+  replacement, an in-take 4–8 kHz vs 8–16 kHz ratio, failed too, because these recordings carry
+  almost no 4–8 kHz energy and it ended up comparing noise against noise. It now judges each
+  44.1 kHz take against **take 7**, a genuine wideband capture from the same board in the same
+  scene, and reports "inconclusive" when take 7 itself has nothing above 8 kHz. Verified against
+  synthetic sinc-upsampled audio: genuine reads −0.0 dB, upsampled −29.7 dB, threshold −20 dB.
+- A refused configuration wrote an error JSON the analysis could never find (no rate in the name,
+  and the script keyed everything off `.wav` files), so a board that rejected a configuration
+  would have read as "not tested". Both ends fixed and verified end-to-end on synthetic data.
+- Dropped `AudioRecorder.lastReportJson`: nothing read it, and it was written off the caller
+  thread without synchronisation.
+- Corrected the existing-test count from 163 (stale, out of CLAUDE.md) to the measured 481; fixed
+  Task 5 Step 3's method label (`setupAudio()`, not `prepare()`); guarded the analysis against a
+  missing baseline take; made all script output ASCII for this machine's GBK console; documented
+  the Hann-window bias so nobody tries to reconcile the table against the per-take JSON; and added
+  a Task 10 step that tests the mic-busy guard instead of assuming it.
