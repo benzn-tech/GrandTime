@@ -1713,19 +1713,26 @@ def takes(folder):
         m = NAME_RE.search(os.path.basename(p))
         if not m:
             continue
-        meta = json.load(open(p))
+        try:
+            meta = json.load(open(p))
+        except Exception as e:
+            meta = {"error": "unparseable json: %s" % (str(e) or type(e).__name__)}
         rec = dict(name=m.group(3), rate=int(m.group(4)), meta=meta,
                    error=meta.get("error"), speech=None, full=None, hf=None, mid=None,
                    clip=float(meta.get("clippedFraction", 0.0)))
         wav = p[:-5] + ".wav"
         if rec["error"] is None and os.path.exists(wav):
-            sr, d = load(wav)
-            rec["sr"] = sr
-            rec["speech"] = db(band_rms(d, sr, *SPEECH_BAND))
-            rec["full"] = db(band_rms(d, sr, 20, sr // 2))
-            if sr > 16000:
-                rec["mid"] = db(band_rms(d, sr, 4000, 8000))
-                rec["hf"] = db(band_rms(d, sr, 8000, min(sr // 2, 16000)))
+            try:
+                sr, d = load(wav)
+            except Exception as e:
+                rec["error"] = "unreadable wav: %s" % (str(e) or type(e).__name__)
+            else:
+                rec["sr"] = sr
+                rec["speech"] = db(band_rms(d, sr, *SPEECH_BAND))
+                rec["full"] = db(band_rms(d, sr, 20, sr // 2))
+                if sr > 16000:
+                    rec["mid"] = db(band_rms(d, sr, 4000, 8000))
+                    rec["hf"] = db(band_rms(d, sr, 8000, min(sr // 2, 16000)))
         out[int(m.group(2))] = rec
     return out
 
