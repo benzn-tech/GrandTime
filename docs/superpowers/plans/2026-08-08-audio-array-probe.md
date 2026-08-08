@@ -1263,9 +1263,12 @@ import com.benzn.grandtime.capture.jsonObject
 import com.benzn.grandtime.capture.jsonString
 import com.benzn.grandtime.capture.openMic
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.log10
+import kotlin.math.pow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -1306,15 +1309,26 @@ class ProbeRunner(private val context: Context) {
                     // as a successful take (rate included) so the analysis finds it — a refusal
                     // that never reaches the table would read as "not tested".
                     val base = "probe_${block.label}_%02d_%s_%d".format(
-                        take.index, take.name, take.config.sampleRate
+                        Locale.US, take.index, take.name, take.config.sampleRate
                     )
-                    File(dir, "$base.json").writeText(jsonObject(listOf(
+                    // recordTake renames any partially captured PCM to "$base.partial.pcm" before
+                    // rethrowing, rather than deleting it — for a run that cannot be repeated,
+                    // partial audio is worth more than a clean directory. Surface it if present.
+                    val partial = File(dir, "$base.partial.pcm")
+                    val fields = mutableListOf(
                         "block" to jsonString(block.label),
                         "index" to "${take.index}",
                         "name" to jsonString(take.name),
                         "rate" to "${take.config.sampleRate}",
                         "error" to jsonString(e.message ?: e.javaClass.simpleName),
-                    )))
+                        // Mic contention is otherwise only checked once per block (at open time);
+                        // stamping it on every take's own JSON means a take that failed or came back
+                        // silent because the main app grabbed the mic mid-block is attributable
+                        // instead of being misread as a configuration that simply captured nothing.
+                        "micBusy" to "${isMicBusy()}",
+                    )
+                    if (partial.exists()) fields.add("partialPcm" to jsonString(partial.name))
+                    File(dir, "$base.json").writeText(jsonObject(fields))
                 }
             delay(gapMs)
         }
@@ -1329,69 +1343,97 @@ class ProbeRunner(private val context: Context) {
         onProgress: (ProbeTake, Double) -> Unit,
     ) {
         val base = "probe_${block.label}_%02d_%s_%d".format(
-            take.index, take.name, take.config.sampleRate
+            Locale.US, take.index, take.name, take.config.sampleRate
         )
         val pcmFile = File(dir, "$base.pcm")
-        val om = openMic(context, take.config)
-        var reportJson = "{}"
-        var stats: PcmStats
         try {
-            om.record.startRecording()
-            reportJson = om.reportJson() // routing is only true once recording has started
-            val buf = ByteArray(om.bufferBytes)
-            val target = take.config.sampleRate.toLong() * 2 * seconds
+            val om = openMic(context, take.config)
+            var reportJson = "{}"
+            val stats: PcmStats
             var written = 0L
-            var peakAll = -120.0
-            var sumSquares = 0.0
-            var samples = 0L
-            var clipped = 0L
-            pcmFile.outputStream().buffered().use { out ->
-                while (written < target) {
-                    val n = om.record.read(buf, 0, buf.size)
-                    if (n <= 0) break
-                    out.write(buf, 0, n)
-                    written += n
-                    val s = pcmStats(buf, n)
-                    if (s.peakDbfs > peakAll) peakAll = s.peakDbfs
-                    // Accumulate energy so the whole-take RMS is exact rather than an average of
-                    // per-buffer dB values, which would be wrong.
-                    val chunkSamples = n / 2
-                    sumSquares += Math.pow(10.0, s.rmsDbfs / 10.0) * chunkSamples
-                    samples += chunkSamples
-                    clipped += (s.clippedFraction * chunkSamples).toLong()
-                    onProgress(take, s.rmsDbfs)
+            try {
+                om.record.startRecording()
+                reportJson = om.reportJson() // routing is only true once recording has started
+                val buf = ByteArray(om.bufferBytes)
+                val target = take.config.sampleRate.toLong() * 2 * seconds
+                var lastN = 0
+                var peakAll = -120.0
+                var sumSquares = 0.0
+                var samples = 0L
+                var clipped = 0L
+                pcmFile.outputStream().buffered().use { out ->
+                    while (written < target) {
+                        lastN = om.record.read(buf, 0, buf.size)
+                        if (lastN <= 0) break
+                        out.write(buf, 0, lastN)
+                        written += lastN
+                        val s = pcmStats(buf, lastN)
+                        if (s.peakDbfs > peakAll) peakAll = s.peakDbfs
+                        // Accumulate energy so the whole-take RMS is exact rather than an average of
+                        // per-buffer dB values, which would be wrong.
+                        val chunkSamples = lastN / 2
+                        sumSquares += 10.0.pow(s.rmsDbfs / 10.0) * chunkSamples
+                        samples += chunkSamples
+                        // Round rather than truncate: clippedFraction * chunkSamples is an integer
+                        // perturbed only by float error, so truncating a value like 1.0 - epsilon
+                        // silently drops isolated clipped samples and can only ever flatter a
+                        // configuration against the < 0.1% pass gate.
+                        clipped += Math.round(s.clippedFraction * chunkSamples)
+                        onProgress(take, s.rmsDbfs)
+                    }
                 }
+                // A negative AudioRecord.read return (ERROR_DEAD_OBJECT, ERROR_INVALID_OPERATION,
+                // ERROR_BAD_VALUE) looks identical to a clean end-of-take here, so a take that dies
+                // 3s in would otherwise still produce a plausible-looking level over its ~1s of real
+                // audio. Fail loudly instead: this data cannot be recaptured, so a truncated take
+                // must land on the error path, not the results table.
+                check(written >= target / 2) {
+                    "AudioRecord.read returned $lastN after $written of $target bytes"
+                }
+                stats = PcmStats(
+                    peakDbfs = peakAll,
+                    rmsDbfs = if (samples == 0L) -120.0
+                              else maxOf(-120.0, 10.0 * log10(sumSquares / samples)),
+                    clippedFraction = if (samples == 0L) 0.0 else clipped.toDouble() / samples,
+                )
+            } finally {
+                om.stopAndRelease()
             }
-            stats = PcmStats(
-                peakDbfs = peakAll,
-                rmsDbfs = if (samples == 0L) -120.0
-                          else maxOf(-120.0, 10.0 * Math.log10(sumSquares / samples)),
-                clippedFraction = if (samples == 0L) 0.0 else clipped.toDouble() / samples,
-            )
-        } finally {
-            om.stopAndRelease()
-        }
 
-        // Header from the take's own config: AudioAssembly's header rate is welded to 16 kHz and
-        // would mislabel every 44.1 kHz take.
-        val wav = File(dir, "$base.wav")
-        wav.outputStream().buffered().use { out ->
-            out.write(WavHeader.riffWav(pcmFile.length().toInt(), take.config.sampleRate, 1, 16))
-            pcmFile.inputStream().buffered().use { it.copyTo(out) }
-        }
-        pcmFile.delete()
+            // Header from the take's own config: AudioAssembly's header rate is welded to 16 kHz
+            // and would mislabel every 44.1 kHz take.
+            val wav = File(dir, "$base.wav")
+            FileOutputStream(wav).use { fos ->
+                fos.write(WavHeader.riffWav(pcmFile.length().toInt(), take.config.sampleRate, 1, 16))
+                pcmFile.inputStream().buffered().use { it.copyTo(fos) }
+                // This device may lose power before the files are pulled; a plain `use` close only
+                // flushes to the page cache, so force the WAV to durable storage before moving on.
+                fos.flush()
+                fos.fd.sync()
+            }
+            pcmFile.delete()
 
-        File(dir, "$base.json").writeText(jsonObject(listOf(
-            "block" to jsonString(block.label),
-            "index" to "${take.index}",
-            "name" to jsonString(take.name),
-            "wav" to jsonString(wav.name),
-            "seconds" to "$seconds",
-            "peakDbfs" to "${stats.peakDbfs}",
-            "rmsDbfs" to "${stats.rmsDbfs}",
-            "clippedFraction" to "${stats.clippedFraction}",
-            "mic" to reportJson,
-        )))
+            File(dir, "$base.json").writeText(jsonObject(listOf(
+                "block" to jsonString(block.label),
+                "index" to "${take.index}",
+                "name" to jsonString(take.name),
+                "wav" to jsonString(wav.name),
+                "seconds" to "$seconds",
+                "bytes" to "$written",
+                "peakDbfs" to "${stats.peakDbfs}",
+                "rmsDbfs" to "${stats.rmsDbfs}",
+                "clippedFraction" to "${stats.clippedFraction}",
+                "micBusy" to "${isMicBusy()}",
+                "mic" to reportJson,
+            )))
+        } catch (t: Throwable) {
+            // Preserve whatever audio was captured rather than leaving (or deleting) an orphaned
+            // temp file: for a run that cannot be repeated, partial audio is worth more than a
+            // clean directory. This must catch every failing path in the function above, so the
+            // temp PCM never survives un-renamed.
+            if (pcmFile.exists()) pcmFile.renameTo(File(dir, "$base.partial.pcm"))
+            throw t
+        }
     }
 }
 ```
