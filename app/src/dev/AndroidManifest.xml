@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Dev flavor only: a second launcher entry so the probe needs no changes to
+             MainActivity or the app's navigation. Absent from the prod APK. -->
+        <activity
+            android:name="com.benzn.grandtime.devprobe.AudioProbeActivity"
+            android:label="AudioProbe"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
