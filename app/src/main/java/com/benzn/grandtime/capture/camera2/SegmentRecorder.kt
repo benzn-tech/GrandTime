@@ -1,6 +1,7 @@
 package com.benzn.grandtime.capture.camera2
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaCodec
@@ -9,6 +10,9 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.MediaRecorder
 import android.view.Surface
+import com.benzn.grandtime.capture.AudioCaptureConfig
+import com.benzn.grandtime.capture.OpenedMic
+import com.benzn.grandtime.capture.openMic
 import java.io.File
 
 /**
@@ -16,7 +20,7 @@ import java.io.File
  * 麦克风 AudioRecord → AAC MediaCodec;两轨合入同一 MediaMuxer(mp4)。muxerLock 串行化两线程写。
  * 分段调度由 CaptureManager 定时器驱动(每段一个新 SegmentRecorder 实例)。
  */
-class SegmentRecorder(private val probe: (String) -> Unit = {}) {
+class SegmentRecorder(private val context: Context, private val probe: (String) -> Unit = {}) {
 
     // 视频
     private var codec: MediaCodec? = null
@@ -32,6 +36,9 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     // a release/reopen promptly so the pause/resume race is self-evidently safe (no reliance on the
     // read backstop alone). Still single-writer (Main/CaptureManager) by design.
     @Volatile private var audioRecord: AudioRecord? = null
+    // Held so the app-created effects attached by openMic are released with the record. Written
+    // only from Main (prepare / pauseAudioForHandover / resumeAudio), same as audioRecord.
+    @Volatile private var audioOpened: OpenedMic? = null
     private var audioCodec: MediaCodec? = null
     private var audioThread: Thread? = null
     @Volatile private var audioStopRequested = false
@@ -62,6 +69,16 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         // frame of silence per frame-duration.
         private const val SILENCE_CHUNK_BYTES = 2048
         private const val SILENCE_SLEEP_MS = SILENCE_CHUNK_BYTES / 2 * 1000L / AUDIO_SAMPLE_RATE // 1024/44100 s ≈ 23 ms
+
+        init {
+            // The AAC encoder and muxer track are configured from AUDIO_SAMPLE_RATE while the mic
+            // is opened from DEFAULT_VIDEO. If those ever diverge the track plays at the wrong
+            // speed with nothing failing, so fail loudly at class-load instead.
+            require(AUDIO_SAMPLE_RATE == AudioCaptureConfig.DEFAULT_VIDEO.sampleRate) {
+                "AUDIO_SAMPLE_RATE ($AUDIO_SAMPLE_RATE) must match DEFAULT_VIDEO.sampleRate " +
+                    "(${AudioCaptureConfig.DEFAULT_VIDEO.sampleRate})"
+            }
+        }
     }
 
     /** 配置视频编码器(+可选音频)+ muxer,返回视频编码器输入 Surface。未启动 drain(留给 start())。 */
@@ -96,8 +113,10 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
             throw e
         }
         audioCodec = ac
-        audioRecord = try {
-            buildMic()
+        try {
+            val om = buildMic()
+            audioOpened = om
+            audioRecord = om.record
         } catch (e: Exception) {
             runCatching { audioCodec?.release() }; audioCodec = null // 释放已建 AAC,避免泄漏
             throw e
@@ -105,19 +124,11 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         return true
     }
 
-    /** Build a MIC AudioRecord with the fixed capture params. Throws if not INITIALIZED. Silence
-     *  pacing uses a fixed one-AAC-frame chunk (SILENCE_CHUNK_BYTES), so the mic buffer size is only
-     *  used to size the AudioRecord itself. */
-    @SuppressLint("MissingPermission") // 调用方(prepare/resumeAudio)已确保 RECORD_AUDIO
-    private fun buildMic(): AudioRecord {
-        val minBuf = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val bufSize = maxOf(minBuf, 4096 * 2)
-        val ar = AudioRecord(MediaRecorder.AudioSource.MIC, AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize)
-        if (ar.state != AudioRecord.STATE_INITIALIZED) {
-            ar.release(); throw IllegalStateException("AudioRecord 未初始化")
-        }
-        return ar
-    }
+    /** Build the video track's mic through the shared opener. Returns the OpenedMic so the caller
+     *  can release the app-created effects along with the record. Throws if not INITIALIZED.
+     *  Silence pacing uses a fixed one-AAC-frame chunk (SILENCE_CHUNK_BYTES), so the mic buffer
+     *  size is only used to size the AudioRecord itself. */
+    private fun buildMic(): OpenedMic = openMic(context, AudioCaptureConfig.DEFAULT_VIDEO)
 
     /** 尝试 HEVC;configure 失败(不支持/尺寸越界)→ 降 AVC。设 actualCodec。 */
     private fun createEncoder(spec: VideoSpec, hevcPreferred: Boolean): MediaCodec {
@@ -160,7 +171,8 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
             audioHandover = true
             val started = runCatching {
                 audioCodec?.start()
-                runCatching { audioRecord?.release() } // free the mic setupAudio() built; loop is silent
+                runCatching { audioOpened?.stopAndRelease() } // free the mic setupAudio() built; loop is silent
+                audioOpened = null
                 audioRecord = null
                 true
             }.getOrDefault(false)
@@ -184,7 +196,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         } else {
             probe("音频启动失败,本段降为纯视频")
             audioEnabled = false   // maybeStartMuxer 改为仅凭视频轨启动,避免整段无输出
-            runCatching { audioRecord?.stop() }; runCatching { audioRecord?.release() }
+            runCatching { audioOpened?.stopAndRelease() }; audioOpened = null
             runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
             audioRecord = null; audioCodec = null
         }
@@ -293,8 +305,8 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     fun pauseAudioForHandover() {
         if (!audioEnabled) return
         audioHandover = true
-        runCatching { audioRecord?.stop() }
-        runCatching { audioRecord?.release() }
+        runCatching { audioOpened?.stopAndRelease() }
+        audioOpened = null
         audioRecord = null
     }
 
@@ -305,11 +317,15 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     fun resumeAudio(): Boolean {
         if (!audioEnabled) return true
         return runCatching {
-            val ar = buildMic()
+            val om = buildMic()
+            val ar = om.record
             ar.startRecording()
             if (ar.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                ar.release(); throw IllegalStateException("AudioRecord 未进入录制")
+                om.stopAndRelease(); throw IllegalStateException("AudioRecord 未进入录制")
             }
+            // Publish both before clearing the flag, so the loop never sees handover=false with a
+            // null mic — and so the effects are owned even if the next handover comes immediately.
+            audioOpened = om
             audioRecord = ar
             audioHandover = false
             true
@@ -334,7 +350,8 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
             videoThread?.join(500); audioThread?.join(500)
             if (videoThread?.isAlive == true || audioThread?.isAlive == true) probe("segment drain 线程未在超时内退出")
         }
-        runCatching { audioRecord?.release() }            // release 放到 join 之后,避免 use-after-release
+        runCatching { audioOpened?.stopAndRelease() }      // release 放到 join 之后,避免 use-after-release
+        audioOpened = null
         runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
         synchronized(muxerLock) {
             runCatching { if (muxerStarted) muxer?.stop() }
