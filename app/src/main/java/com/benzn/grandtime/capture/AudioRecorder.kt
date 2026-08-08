@@ -23,7 +23,7 @@ import kotlin.concurrent.thread
  *    `onSegment`, called ON the worker thread — callers must keep it fast and thread-safe.
  */
 class AudioRecorder(private val context: Context) {
-    private var record: AudioRecord? = null
+    private var opened: OpenedMic? = null
     @Volatile private var running = false
     @Volatile private var captureFailed = false
     private var worker: Thread? = null
@@ -41,14 +41,14 @@ class AudioRecorder(private val context: Context) {
         clockMs: () -> Long = { System.currentTimeMillis() },
         nextFile: (() -> File)? = null,
         onSegment: ((AudioSegment) -> Unit)? = null,
+        config: AudioCaptureConfig = AudioCaptureConfig.DEFAULT_STANDALONE,
     ): Boolean = try {
-        val sr = 16000
-        val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val buf = maxOf(minBuf, sr * 2) // >= 1s
-        val rec = AudioRecord(MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, buf)
-        // Assign before the init check so a failed AudioRecord is still released by cleanup().
-        record = rec
-        check(rec.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord not initialized" }
+        // openMic applies the same max(minBufferSize, floor) this site used to compute inline, and
+        // throws instead of returning a half-built record — so the old init check moves inside it.
+        val om = openMic(context, config)
+        opened = om
+        val rec = om.record
+        val buf = om.bufferBytes
         val tmp = File(file.parentFile, file.nameWithoutExtension + ".pcm")
         target = file; pcmTmp = tmp; running = true; captureFailed = false
         segmented = segmentBytes > 0
@@ -191,8 +191,8 @@ class AudioRecorder(private val context: Context) {
         // final-segment hand-off fields (pcmTmp/target/lastSegmentStart/...), silently dropping
         // the last segment. 3000ms stays safely above that ~1s bound.
         worker?.join(3000)
-        record?.apply { stop(); release() }
-        record = null
+        opened?.stopAndRelease()
+        opened = null
         val tmp = pcmTmp; val out = target
         val ok = if (tmp != null && out != null) {
             AudioAssembly.finish(tmp, out, captureFailed)
@@ -214,9 +214,8 @@ class AudioRecorder(private val context: Context) {
     private fun cleanup() {
         running = false
         runCatching { worker?.join(1000) }
-        runCatching { record?.stop() }
-        runCatching { record?.release() }
-        record = null
+        runCatching { opened?.stopAndRelease() }
+        opened = null
         runCatching { pcmTmp?.delete() }
         pcmTmp = null; target = null; captureFailed = false
         segmented = false; segmentOnFinish = null; segmentClock = null
