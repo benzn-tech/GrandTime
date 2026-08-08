@@ -15,6 +15,10 @@ import android.media.audiofx.NoiseSuppressor
  */
 object MicCapabilities {
 
+    /** A lying HAL can return NaN/Infinity, which Kotlin renders as bare tokens that are not JSON.
+     *  Emit null instead, so one bad float cannot make the whole snapshot unparseable. */
+    private fun jsonNumber(f: Float): String = if (f.isFinite()) "$f" else "null"
+
     fun snapshotJson(context: Context): String {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -39,10 +43,10 @@ object MicCapabilities {
                 "description" to jsonString(m.description ?: ""),
                 "location" to "${m.location}",
                 "directionality" to "${m.directionality}",
-                "sensitivity" to "${m.sensitivity}",
-                "maxSpl" to "${m.maxSpl}",
+                "sensitivity" to jsonNumber(m.sensitivity),
+                "maxSpl" to jsonNumber(m.maxSpl),
                 "position" to jsonArray(
-                    if (p == null) emptyList() else listOf("${p.x}", "${p.y}", "${p.z}")
+                    if (p == null) emptyList() else listOf(jsonNumber(p.x), jsonNumber(p.y), jsonNumber(p.z))
                 ),
             ))
         }

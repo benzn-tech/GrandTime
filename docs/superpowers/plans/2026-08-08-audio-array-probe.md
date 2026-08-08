@@ -391,7 +391,6 @@ package com.benzn.grandtime.capture
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -417,7 +416,7 @@ class OpenedMic internal constructor(
     private val config: AudioCaptureConfig,
     private val effects: List<AudioEffect>,
     private val requestedMicAddress: String?,
-    private val preferredDeviceAccepted: Boolean?,
+    private val preferredDeviceRequestAccepted: Boolean?,
 ) {
     /** Routing facts only become true after startRecording(), so this is safe to call any time
      *  but only meaningful afterwards. Never throws — a diagnostic must not break a recording. */
@@ -431,7 +430,7 @@ class OpenedMic internal constructor(
             "grantedChannelCount" to "${runCatching { record.channelCount }.getOrDefault(-1)}",
             "bufferBytes" to "$bufferBytes",
             "requestedMicAddress" to (requestedMicAddress?.let { jsonString(it) } ?: "null"),
-            "preferredDeviceAccepted" to (preferredDeviceAccepted?.toString() ?: "null"),
+            "preferredDeviceRequestAccepted" to (preferredDeviceRequestAccepted?.toString() ?: "null"),
             "routedDeviceType" to "${routed?.type ?: -1}",
             "routedDeviceAddress" to jsonString(routed?.address ?: ""),
             // Synthesized from the routed device on a generic HAL, so this does NOT reveal whether
@@ -496,20 +495,26 @@ fun openMic(context: Context, config: AudioCaptureConfig): OpenedMic {
     }
 
     var accepted: Boolean? = null
-    if (chosen != null) {
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val target = am.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == chosen.id }
-        accepted = target != null && record.setPreferredDevice(target)
-    }
-
     val effects = ArrayList<AudioEffect>(2)
-    if (config.enableNs && NoiseSuppressor.isAvailable()) {
-        runCatching { NoiseSuppressor.create(record.audioSessionId) }.getOrNull()
-            ?.also { it.enabled = true; effects.add(it) }
-    }
-    if (config.enableAgc && AutomaticGainControl.isAvailable()) {
-        runCatching { AutomaticGainControl.create(record.audioSessionId) }.getOrNull()
-            ?.also { it.enabled = true; effects.add(it) }
+    try {
+        if (chosen != null) {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val target = am.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == chosen.id }
+            accepted = target != null && record.setPreferredDevice(target)
+        }
+
+        if (config.enableNs && NoiseSuppressor.isAvailable()) {
+            runCatching { NoiseSuppressor.create(record.audioSessionId) }.getOrNull()
+                ?.also { effects.add(it); runCatching { it.enabled = true } }
+        }
+        if (config.enableAgc && AutomaticGainControl.isAvailable()) {
+            runCatching { AutomaticGainControl.create(record.audioSessionId) }.getOrNull()
+                ?.also { effects.add(it); runCatching { it.enabled = true } }
+        }
+    } catch (t: Throwable) {
+        effects.forEach { runCatching { it.release() } }
+        runCatching { record.release() }
+        throw t
     }
 
     return OpenedMic(record, bufferBytes, config, effects, config.preferredMic?.address, accepted)
@@ -538,6 +543,10 @@ import android.media.audiofx.NoiseSuppressor
  */
 object MicCapabilities {
 
+    /** A lying HAL can return NaN/Infinity, which Kotlin renders as bare tokens that are not JSON.
+     *  Emit null instead, so one bad float cannot make the whole snapshot unparseable. */
+    private fun jsonNumber(f: Float): String = if (f.isFinite()) "$f" else "null"
+
     fun snapshotJson(context: Context): String {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -562,10 +571,10 @@ object MicCapabilities {
                 "description" to jsonString(m.description ?: ""),
                 "location" to "${m.location}",
                 "directionality" to "${m.directionality}",
-                "sensitivity" to "${m.sensitivity}",
-                "maxSpl" to "${m.maxSpl}",
+                "sensitivity" to jsonNumber(m.sensitivity),
+                "maxSpl" to jsonNumber(m.maxSpl),
                 "position" to jsonArray(
-                    if (p == null) emptyList() else listOf("${p.x}", "${p.y}", "${p.z}")
+                    if (p == null) emptyList() else listOf(jsonNumber(p.x), jsonNumber(p.y), jsonNumber(p.z))
                 ),
             ))
         }

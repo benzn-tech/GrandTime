@@ -2,7 +2,6 @@ package com.benzn.grandtime.capture
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -28,7 +27,7 @@ class OpenedMic internal constructor(
     private val config: AudioCaptureConfig,
     private val effects: List<AudioEffect>,
     private val requestedMicAddress: String?,
-    private val preferredDeviceAccepted: Boolean?,
+    private val preferredDeviceRequestAccepted: Boolean?,
 ) {
     /** Routing facts only become true after startRecording(), so this is safe to call any time
      *  but only meaningful afterwards. Never throws — a diagnostic must not break a recording. */
@@ -42,7 +41,7 @@ class OpenedMic internal constructor(
             "grantedChannelCount" to "${runCatching { record.channelCount }.getOrDefault(-1)}",
             "bufferBytes" to "$bufferBytes",
             "requestedMicAddress" to (requestedMicAddress?.let { jsonString(it) } ?: "null"),
-            "preferredDeviceAccepted" to (preferredDeviceAccepted?.toString() ?: "null"),
+            "preferredDeviceRequestAccepted" to (preferredDeviceRequestAccepted?.toString() ?: "null"),
             "routedDeviceType" to "${routed?.type ?: -1}",
             "routedDeviceAddress" to jsonString(routed?.address ?: ""),
             // Synthesized from the routed device on a generic HAL, so this does NOT reveal whether
@@ -107,20 +106,26 @@ fun openMic(context: Context, config: AudioCaptureConfig): OpenedMic {
     }
 
     var accepted: Boolean? = null
-    if (chosen != null) {
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val target = am.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == chosen.id }
-        accepted = target != null && record.setPreferredDevice(target)
-    }
-
     val effects = ArrayList<AudioEffect>(2)
-    if (config.enableNs && NoiseSuppressor.isAvailable()) {
-        runCatching { NoiseSuppressor.create(record.audioSessionId) }.getOrNull()
-            ?.also { it.enabled = true; effects.add(it) }
-    }
-    if (config.enableAgc && AutomaticGainControl.isAvailable()) {
-        runCatching { AutomaticGainControl.create(record.audioSessionId) }.getOrNull()
-            ?.also { it.enabled = true; effects.add(it) }
+    try {
+        if (chosen != null) {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val target = am.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.id == chosen.id }
+            accepted = target != null && record.setPreferredDevice(target)
+        }
+
+        if (config.enableNs && NoiseSuppressor.isAvailable()) {
+            runCatching { NoiseSuppressor.create(record.audioSessionId) }.getOrNull()
+                ?.also { effects.add(it); runCatching { it.enabled = true } }
+        }
+        if (config.enableAgc && AutomaticGainControl.isAvailable()) {
+            runCatching { AutomaticGainControl.create(record.audioSessionId) }.getOrNull()
+                ?.also { effects.add(it); runCatching { it.enabled = true } }
+        }
+    } catch (t: Throwable) {
+        effects.forEach { runCatching { it.release() } }
+        runCatching { record.release() }
+        throw t
     }
 
     return OpenedMic(record, bufferBytes, config, effects, config.preferredMic?.address, accepted)
