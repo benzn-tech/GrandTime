@@ -23,8 +23,14 @@ android {
         applicationId = "com.benzn.grandtime"
         minSdk = 33
         targetSdk = 33
-        versionCode = 13
-        versionName = "0.5.9"
+        // BUMP BOTH ON EVERY BUILD THAT LEAVES THIS MACHINE.
+        // 0.5.9/13 shipped at least three times with different code in it, so
+        // "which build is on that device" was unanswerable from the device --
+        // the only way to tell them apart was to pull the APK and grep the dex.
+        // versionCode is what Android compares on install; versionName is what
+        // a person reads in Settings.
+        versionCode = 14
+        versionName = "0.6.0"
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
