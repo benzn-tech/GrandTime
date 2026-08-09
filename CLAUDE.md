@@ -50,6 +50,62 @@ F2SP 执法终端上的现场作业记录仪原生 Android App(Kotlin/Compose),�
 - **测试**:`./gradlew testProdDebugUnitTest`(现 163 绿)。相机/GL/GPS 类无 JVM 单测,靠真机验证。构建按 flavor 分:`assembleProdDebug`/`assembleDevDebug`。
 - **权限**:CAMERA/RECORD_AUDIO/POST_NOTIFICATIONS 走 `MainActivity` 的 RequestMultiplePermissions;MANAGE_EXTERNAL_STORAGE/SYSTEM_ALERT_WINDOW 走 Settings intent。
 
+## 发版给用户装机(每一条都因为踩过才写)
+
+**从哪里构建。** **绝不用 `Dropbox/GrandTime`** —— 那个检出经常停在别的 session 的在途分支上
+(实测见过 `feat/device-identity-phase2` 领先 main 五个提交)。在那里构建 = 把别人没做完的
+工作装到客户设备上;切它的分支 = 毁掉别人的工作现场。用专用 worktree:
+
+```bash
+cd C:/Users/camil/Dropbox/GrandTime-multidevice      # 分支 build-main
+git fetch origin && git merge --ff-only origin/main
+JAVA_HOME="C:/Program Files/Android/Android Studio/jbr" ./gradlew assembleProdRelease
+```
+
+新建 worktree 要**手动拷 `local.properties`**(被 gitignore),否则 Gradle 报 "SDK location not found"。
+
+**flavor 决定录音进哪个后端,与 git 分支无关(编译期烧死)。**
+
+| flavor | 包名 | 桌面名 | 网关 | 落到 |
+|---|---|---|---|---|
+| prod | `com.benzn.grandtime` | **FieldSight** | `ys94qy2tk0` | prod 桶 + `fieldsight` 库 |
+| dev | `com.benzn.grandtime.dev` | **devfieldsight** | `wdsgobb7b0` | test 桶 + `fieldsight_test` 库 |
+
+「App 录了但 prod 网页空」几乎总是装了 dev 版。**验法是 grep APK 的 dex 找 `ys94qy2tk0`,
+别信文件名。**
+
+**版本号:每次出机都同时 bump `versionCode` 和 `versionName`**(`app/build.gradle.kts`)。
+`0.5.9`/`13` 曾带着三份不同的代码出机三次,导致「这台设备上跑的是哪一版」**无法回答** ——
+只能把 APK 拉下来 grep dex 里的类名。`versionCode` 是 Android 装机时比较的(整数 +1),
+`versionName` 是人在设置里读的。
+
+**装机:永远覆盖,不要卸载。** 两个 flavor 都用**同一张 release 证书**
+(`CN=GrandTime, O=benzn-tech`),所以 `-r` 直接覆盖,**登录和录音都保留**
+(`firstInstallTime` 不变就是覆盖成功的证据):
+
+```bash
+ADB="C:/Users/camil/AppData/Local/Android/Sdk/platform-tools/adb.exe"
+"$ADB" install -r fieldsight-PROD-<sha>.apk
+```
+
+卸载会丢登录(录音在外部存储、不丢),所以是最后手段。**只有签名真的不一致才需要卸载,
+而且要先查再说** —— 拉设备上的 APK 用 `apksigner verify --print-certs` 比对 SHA-256。
+**不要不查就抛「换签名要卸载」的警告**:证书已经很久没变过,一句无根据的警告白白多一步,
+还会教会用户忽略警告。
+
+**APK 要发布到用户拿包的地方**:`C:/Users/camil/Dropbox/fieldsight-dev-apk/`,
+命名 `fieldsight-{PROD|dev}-{git 短哈希}.apk`,并更新 `README.txt` 说明这版改了什么、验了什么。
+直接从 `app/build/outputs/...` 装机「能用」,但会让那个文件夹留着**过期的包且看不出过期** ——
+下一个从那里装的人静默拿到旧代码。
+
+**🔴 dev 版平时必须卸载,只在真做两台设备测试时装。** F2SP 的实体键是 ROM 广播
+(`lolaage.*`),**每个装了的 app 都会收到**:两个 flavor 同时在,按一下键**两个都开始录**,
+一个进 prod 一个进 test,而两边的 Files 界面像到足以让人对着错的那个操作。dev 版还有自己
+独立的数据库,没登 test 账号时列表全是 Waiting —— 看起来像「上传坏了」。
+
+**识别这个症状**:用户说 Files「拆散了」或「之前传好的又变成 Waiting」时,
+**先查前台是哪个包**(`adb logcat | grep "Changing focus"`),再去动分组代码。
+
 ## 硬约束
 
 - **全 Android framework,不引原生库/新 Gradle 依赖**(设备 ABI 仅 armeabi 32 位)。
