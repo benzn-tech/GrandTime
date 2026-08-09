@@ -77,6 +77,20 @@ interface CaptureRecordDao {
     )
     suspend fun countPendingForAuthor(authorSub: String): Int
 
+    /**
+     * Chunks of this session that are still on their way up.
+     *
+     * Deliberately only the statuses that can still make progress on their own.
+     * `failed` and `frozen` are excluded: both need a person, so waiting on them
+     * would hold the session open until the 15-minute idle backstop closes it
+     * anyway -- the same end, reached later. `missing` files are gone.
+     */
+    @Query(
+        "SELECT COUNT(*) FROM capture_records WHERE sessionId = :sessionId " +
+            "AND missing = 0 AND uploadStatus IN ('pending','uploading','retrying')"
+    )
+    suspend fun countInFlightForSession(sessionId: String): Int
+
     @Query("UPDATE capture_records SET siteId = :siteId WHERE id = :id")
     suspend fun setSiteId(id: String, siteId: String?)
 

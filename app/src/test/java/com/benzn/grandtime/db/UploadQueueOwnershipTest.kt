@@ -133,6 +133,10 @@ class UploadQueueOwnershipTest {
  * contract test, not a behaviour test.
  */
 private class OwnershipFakeDao : CaptureRecordDao {
+    override suspend fun countInFlightForSession(sessionId: String): Int =
+        rows.count { it.sessionId == sessionId && !it.missing &&
+            it.uploadStatus in setOf("pending", "uploading", "retrying") }
+
     val rows = mutableListOf<CaptureRecord>()
 
     override suspend fun listPendingForAuthor(statuses: List<String>, authorSub: String) =

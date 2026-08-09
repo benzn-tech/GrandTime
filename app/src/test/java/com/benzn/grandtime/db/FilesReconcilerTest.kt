@@ -10,6 +10,10 @@ import org.junit.Test
 private data class FinalizeCall(val id: String, val endedAt: Long, val durationMs: Long, val sizeBytes: Long)
 
 private class FakeDao : CaptureRecordDao {
+    override suspend fun countInFlightForSession(sessionId: String): Int =
+        rows.count { it.sessionId == sessionId && !it.missing &&
+            it.uploadStatus in setOf("pending", "uploading", "retrying") }
+
     val rows = mutableListOf<CaptureRecord>()
     val missingIds = mutableListOf<String>()
     val finalizedCalls = mutableListOf<FinalizeCall>()
