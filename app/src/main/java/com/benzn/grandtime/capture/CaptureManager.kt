@@ -395,6 +395,13 @@ class CaptureManager(
         if (cmd.segmentIndex == 1) {
             fireSessionOpen(cmd.sessionId, kind = "video", startedAtMillis = startedAt)
         }
+        // Announced BEFORE capture starts, and awaited: the words used to be
+        // spoken into the recording they were announcing, so the transcriber
+        // gained a speaker who is not a person. Only on segment 1 — a rollover
+        // mid-session must not pause the camera to talk.
+        if (cmd.segmentIndex == 1) {
+            sounds.startRecordingAndAwait()
+        }
         val result = pipeline.startSegment(
             file = file,
             aspect = settings.aspectRatio,
@@ -475,9 +482,6 @@ class CaptureManager(
             )
         )
         startSegmentTimer(settings.segmentSeconds)
-        if (cmd.segmentIndex == 1) {
-            sounds.startRecording()
-        }
         // A cold camera (re)open resets Camera2Pipeline's internal torch flag to off; re-assert the
         // operator's torch state (TorchController is the source of truth) so a torch left ON before a
         // power-saving pause relights on resume, instead of needing a spurious double-toggle.
@@ -696,6 +700,9 @@ class CaptureManager(
         val overlap = overlapBytesFor(2)
         val first = storage.newFile(MediaStorage.Kind.AUDIO)
         val sessionId = cmd.sessionId
+        // Same reason as the video path: the announcement is over before the
+        // microphone is live, so it cannot be transcribed as a participant.
+        sounds.startRecordingAndAwait()
         val started = audio.start(
             file = first,
             segmentBytes = segBytes,
@@ -707,7 +714,6 @@ class CaptureManager(
         if (!started) {
             execute(core.onFailure("Audio recorder unavailable")); return false
         }
-        sounds.startRecording()
         probe("audio started: ${first.name}")
         fireSessionOpen(sessionId, kind = "audio", startedAtMillis = System.currentTimeMillis())
         return true
