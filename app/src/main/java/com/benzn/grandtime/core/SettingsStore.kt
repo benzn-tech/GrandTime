@@ -31,7 +31,10 @@ data class RecordingSettings(
     val screenOffMinutes: Int = 3,
     val aspectRatio: AspectRatio = AspectRatio.RATIO_4_3,
     val watermarkEnabled: Boolean = true,
-    val videoUploadWifiOnly: Boolean = true,
+    // Two defaults for one setting, and they must agree: this one is used when a
+    // RecordingSettings is constructed directly, the read path below when nothing
+    // is stored. See the test that pins them together.
+    val videoUploadWifiOnly: Boolean = false,
 )
 
 class SettingsStore(private val dataStore: DataStore<Preferences>) {
@@ -67,7 +70,13 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
                 ?.let { name -> AspectRatio.entries.firstOrNull { it.name == name } }
                 ?: AspectRatio.RATIO_4_3,
             watermarkEnabled = prefs[KEY_WATERMARK] ?: true,
-            videoUploadWifiOnly = prefs[KEY_VIDEO_UPLOAD_WIFI_ONLY] ?: true,
+            // Defaults to FALSE: on a site with no WiFi, `true` did not mean "upload
+            // later on WiFi", it meant WorkManager's UNMETERED constraint was never
+            // satisfied and the chunks sat in the queue forever -- shown as neither
+            // progress nor failure. A chunk is ~30 seconds, not a whole video, so the
+            // data-cap caution this was protecting cost far more than it saved.
+            // The toggle stays; only the default moved.
+            videoUploadWifiOnly = prefs[KEY_VIDEO_UPLOAD_WIFI_ONLY] ?: false,
         )
     }
 

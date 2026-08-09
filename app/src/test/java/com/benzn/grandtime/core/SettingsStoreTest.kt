@@ -136,9 +136,30 @@ class SettingsStoreTest {
     }
 
     @Test
-    fun `video upload wifi only defaults to enabled`() = runTest(UnconfinedTestDispatcher()) {
+    fun `video upload wifi only defaults to DISABLED`() = runTest(UnconfinedTestDispatcher()) {
+        // It defaulted to true, and on a site with no WiFi that is not a slow
+        // upload -- it is no upload at all. WorkManager's UNMETERED constraint is
+        // never satisfied, so the chunks sit in the queue indefinitely, showing
+        // as neither progress nor failure. The customer records, sees nothing go
+        // wrong, and nothing arrives.
+        //
+        // A recording chunk is ~30 seconds, not a whole video file, so the
+        // metered-network caution the default was protecting is worth far less
+        // than the recording it was silently discarding.
         val (store, _) = newStore()
-        assertEquals(true, store.settings.first().videoUploadWifiOnly)
+        assertEquals(false, store.settings.first().videoUploadWifiOnly)
+    }
+
+    @Test
+    fun `the two wifi-only defaults agree`() = runTest(UnconfinedTestDispatcher()) {
+        // The setting has TWO defaults -- the data class parameter and the read
+        // path's `?:` fallback -- written in different places. Changing one and
+        // not the other gives a build where a freshly-installed device and a
+        // directly-constructed RecordingSettings disagree about whether video
+        // uploads need WiFi, which shows up as "it works on my phone".
+        val (store, _) = newStore()
+        assertEquals(RecordingSettings().videoUploadWifiOnly,
+                     store.settings.first().videoUploadWifiOnly)
     }
 
     @Test
