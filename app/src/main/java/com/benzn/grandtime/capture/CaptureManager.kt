@@ -59,6 +59,13 @@ class CaptureManager(
             replace: Boolean,
         ) {}
     },
+    // Defaults to a no-op for the same reason uploadEnqueuer does: the JVM unit
+    // tests construct a CaptureManager without WorkManager, and a real enqueuer
+    // there would need an Android context.
+    private val sessionCloseEnqueuer: com.benzn.grandtime.upload.SessionCloseEnqueuer =
+        object : com.benzn.grandtime.upload.SessionCloseEnqueuer {
+            override fun enqueue(sessionId: String, endedAtMillis: Long) {}
+        },
 ) : MicHandover {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { ChunkNaming.sessionId(UUID.randomUUID().toString()) })
     private val pipeline = Camera2Pipeline(context, probe)
@@ -325,7 +332,18 @@ class CaptureManager(
         }
     }
 
-    /** Best-effort session_close (intent "idle" — deliberate-End is P0-c) — fire-and-forget. */
+    /**
+     * End of a session. A deliberate End ("end") goes through WorkManager; an
+     * incidental stop ("idle") keeps the old fire-and-forget call.
+     *
+     * The split is deliberate. "end" is the signal that makes the confirmation
+     * email arrive in about a minute instead of waiting out the 15-minute idle
+     * inference, and over ten days it landed 8 times in 28 -- one blip lost it,
+     * with no retry and nothing logged. "idle" carries no such promise: it is a
+     * hint that the recorder stopped, the backend infers the same thing from
+     * silence anyway, and giving it a durable queue would spend retries on a
+     * message whose absence costs nothing.
+     */
     private fun fireSessionClose(sessionId: String, endedAtMillis: Long, intent: String = "idle") {
         activeGroupId = null
         // Restart the expiry clock. The group deliberately OUTLIVES the recording —
@@ -336,6 +354,13 @@ class CaptureManager(
             AppState.pendingGroup.value = it.copy(heldSinceMillis = endedAtMillis)
         }
         scheduleMeetingPrompt()
+        if (intent == "end") {
+            // Durable, and gated on this session's chunks being up: grace is 0 for
+            // a deliberate End, so a close that overtakes the uploads finalizes a
+            // transcript that is still arriving. See SessionCloseWorker.
+            sessionCloseEnqueuer.enqueue(sessionId, endedAtMillis)
+            return
+        }
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp

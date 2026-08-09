@@ -325,6 +325,8 @@ class CoreService : LifecycleService() {
             notify = ::notifyStatus,
             probe = ::probe,
             uploadEnqueuer = WorkManagerUploadEnqueuer(applicationContext),
+            sessionCloseEnqueuer =
+                com.benzn.grandtime.upload.WorkManagerSessionCloseEnqueuer(applicationContext),
         )
         captureManager = capture
 
