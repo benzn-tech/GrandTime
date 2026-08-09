@@ -328,6 +328,10 @@ class CoreService : LifecycleService() {
             sessionCloseEnqueuer =
                 com.benzn.grandtime.upload.WorkManagerSessionCloseEnqueuer(applicationContext),
         )
+        // The startup sweep above runs once. This keeps sweeping on a timer, so a
+        // chunk that stalls mid-meeting is recovered without the app being
+        // restarted or anyone finding "Retry failed".
+        com.benzn.grandtime.upload.PendingUploadSweepWorker.schedule(applicationContext)
         captureManager = capture
 
         val ask = AskManager(
