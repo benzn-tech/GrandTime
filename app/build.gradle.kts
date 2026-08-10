@@ -29,8 +29,8 @@ android {
         // the only way to tell them apart was to pull the APK and grep the dex.
         // versionCode is what Android compares on install; versionName is what
         // a person reads in Settings.
-        versionCode = 17
-        versionName = "0.6.3"
+        versionCode = 18
+        versionName = "0.6.4"
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
