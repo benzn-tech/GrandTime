@@ -8,6 +8,7 @@ import com.benzn.grandtime.ask.AskSounds
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.hardware.Haptics
 import java.io.File
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
@@ -44,6 +45,7 @@ class SiteVoiceManager(
     private val recorder = AskRecorder(appContext, cacheDir)
     private val player = AskPlayer(cacheDir)
     private val sounds = AskSounds(appContext)
+    private val haptics = Haptics(appContext)
     private val api = VoiceApiClient(apiBaseUrl)
     private val lastSeenStore = LastSeenStore(appContext.voiceDataStore)
 
@@ -118,6 +120,7 @@ class SiteVoiceManager(
             SiteVoiceCommand.CancelCapTimer -> { capTimer?.cancel(); capTimer = null }
             SiteVoiceCommand.UploadAndSend -> uploadAndSend()
             is SiteVoiceCommand.PlayClip -> playClip(cmd.clip)
+            is SiteVoiceCommand.Vibrate -> haptics.play(cmd.pattern)
         }
     }
 
