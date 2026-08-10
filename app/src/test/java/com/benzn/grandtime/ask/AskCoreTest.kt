@@ -22,16 +22,20 @@ class AskCoreTest {
         val c = core()
         val cmds = c.onPttDown(videoRecording = true)
         assertEquals(AskState.Idle, c.state)
-        assertTrue(cmds.contains(AskCommand.PlayBusyCue))
-        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
+        assertEquals(
+            listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
+            cmds
+        )
     }
 
     @Test fun down_during_site_voice_is_busy_and_stays_idle() {
         val c = core()
         val cmds = c.onPttDown(videoRecording = false, siteVoiceActive = true)
         assertEquals(AskState.Idle, c.state)
-        assertTrue(cmds.contains(AskCommand.PlayBusyCue))
-        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
+        assertEquals(
+            listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
+            cmds
+        )
     }
 
     @Test fun up_while_listening_sends_and_goes_thinking() {
