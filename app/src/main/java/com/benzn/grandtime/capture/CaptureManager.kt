@@ -9,12 +9,11 @@ import android.graphics.Canvas
 import android.media.ExifInterface
 import android.media.MediaScannerConnection
 import android.os.Environment
-import android.os.VibrationEffect
-import android.os.Vibrator
 import androidx.core.content.ContextCompat
 import com.benzn.grandtime.capture.camera2.Camera2Pipeline
 import com.benzn.grandtime.capture.camera2.WatermarkRenderer
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.hardware.VibePattern
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.PhotoQuality
 import com.benzn.grandtime.core.PhotoResolution
@@ -83,6 +82,7 @@ class CaptureManager(
     /** True while Site-voice is borrowing the mic. Read by startVideoSegment so a segment rollover
      *  during a handover starts the next segment with its audio paused (silent) until end(). */
     @Volatile private var handoverActive = false
+    private val haptics = com.benzn.grandtime.hardware.Haptics(context)
     private var currentVideoRecordId: String? = null
     private var currentVideoFile: File? = null
     private var currentVideoStartedAt: Long = 0
@@ -800,11 +800,8 @@ class CaptureManager(
         fireSessionClose(cmd.sessionId, System.currentTimeMillis(), "end")
     }
 
-    private fun vibrate(times: Int) {
-        val vibrator = context.getSystemService(Vibrator::class.java) ?: return
-        val pattern = if (times == 1) longArrayOf(0, 80) else longArrayOf(0, 60, 80, 60)
-        vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
-    }
+    private fun vibrate(times: Int) =
+        haptics.play(if (times == 1) VibePattern.SHORT else VibePattern.DOUBLE_SHORT)
 
     private fun scan(path: String) {
         MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
