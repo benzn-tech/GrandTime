@@ -41,6 +41,11 @@ class AudioRecorder(private val context: Context) {
         clockMs: () -> Long = { System.currentTimeMillis() },
         nextFile: (() -> File)? = null,
         onSegment: ((AudioSegment) -> Unit)? = null,
+        /** Every accepted read, with the segment index it landed in — the seam
+         *  [MicSilenceMonitor] hangs off. Segmented mode ONLY: the single-file loop is the
+         *  Ask / Site-voice clip recorder, and counting there would mingle clip silence into
+         *  session totals. Called on the worker thread; must stay fast. */
+        onPcm: ((ByteArray, Int, Int) -> Unit)? = null,
     ): Boolean = try {
         val sr = 16000
         val minBuf = AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -55,7 +60,7 @@ class AudioRecorder(private val context: Context) {
         rec.startRecording()
         worker = if (segmented) {
             thread(name = "audio-pcm") {
-                runSegmentedWorker(rec, buf, tmp, file, segmentBytes, overlapBytes, startIndex, clockMs, nextFile, onSegment)
+                runSegmentedWorker(rec, buf, tmp, file, segmentBytes, overlapBytes, startIndex, clockMs, nextFile, onSegment, onPcm)
             }
         } else {
             thread(name = "audio-pcm") { runSingleFileWorker(rec, buf, tmp) }
@@ -104,6 +109,7 @@ class AudioRecorder(private val context: Context) {
         clockMs: () -> Long,
         nextFile: (() -> File)?,
         onSegment: ((AudioSegment) -> Unit)?,
+        onPcm: ((ByteArray, Int, Int) -> Unit)?,
     ) {
         val ring = PcmRingBuffer(overlapBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         var curTmp = firstTmp
@@ -118,6 +124,16 @@ class AudioRecorder(private val context: Context) {
                 val n = rec.read(b, 0, b.size)
                 when {
                     n > 0 -> {
+                        // Before the write, and never gated on anything: a refused capture
+                        // returns a POSITIVE n with a buffer of zeros, so this branch IS the
+                        // fault path. Observation only — nothing here may set captureFailed,
+                        // which would flip running=false and end the meeting instead of
+                        // recording that a minute of it was silent.
+                        // runCatching is load-bearing, not defensive habit: this loop's outer
+                        // catch(Throwable) sets captureFailed and stops the recording, so an
+                        // observer that throws would end the meeting it exists to describe.
+                        // Telemetry must never be able to take the capture down with it.
+                        onPcm?.let { runCatching { it(b, n, index) } }
                         out.write(b, 0, n)
                         ring.append(b, n)
                         bytesInSegment += n

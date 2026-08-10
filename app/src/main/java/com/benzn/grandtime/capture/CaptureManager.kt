@@ -66,6 +66,10 @@ class CaptureManager(
         object : com.benzn.grandtime.upload.SessionCloseEnqueuer {
             override fun enqueue(sessionId: String, endedAtMillis: Long) {}
         },
+    /** Where a finished audio session's microphone counters are persisted for the uplink.
+     *  No-op by default for the same reason the enqueuers are: the JVM tests build a
+     *  CaptureManager with no DataStore behind them. */
+    private val micHealthSink: MicHealthSink = MicHealthSink.NoOp,
 ) : MicHandover {
     private val core = CaptureCore(clock = System::currentTimeMillis, newId = { ChunkNaming.sessionId(UUID.randomUUID().toString()) })
     private val pipeline = Camera2Pipeline(context, probe)
@@ -91,6 +95,15 @@ class CaptureManager(
      *  right after [AudioRecorder.stop] finalizes the last segment, so a resumed session's chunk keys
      *  never collide with the ones already uploaded before the pause. */
     private var audioResumeIndex: Int = 1
+    /**
+     * Counts digital silence for the CURRENT audio session.
+     *
+     * Lives here, not in [AudioRecorder], because pause/resume stops and restarts the recorder
+     * inside one session — instance fields down there would be zeroed by every pause, which is
+     * to say a fault would be forgotten by the very action a confused operator is most likely
+     * to take.
+     */
+    private var silenceMonitor: MicSilenceMonitor? = null
 
     init {
         // 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
@@ -346,6 +359,7 @@ class CaptureManager(
      * message whose absence costs nothing.
      */
     private fun fireSessionClose(sessionId: String, endedAtMillis: Long, intent: String = "idle") {
+        flushSilenceMonitor()
         activeGroupId = null
         // Restart the expiry clock. The group deliberately OUTLIVES the recording —
         // a meeting where everyone stops to walk to the next building is still one
@@ -704,6 +718,7 @@ class CaptureManager(
         // Same reason as the video path: the announcement is over before the
         // microphone is live, so it cannot be transcribed as a participant.
         sounds.startRecordingAndAwait()
+        val monitor = newSilenceMonitor()
         val started = audio.start(
             file = first,
             segmentBytes = segBytes,
@@ -711,6 +726,7 @@ class CaptureManager(
             startIndex = 1, // segment 1 of a brand-new session
             nextFile = { storage.newFile(MediaStorage.Kind.AUDIO) },
             onSegment = { seg -> scope.launch { onAudioSegmentFinalized(seg, sessionId) } },
+            onPcm = { b, n, index -> monitor.onPcm(b, n, index) },
         )
         if (!started) {
             execute(core.onFailure("Audio recorder unavailable")); return false
@@ -718,6 +734,40 @@ class CaptureManager(
         probe("audio started: ${first.name}")
         fireSessionOpen(sessionId, kind = "audio", startedAtMillis = System.currentTimeMillis())
         return true
+    }
+
+    private fun newSilenceMonitor(): MicSilenceMonitor =
+        MicSilenceMonitor(
+            // The dedicated physical-hold flag, NOT AppState.askActive: that one stays true
+            // through Ask's thinking and playback, long after the microphone came back.
+            micBorrowed = { MicOwnership.heldByVoiceFeature },
+            // The probe log is the only timely artifact here. The uplink is a six-hourly
+            // periodic worker, so nothing about this reaches a screen quickly.
+            //
+            // Hopped onto [scope] rather than called inline: this runs on the AudioRecorder
+            // worker thread, and probe() appends to a file and read-modify-writes a StateFlow,
+            // neither of which is synchronized. Every other probe caller is already on this
+            // single-threaded scope, so the hop is what keeps that true — and it keeps a disk
+            // write off the thread that is supposed to be draining the microphone.
+            log = { line -> scope.launch { probe(line) } },
+        ).also { silenceMonitor = it }
+
+    /**
+     * One session's counters are done: report them and persist them.
+     *
+     * Called from every session close, audio or video. A video session never built a monitor,
+     * so this is a no-op there — one call site beats four and cannot be half-updated later.
+     */
+    private fun flushSilenceMonitor() {
+        val snap = silenceMonitor?.snapshot() ?: return
+        silenceMonitor = null
+        if (snap.recordedSecondsS <= 0) return
+        probe(
+            "mic health: ${snap.silentSecondsS}s silent of ${snap.recordedSecondsS}s, " +
+                "longest run ${snap.longestSilentRunS}s, peak ${snap.peakAmplitude}, " +
+                "${snap.silentRunsWithMicBorrowed} run(s) during a mic borrow"
+        )
+        scope.launch { runCatching { micHealthSink.record(snap) } }
     }
 
     /** Runs on [scope] (not the AudioRecorder worker thread — the onSegment closure only hops
@@ -764,6 +814,9 @@ class CaptureManager(
         val overlap = overlapBytesFor(2)
         val first = storage.newFile(MediaStorage.Kind.AUDIO)
         val sessionId = cmd.sessionId
+        // The SAME monitor as before the pause — the session did not end, and a fresh one
+        // here would forget a fault that already happened.
+        val monitor = silenceMonitor ?: newSilenceMonitor()
         val started = audio.start(
             file = first,
             segmentBytes = segBytes,
@@ -771,6 +824,7 @@ class CaptureManager(
             startIndex = audioResumeIndex,
             nextFile = { storage.newFile(MediaStorage.Kind.AUDIO) },
             onSegment = { seg -> scope.launch { onAudioSegmentFinalized(seg, sessionId) } },
+            onPcm = { b, n, index -> monitor.onPcm(b, n, index) },
         )
         if (!started) {
             // The session was already open (opened at the original start, not here) — a failed resume

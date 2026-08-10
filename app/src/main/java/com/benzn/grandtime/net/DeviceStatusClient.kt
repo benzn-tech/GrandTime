@@ -18,6 +18,17 @@ data class DeviceVitals(
     val frozen: Int,
     val dead: Int,
     val fingerprints: List<String>,
+    /**
+     * Microphone health, cumulative since install (see [com.benzn.grandtime.capture.MicHealth]).
+     *
+     * Cumulative on purpose: the server stores vitals as a last-write-wins UPDATE, so a
+     * per-session number would be erased by the next clean report. These only ever grow.
+     */
+    val silentSecondsS: Int = 0,
+    val longestSilentRunS: Int = 0,
+    val silentRunsWithMicBorrowed: Int = 0,
+    /** Null until this device has recorded at least one session. */
+    val lowestSessionPeak: Int? = null,
 )
 
 data class DeviceStatusResponse(val serverBuild: String?, val thaw: List<String>)
@@ -50,6 +61,10 @@ class DeviceStatusClient(
             put("frozen", v.frozen)
             put("dead", v.dead)
             put("fingerprints", JSONArray(v.fingerprints))
+            put("silentSecondsS", v.silentSecondsS)
+            put("longestSilentRunS", v.longestSilentRunS)
+            put("silentRunsWithMicBorrowed", v.silentRunsWithMicBorrowed)
+            put("lowestSessionPeak", v.lowestSessionPeak ?: JSONObject.NULL)
         }.toString()
 
         fun parse(body: String?): DeviceStatusResponse? = runCatching {

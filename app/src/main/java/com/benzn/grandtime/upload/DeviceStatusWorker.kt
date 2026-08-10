@@ -9,6 +9,7 @@ import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.core.settingsDataStore
+import com.benzn.grandtime.capture.MicHealthStore
 import com.benzn.grandtime.db.CaptureDb
 import com.benzn.grandtime.net.DeviceStatusClient
 import com.benzn.grandtime.net.DeviceVitals
@@ -41,12 +42,19 @@ class DeviceStatusWorker(appContext: Context, params: WorkerParameters) :
             val now = System.currentTimeMillis()
             val oldest = dao.oldestUnsentStartedAt()
             val frozen = dao.listFrozen()
+            // Read from disk, not memory: this worker routinely runs in a cold process hours
+            // after the capture that produced the counters.
+            val mic = MicHealthStore(applicationContext.settingsDataStore).read()
             val vitals = DeviceVitals(
                 oldestPendingAgeS = oldest?.let { (now - it) / 1000 },
                 pending = dao.countUnsent(),
                 frozen = frozen.size,
                 dead = dao.countDead(),
                 fingerprints = dao.frozenFingerprints(),
+                silentSecondsS = mic.silentSecondsS,
+                longestSilentRunS = mic.longestSilentRunS,
+                silentRunsWithMicBorrowed = mic.silentRunsWithMicBorrowed,
+                lowestSessionPeak = mic.lowestSessionPeak,
             )
 
             val response = DeviceStatusClient(BuildConfig.ORG_API_BASE_URL).report(idToken, vitals)
