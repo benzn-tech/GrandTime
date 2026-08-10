@@ -47,8 +47,14 @@ class ProbeTakesTest {
         assertEquals(16000, cam.config.sampleRate)
     }
 
-    @Test fun `every block is recorded for every take`() {
-        assertEquals(listOf(ProbeBlock.S, ProbeBlock.F, ProbeBlock.N), ProbeBlock.entries.toList())
+    @Test fun `the block list is S F N then D, in that order`() {
+        // The original three answer "which capture setting transcribes best" and are run as a
+        // set; D answers a different question (two channels or one copied) and runs its own
+        // configurations. D is appended rather than inserted so an existing block directory's
+        // name still means what it did when it was recorded.
+        assertEquals(
+            listOf(ProbeBlock.S, ProbeBlock.F, ProbeBlock.N, ProbeBlock.D),
+            ProbeBlock.entries.toList())
     }
 
     @Test fun `block D runs the dual-mic list and every other block keeps the original ten`() {
