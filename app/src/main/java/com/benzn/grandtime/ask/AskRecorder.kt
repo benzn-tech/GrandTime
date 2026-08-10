@@ -2,6 +2,8 @@ package com.benzn.grandtime.ask
 
 import android.content.Context
 import com.benzn.grandtime.capture.AudioRecorder
+import com.benzn.grandtime.capture.MicHold
+import com.benzn.grandtime.capture.MicOwnership
 import java.io.File
 
 /**
@@ -16,10 +18,19 @@ import java.io.File
 class AskRecorder internal constructor(
     private val cacheDir: File,
     private val recorder: Recorder,
+    /** Raised while this recorder physically holds the microphone, so the main capture's
+     *  silence detector can ANNOTATE (never suppress) zero runs that overlap a voice clip.
+     *  Owned here rather than in the two managers because this class is the single place
+     *  where the microphone is actually taken and given back — a flag set at the call sites
+     *  would have four places to get wrong, and a stuck flag blinds the detector. */
+    private val micHold: MicHold = MicOwnership,
 ) {
     constructor(context: Context, cacheDir: File) : this(cacheDir, AudioRecorderAdapter(context))
 
     private var current: File? = null
+    /** Whether THIS recorder currently holds the mic — makes release idempotent, so a
+     *  stop() following a discard() cannot decrement someone else's hold. */
+    private var holding = false
 
     val isRecording: Boolean get() = recorder.isRecording
 
@@ -33,7 +44,10 @@ class AskRecorder internal constructor(
         cacheDir.mkdirs()
         current = file
         val ok = recorder.start(file)
-        if (!ok) {
+        if (ok) {
+            holding = true
+            micHold.acquire()
+        } else {
             runCatching { file.delete() }
             current = null
         }
@@ -43,6 +57,7 @@ class AskRecorder internal constructor(
     /** Stop and return the finished clip (null on failure; temp file is deleted on every failure branch). */
     fun stop(): File? {
         val ok = recorder.stop()
+        releaseMic()
         val file = current
         current = null
         return if (ok && file != null && file.exists() && file.length() > 0) {
@@ -56,8 +71,16 @@ class AskRecorder internal constructor(
     /** Abort: stop and delete any partial file. */
     fun discard() {
         recorder.stop()
+        releaseMic()
         current?.let { f -> runCatching { f.delete() } }
         current = null
+    }
+
+    private fun releaseMic() {
+        if (holding) {
+            holding = false
+            micHold.release()
+        }
     }
 
     /** Minimal recorder seam over [AudioRecorder] so failure paths are JVM-testable. */

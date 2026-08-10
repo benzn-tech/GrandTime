@@ -327,6 +327,10 @@ class CoreService : LifecycleService() {
             uploadEnqueuer = WorkManagerUploadEnqueuer(applicationContext),
             sessionCloseEnqueuer =
                 com.benzn.grandtime.upload.WorkManagerSessionCloseEnqueuer(applicationContext),
+            // Same DataStore DeviceStatusWorker reads from, which is the point: that worker
+            // runs in a cold process hours later and would otherwise report zeros.
+            micHealthSink =
+                com.benzn.grandtime.capture.MicHealthStore(applicationContext.settingsDataStore),
         )
         // The startup sweep above runs once. This keeps sweeping on a timer, so a
         // chunk that stalls mid-meeting is recovered without the app being

@@ -32,6 +32,33 @@ class DeviceStatusClientTest {
         assertTrue(json.isNull("oldestPendingAgeS"))
     }
 
+    @Test fun `microphone health rides the same body`() {
+        val json = JSONObject(
+            DeviceStatusClient.requestBody(
+                DeviceVitals(
+                    oldestPendingAgeS = null, pending = 0, frozen = 0, dead = 0,
+                    fingerprints = emptyList(),
+                    silentSecondsS = 41, longestSilentRunS = 29,
+                    silentRunsWithMicBorrowed = 2, lowestSessionPeak = 0,
+                )
+            )
+        )
+        assertEquals(41, json.getInt("silentSecondsS"))
+        assertEquals(29, json.getInt("longestSilentRunS"))
+        assertEquals(2, json.getInt("silentRunsWithMicBorrowed"))
+        assertEquals(0, json.getInt("lowestSessionPeak"))
+    }
+
+    /** A peak of 0 means "recorded, and it was digital silence". Absent means "never recorded".
+     *  Collapsing them would turn a brand-new device into a dead-microphone report. */
+    @Test fun `a device that has never recorded reports a null peak, not a zero`() {
+        val json = JSONObject(
+            DeviceStatusClient.requestBody(DeviceVitals(null, 0, 0, 0, emptyList()))
+        )
+        assertTrue(json.isNull("lowestSessionPeak"))
+        assertEquals(0, json.getInt("silentSecondsS"))
+    }
+
     @Test fun `a response is read`() {
         val r = DeviceStatusClient.parse("""{"serverBuild":"9495bcd","thaw":["uploadurl_401"]}""")!!
         assertEquals("9495bcd", r.serverBuild)
