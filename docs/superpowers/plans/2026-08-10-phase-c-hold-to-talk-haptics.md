@@ -544,9 +544,25 @@ The gateway is compiled in, not chosen at runtime, and a dev build silently land
 in the test bucket. Check the dex, not the filename:
 
 ```bash
-unzip -p app/build/outputs/apk/prod/release/app-prod-release.apk classes.dex | grep -c ys94qy2tk0
+APK=app/build/outputs/apk/prod/release/app-prod-release.apk
+python -c "
+import zipfile,sys
+z=zipfile.ZipFile('$APK')
+n=sum(z.read(f).count(b'ys94qy2tk0') for f in z.namelist() if f.endswith('.dex'))
+print('prod gateway id occurrences across all dex:', n)
+sys.exit(0 if n else 1)
+"
 ```
 Expected: at least 1. If it is 0, this is not a prod build — stop.
+
+**The app is multidex and the gateway id lives in `classes2.dex`, not `classes.dex`** — grepping only the first dex reports 0 and would send you to a false BLOCKED. Every `.dex` entry must be searched.
+
+Also confirm the APK is signed. A worktree does not carry `keystore.properties` / `keystore.jks` (both gitignored), and without them Gradle produces an **unsigned** release APK with no error loud enough to notice:
+
+```bash
+cp C:/Users/camil/Dropbox/GrandTime/keystore.properties C:/Users/camil/Dropbox/GrandTime/keystore.jks .
+```
+Copy them in before building, alongside `local.properties`.
 
 - [ ] **Step 4: Publish where the next person will look**
 
