@@ -115,7 +115,9 @@ class AskManager(
         val bytes = runCatching { Base64.decode(audioBase64, Base64.DEFAULT) }.getOrNull()
         if (bytes == null || bytes.isEmpty()) { fail(); return }
         probe("ask: playing answer")
-        player.play(bytes) { scope.launch { execute(core.onPlaybackDone()) } }
+        player.play(bytes) { ok ->
+            scope.launch { execute(if (ok) core.onPlaybackDone() else core.onError()) }
+        }
     }
 
     private suspend fun fail() {

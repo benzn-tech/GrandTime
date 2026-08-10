@@ -123,7 +123,11 @@ class SiteVoiceCore {
 
     fun onError(): List<SiteVoiceCommand> {
         borrowedMic = false
-        return drainOrIdle(listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue))
+        return drainOrIdle(listOf(
+            SiteVoiceCommand.CancelCapTimer,
+            SiteVoiceCommand.PlayErrorCue,
+            SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT),
+        ))
     }
 
     /** Play the next queued inbound (Playing) if any, else settle Idle. Prefix cues emit first. */

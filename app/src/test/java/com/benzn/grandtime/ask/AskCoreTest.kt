@@ -2,6 +2,7 @@ package com.benzn.grandtime.ask
 
 import com.benzn.grandtime.hardware.VibePattern
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -16,6 +17,23 @@ class AskCoreTest {
         assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.SHORT)))
         assertTrue(cmds.contains(AskCommand.StartRecording))
         assertTrue(cmds.contains(AskCommand.ArmCapTimer))
+    }
+
+    // Pins the exact emission order for the accepted onPttDown path — nothing else in this
+    // file nails down the full list, so an implementation emitting an extra SHORT (or
+    // reordering the cue/vibrate/start-recording sequence) would still pass every other test.
+    @Test fun down_when_idle_and_not_recording_emits_exact_command_list() {
+        val c = core()
+        val cmds = c.onPttDown(videoRecording = false, siteVoiceActive = false)
+        assertEquals(
+            listOf(
+                AskCommand.PlayListeningCue,
+                AskCommand.Vibrate(VibePattern.SHORT),
+                AskCommand.StartRecording,
+                AskCommand.ArmCapTimer,
+            ),
+            cmds,
+        )
     }
 
     @Test fun down_during_video_recording_is_busy_and_stays_idle() {
@@ -82,6 +100,22 @@ class AskCoreTest {
         val cmds = c.onPlaybackDone()
         assertEquals(AskState.Idle, c.state)
         assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.LONG)))
+    }
+
+    // A failed answer playback must route to onError()'s DOUBLE_SHORT + error cue, never to
+    // onPlaybackDone()'s LONG "success" buzz — that routing decision (AskManager picking one
+    // of these two based on whether MediaPlayer actually finished) is what AskPlayerTest's
+    // ok=false coverage exercises; this pins what onError() emits while Playing so the two
+    // outcomes stay distinguishable at the core level too.
+    @Test fun playback_error_routes_to_onError_not_the_long_buzz() {
+        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("x") } // now Playing
+        val cmds = c.onError()
+        assertEquals(AskState.Idle, c.state)
+        assertEquals(
+            listOf(AskCommand.CancelCapTimer, AskCommand.PlayErrorCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
+            cmds,
+        )
+        assertFalse(cmds.contains(AskCommand.Vibrate(VibePattern.LONG)))
     }
 
     @Test fun reentrant_down_while_listening_is_ignored() {

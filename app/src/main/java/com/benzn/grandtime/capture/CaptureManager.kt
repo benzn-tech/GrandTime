@@ -13,7 +13,6 @@ import androidx.core.content.ContextCompat
 import com.benzn.grandtime.capture.camera2.Camera2Pipeline
 import com.benzn.grandtime.capture.camera2.WatermarkRenderer
 import com.benzn.grandtime.core.AppState
-import com.benzn.grandtime.hardware.VibePattern
 import com.benzn.grandtime.core.LoginState
 import com.benzn.grandtime.core.PhotoQuality
 import com.benzn.grandtime.core.PhotoResolution
@@ -21,6 +20,8 @@ import com.benzn.grandtime.core.RecordingSettings
 import com.benzn.grandtime.core.SettingsStore
 import com.benzn.grandtime.db.CaptureRecord
 import com.benzn.grandtime.db.CaptureRecordDao
+import com.benzn.grandtime.hardware.Haptics
+import com.benzn.grandtime.hardware.VibePattern
 import com.benzn.grandtime.keymap.KeyAction
 import com.benzn.grandtime.sitevoice.MicHandover
 import com.benzn.grandtime.upload.UploadEnqueuer
@@ -82,7 +83,7 @@ class CaptureManager(
     /** True while Site-voice is borrowing the mic. Read by startVideoSegment so a segment rollover
      *  during a handover starts the next segment with its audio paused (silent) until end(). */
     @Volatile private var handoverActive = false
-    private val haptics = com.benzn.grandtime.hardware.Haptics(context)
+    private val haptics = Haptics(context)
     private var currentVideoRecordId: String? = null
     private var currentVideoFile: File? = null
     private var currentVideoStartedAt: Long = 0

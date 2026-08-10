@@ -46,11 +46,13 @@ class AskPlayerTest {
         val fake = FakePlayer(throwOnPrepare = true)
         val player = AskPlayer(cache, factoryFor(fake))
         var doneCalls = 0
+        var lastOk: Boolean? = null
 
         // Must NOT throw even though prepare() throws.
-        player.play(byteArrayOf(1, 2, 3, 4)) { doneCalls++ }
+        player.play(byteArrayOf(1, 2, 3, 4)) { ok -> doneCalls++; lastOk = ok }
 
         assertEquals("onDone must fire exactly once on setup failure", 1, doneCalls)
+        assertEquals("setup failure must report ok = false", false, lastOk)
         assertTrue("constructed player must be released (no native leak)", fake.released)
         assertFalse("player must not have been started after prepare failure", fake.started)
         assertFalse("temp file must be deleted on setup failure", tempFile(cache).exists())
@@ -61,10 +63,12 @@ class AskPlayerTest {
         val fake = FakePlayer(throwOnSetDataSource = true)
         val player = AskPlayer(cache, factoryFor(fake))
         var doneCalls = 0
+        var lastOk: Boolean? = null
 
-        player.play(byteArrayOf(9, 9, 9)) { doneCalls++ }
+        player.play(byteArrayOf(9, 9, 9)) { ok -> doneCalls++; lastOk = ok }
 
         assertEquals(1, doneCalls)
+        assertEquals("setDataSource failure must report ok = false", false, lastOk)
         assertTrue("player released on setDataSource failure", fake.released)
         assertFalse("temp file deleted on setDataSource failure", tempFile(cache).exists())
     }
@@ -86,14 +90,16 @@ class AskPlayerTest {
         val fake = FakePlayer()
         val player = AskPlayer(cache, factoryFor(fake))
         var doneCalls = 0
+        var lastOk: Boolean? = null
 
-        player.play(byteArrayOf(1, 2, 3)) { doneCalls++ }
+        player.play(byteArrayOf(1, 2, 3)) { ok -> doneCalls++; lastOk = ok }
         assertTrue(tempFile(cache).exists())
 
         // Simulate MediaPlayer signalling normal completion.
         fake.completeCallback!!.invoke()
 
         assertEquals("onDone fires on completion", 1, doneCalls)
+        assertEquals("normal completion must report ok = true", true, lastOk)
         assertTrue("player released after completion", fake.released)
         assertFalse("temp file deleted after completion", tempFile(cache).exists())
     }
@@ -103,13 +109,15 @@ class AskPlayerTest {
         val fake = FakePlayer()
         val player = AskPlayer(cache, factoryFor(fake))
         var doneCalls = 0
+        var lastOk: Boolean? = null
 
-        player.play(byteArrayOf(1, 2, 3)) { doneCalls++ }
+        player.play(byteArrayOf(1, 2, 3)) { ok -> doneCalls++; lastOk = ok }
 
         // Simulate an async post-prepare playback error.
         fake.errorCallback!!.invoke()
 
         assertEquals("onDone fires on async error", 1, doneCalls)
+        assertEquals("async playback error must report ok = false", false, lastOk)
         assertTrue("player released after async error", fake.released)
         assertFalse("temp file deleted after async error", tempFile(cache).exists())
     }

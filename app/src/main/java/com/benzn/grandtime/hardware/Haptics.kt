@@ -15,7 +15,16 @@ import android.os.Vibrator
  */
 enum class VibePattern { SHORT, DOUBLE_SHORT, LONG }
 
-/** The waveform for a pattern. Pure, so the table itself is unit-testable. */
+/**
+ * The waveform for a pattern. Pure, so the table itself is unit-testable.
+ *
+ * This is the shared table for the SHORT/DOUBLE_SHORT/LONG vocabulary used by AskCore,
+ * SiteVoiceCore, and CaptureManager — not the only waveform literal in the app.
+ * [com.benzn.grandtime.capture.MeetingPromptSound] still hand-rolls its own
+ * `longArrayOf(0, 400, 250, 400)` "look at me" pattern outside this table (deliberately:
+ * it is not part of this accepted/refused/finished vocabulary), so don't assume every
+ * buzz on this device traces back to here.
+ */
 fun waveformFor(pattern: VibePattern): LongArray = when (pattern) {
     VibePattern.SHORT -> longArrayOf(0, 80)
     VibePattern.DOUBLE_SHORT -> longArrayOf(0, 60, 80, 60)

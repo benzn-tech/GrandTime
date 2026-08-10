@@ -159,6 +159,7 @@ class SiteVoiceCoreTest {
             listOf(
                 SiteVoiceCommand.CancelCapTimer,
                 SiteVoiceCommand.PlayErrorCue,
+                SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT),
                 SiteVoiceCommand.PlayClip(clip("a")),
             ),
             cmds,
@@ -171,7 +172,7 @@ class SiteVoiceCoreTest {
         val cmds = c.onError()
         assertEquals(SiteVoiceState.Idle, c.state)
         assertEquals(
-            listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue),
+            listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue, SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
             cmds,
         )
     }
