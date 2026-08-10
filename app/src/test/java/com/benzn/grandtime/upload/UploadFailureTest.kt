@@ -65,6 +65,15 @@ class UploadFailureTest {
         assertEquals(FailureClass.OPERATOR_FIXABLE, UploadFailures.ofComplete(403)!!.cls)
     }
 
+    // The backend answers 409 when the object is not in S3 — the one 4xx that says
+    // "the bytes never arrived, send them again". Freezing it strands exactly the
+    // recording the check exists to save.
+    @Test fun `complete 409 means re-send the bytes, so it is retryable`() {
+        val f = UploadFailures.ofComplete(409)!!
+        assertEquals(FailureClass.TRANSIENT, f.cls)
+        assertEquals("complete_409", f.code)
+    }
+
     @Test fun `complete other 4xx is ours, and keeps its number`() {
         val f = UploadFailures.ofComplete(422)!!
         assertEquals(FailureClass.OPERATOR_FIXABLE, f.cls)

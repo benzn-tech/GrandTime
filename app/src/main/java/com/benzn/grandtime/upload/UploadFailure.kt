@@ -57,6 +57,10 @@ object UploadFailures {
     fun ofComplete(status: Int): UploadFailure? = when {
         status in 200..299 -> null
         RecordingsApiClient.isTransient(status) -> TRANSIENT
+        // 409 is the backend saying the object is not in S3 — the one 4xx a re-send fixes,
+        // because it is the PUT that failed, not the identity. Keeps its own fingerprint so
+        // the ledger can still count how often the bytes went missing.
+        status == 409 -> UploadFailure(FailureClass.TRANSIENT, "complete_409")
         else -> UploadFailure(FailureClass.OPERATOR_FIXABLE, "complete_$status")
     }
 }
