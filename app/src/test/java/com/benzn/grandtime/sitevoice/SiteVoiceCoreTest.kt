@@ -1,6 +1,8 @@
 package com.benzn.grandtime.sitevoice
 
+import com.benzn.grandtime.hardware.VibePattern
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -27,6 +29,7 @@ class SiteVoiceCoreTest {
                 SiteVoiceCommand.AcquireMicFromCapture,
                 SiteVoiceCommand.PlayTalkStartCue,
                 SiteVoiceCommand.StartRecording,
+                SiteVoiceCommand.Vibrate(VibePattern.SHORT),
                 SiteVoiceCommand.ArmCapTimer,
             ),
             cmds,
@@ -34,6 +37,17 @@ class SiteVoiceCoreTest {
         // Acquire must precede StartRecording so the mic is free before Site-voice opens it.
         assertTrue(cmds.indexOf(SiteVoiceCommand.AcquireMicFromCapture)
             < cmds.indexOf(SiteVoiceCommand.StartRecording))
+    }
+
+    // Same rule as AskCore: the executor short-circuits on a failed recorder.start(), so the
+    // accept buzz is only truthful if it is ordered after StartRecording. Pinned for both the
+    // borrowed-mic and free-mic paths, which build their command lists separately.
+    @Test fun accept_buzz_comes_after_start_recording() {
+        for (video in listOf(false, true)) {
+            val cmds = core().onSosDown(videoRecording = video, askActive = false)
+            assertTrue(cmds.indexOf(SiteVoiceCommand.StartRecording)
+                < cmds.indexOf(SiteVoiceCommand.Vibrate(VibePattern.SHORT)))
+        }
     }
 
     @Test fun down_when_free_does_not_acquire_mic() {
@@ -69,7 +83,7 @@ class SiteVoiceCoreTest {
         val c = core()
         val cmds = c.onSosDown(videoRecording = false, askActive = true)
         assertEquals(SiteVoiceState.Idle, c.state)
-        assertEquals(listOf(SiteVoiceCommand.PlayBusyCue), cmds)
+        assertEquals(listOf(SiteVoiceCommand.PlayBusyCue, SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT)), cmds)
     }
 
     @Test fun up_while_recording_uploads_and_sends() {
@@ -93,7 +107,7 @@ class SiteVoiceCoreTest {
         val c = core().apply { onSosDown(false, false); onSosUp() }
         val cmds = c.onSendResult(ok = true)
         assertEquals(SiteVoiceState.Idle, c.state)
-        assertTrue(cmds.isEmpty())
+        assertEquals(listOf(SiteVoiceCommand.Vibrate(VibePattern.LONG)), cmds)
     }
 
     @Test fun send_failure_plays_error_and_returns_to_idle() {
@@ -122,7 +136,7 @@ class SiteVoiceCoreTest {
         val c = core().apply { onSosDown(false, false); onClipReady(clip("a")); onSosUp() }
         val cmds = c.onSendResult(ok = true)
         assertEquals(SiteVoiceState.Playing, c.state)
-        assertEquals(listOf(SiteVoiceCommand.PlayClip(clip("a"))), cmds)
+        assertEquals(listOf(SiteVoiceCommand.Vibrate(VibePattern.LONG), SiteVoiceCommand.PlayClip(clip("a"))), cmds)
         assertEquals(0, c.queueSize)
     }
 
@@ -156,6 +170,7 @@ class SiteVoiceCoreTest {
             listOf(
                 SiteVoiceCommand.CancelCapTimer,
                 SiteVoiceCommand.PlayErrorCue,
+                SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT),
                 SiteVoiceCommand.PlayClip(clip("a")),
             ),
             cmds,
@@ -168,7 +183,7 @@ class SiteVoiceCoreTest {
         val cmds = c.onError()
         assertEquals(SiteVoiceState.Idle, c.state)
         assertEquals(
-            listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue),
+            listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue, SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
             cmds,
         )
     }
@@ -178,8 +193,45 @@ class SiteVoiceCoreTest {
         val cmds = c.onSendResult(ok = false)
         assertEquals(SiteVoiceState.Playing, c.state)
         assertEquals(
-            listOf(SiteVoiceCommand.PlayErrorCue, SiteVoiceCommand.PlayClip(clip("a"))),
+            listOf(SiteVoiceCommand.PlayErrorCue, SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT), SiteVoiceCommand.PlayClip(clip("a"))),
             cmds,
         )
+    }
+
+    @Test
+    fun `talk start buzzes once`() {
+        val core = SiteVoiceCore()
+        val cmds = core.onSosDown(videoRecording = false, askActive = false)
+        assertTrue(cmds.contains(SiteVoiceCommand.Vibrate(VibePattern.SHORT)))
+    }
+
+    @Test
+    fun `refusal while ask holds the mic buzzes twice`() {
+        val core = SiteVoiceCore()
+        val cmds = core.onSosDown(videoRecording = false, askActive = true)
+        assertTrue(cmds.contains(SiteVoiceCommand.PlayBusyCue))
+        assertTrue(cmds.contains(SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
+    }
+
+    // "Sent" is the outcome the operator is waiting on, and it lands seconds after
+    // they let go of the key.
+    @Test
+    fun `a successful send buzzes long`() {
+        val core = SiteVoiceCore()
+        core.onSosDown(videoRecording = false, askActive = false)
+        core.onSosUp()
+        val cmds = core.onSendResult(ok = true)
+        assertTrue(cmds.contains(SiteVoiceCommand.Vibrate(VibePattern.LONG)))
+    }
+
+    @Test
+    fun `a failed send buzzes twice and keeps its error cue`() {
+        val core = SiteVoiceCore()
+        core.onSosDown(videoRecording = false, askActive = false)
+        core.onSosUp()
+        val cmds = core.onSendResult(ok = false)
+        assertTrue(cmds.contains(SiteVoiceCommand.PlayErrorCue))
+        assertTrue(cmds.contains(SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
+        assertFalse(cmds.contains(SiteVoiceCommand.Vibrate(VibePattern.LONG)))
     }
 }

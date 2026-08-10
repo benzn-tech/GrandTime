@@ -28,23 +28,27 @@ class AskPlayer internal constructor(
      * deletes the temp file, and invokes [onDone] WITHOUT throwing — the caller (AskManager)
      * must not crash on a bad answer clip. [onDone] also fires on normal completion and on
      * async post-prepare playback errors, in each case after teardown.
+     *
+     * [onDone] receives `true` only for a normal completion; both the async playback error and
+     * the setup-failure path report `false`, so the caller can tell "the answer finished" apart
+     * from "nothing was heard" and buzz accordingly instead of always claiming success.
      */
-    fun play(wavBytes: ByteArray, onDone: () -> Unit = {}) {
+    fun play(wavBytes: ByteArray, onDone: (ok: Boolean) -> Unit = {}) {
         release()
         cacheDir.mkdirs()
         val file = File(cacheDir, TEMP_NAME).apply { writeBytes(wavBytes) }
         val p = playerFactory.create()
         try {
             p.setDataSource(file.absolutePath)
-            p.setOnComplete { onDone(); teardown(p, file) }
-            p.setOnError { onDone(); teardown(p, file) }
+            p.setOnComplete { onDone(true); teardown(p, file) }
+            p.setOnError { onDone(false); teardown(p, file) }
             p.prepare()
             p.start()
             player = p
             currentFile = file
         } catch (t: Throwable) {
             teardown(p, file)
-            onDone()
+            onDone(false)
         }
     }
 

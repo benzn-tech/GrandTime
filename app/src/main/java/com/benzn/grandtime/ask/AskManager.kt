@@ -5,6 +5,7 @@ import android.util.Base64
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
+import com.benzn.grandtime.hardware.Haptics
 import com.benzn.grandtime.keymap.KeyAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,7 @@ class AskManager(
     private val api = AskApiClient(apiBaseUrl)
     private val sounds = AskSounds(appContext)
     private val player = AskPlayer(File(appContext.cacheDir, "ask"))
+    private val haptics = Haptics(appContext)
     private var capTimer: Job? = null
 
     private val videoRecording: Boolean
@@ -75,6 +77,7 @@ class AskManager(
             AskCommand.CancelCapTimer -> { capTimer?.cancel(); capTimer = null }
             AskCommand.SendClip -> sendClip()
             is AskCommand.PlayAnswer -> playAnswer(cmd.audioBase64)
+            is AskCommand.Vibrate -> haptics.play(cmd.pattern)
         }
         // Status mirror (additive, does not alter Ask's own command flow): every core.onXxx()
         // result is executed through this function (dispatch, cap-timer fire, sendClip's
@@ -112,7 +115,9 @@ class AskManager(
         val bytes = runCatching { Base64.decode(audioBase64, Base64.DEFAULT) }.getOrNull()
         if (bytes == null || bytes.isEmpty()) { fail(); return }
         probe("ask: playing answer")
-        player.play(bytes) { scope.launch { execute(core.onPlaybackDone()) } }
+        player.play(bytes) { ok ->
+            scope.launch { execute(if (ok) core.onPlaybackDone() else core.onError()) }
+        }
     }
 
     private suspend fun fail() {

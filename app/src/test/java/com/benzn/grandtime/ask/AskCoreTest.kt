@@ -1,6 +1,8 @@
 package com.benzn.grandtime.ask
 
+import com.benzn.grandtime.hardware.VibePattern
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,22 +14,55 @@ class AskCoreTest {
         val cmds = c.onPttDown(videoRecording = false)
         assertEquals(AskState.Listening, c.state)
         assertTrue(cmds.contains(AskCommand.PlayListeningCue))
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.SHORT)))
         assertTrue(cmds.contains(AskCommand.StartRecording))
         assertTrue(cmds.contains(AskCommand.ArmCapTimer))
+    }
+
+    // Pins the exact emission order for the accepted onPttDown path — nothing else in this
+    // file nails down the full list, so an implementation emitting an extra SHORT (or
+    // reordering the cue/vibrate/start-recording sequence) would still pass every other test.
+    @Test fun down_when_idle_and_not_recording_emits_exact_command_list() {
+        val c = core()
+        val cmds = c.onPttDown(videoRecording = false, siteVoiceActive = false)
+        assertEquals(
+            listOf(
+                AskCommand.PlayListeningCue,
+                AskCommand.StartRecording,
+                AskCommand.Vibrate(VibePattern.SHORT),
+                AskCommand.ArmCapTimer,
+            ),
+            cmds,
+        )
+    }
+
+    // The accept buzz must not be able to fire for a talk that never started. The executor
+    // short-circuits on a failed recorder.start(), so ordering the buzz after StartRecording is
+    // the whole mechanism — a buzz emitted first would reach the operator before the failure.
+    @Test fun accept_buzz_comes_after_start_recording() {
+        val cmds = core().onPttDown(videoRecording = false)
+        assertTrue(cmds.indexOf(AskCommand.StartRecording)
+            < cmds.indexOf(AskCommand.Vibrate(VibePattern.SHORT)))
     }
 
     @Test fun down_during_video_recording_is_busy_and_stays_idle() {
         val c = core()
         val cmds = c.onPttDown(videoRecording = true)
         assertEquals(AskState.Idle, c.state)
-        assertEquals(listOf(AskCommand.PlayBusyCue), cmds)
+        assertEquals(
+            listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
+            cmds
+        )
     }
 
     @Test fun down_during_site_voice_is_busy_and_stays_idle() {
         val c = core()
         val cmds = c.onPttDown(videoRecording = false, siteVoiceActive = true)
         assertEquals(AskState.Idle, c.state)
-        assertEquals(listOf(AskCommand.PlayBusyCue), cmds)
+        assertEquals(
+            listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
+            cmds
+        )
     }
 
     @Test fun up_while_listening_sends_and_goes_thinking() {
@@ -66,12 +101,30 @@ class AskCoreTest {
         val cmds = c.onError()
         assertEquals(AskState.Idle, c.state)
         assertTrue(cmds.contains(AskCommand.PlayErrorCue))
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
     }
 
     @Test fun playback_done_returns_to_idle() {
         val c = core().apply { onPttDown(false); onPttUp(); onAnswer("x") }
-        c.onPlaybackDone()
+        val cmds = c.onPlaybackDone()
         assertEquals(AskState.Idle, c.state)
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.LONG)))
+    }
+
+    // A failed answer playback must route to onError()'s DOUBLE_SHORT + error cue, never to
+    // onPlaybackDone()'s LONG "success" buzz — that routing decision (AskManager picking one
+    // of these two based on whether MediaPlayer actually finished) is what AskPlayerTest's
+    // ok=false coverage exercises; this pins what onError() emits while Playing so the two
+    // outcomes stay distinguishable at the core level too.
+    @Test fun playback_error_routes_to_onError_not_the_long_buzz() {
+        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("x") } // now Playing
+        val cmds = c.onError()
+        assertEquals(AskState.Idle, c.state)
+        assertEquals(
+            listOf(AskCommand.CancelCapTimer, AskCommand.PlayErrorCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
+            cmds,
+        )
+        assertFalse(cmds.contains(AskCommand.Vibrate(VibePattern.LONG)))
     }
 
     @Test fun reentrant_down_while_listening_is_ignored() {
@@ -99,5 +152,56 @@ class AskCoreTest {
         assertEquals(emptyList<AskCommand>(), cmds)
         assertTrue(!cmds.contains(AskCommand.SendClip))
         assertEquals(AskState.Thinking, c.state)
+    }
+
+    @Test
+    fun `activation buzzes once`() {
+        val core = AskCore()
+        val cmds = core.onPttDown(videoRecording = false, siteVoiceActive = false)
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.SHORT)))
+    }
+
+    // Two buzzes already means "refused" everywhere else on this device.
+    @Test
+    fun `refusal buzzes twice`() {
+        val core = AskCore()
+        val cmds = core.onPttDown(videoRecording = true, siteVoiceActive = false)
+        assertTrue(cmds.contains(AskCommand.PlayBusyCue))
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
+    }
+
+    @Test
+    fun `finishing buzzes long`() {
+        val core = AskCore()
+        core.onPttDown(videoRecording = false, siteVoiceActive = false)
+        core.onPttUp()
+        core.onAnswer("aGk=")
+        val cmds = core.onPlaybackDone()
+        assertEquals(listOf(AskCommand.Vibrate(VibePattern.LONG)), cmds)
+    }
+
+    // The long buzz says "this is over". A playback-done that arrives when nothing
+    // was playing must not fire one.
+    @Test
+    fun `playback done while idle buzzes nothing`() {
+        val core = AskCore()
+        assertEquals(emptyList<AskCommand>(), core.onPlaybackDone())
+    }
+
+    @Test
+    fun `error buzzes twice, like every other failure`() {
+        val core = AskCore()
+        core.onPttDown(videoRecording = false, siteVoiceActive = false)
+        val cmds = core.onError()
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
+    }
+
+    // The keymap-routed tap has no HoldToTalkGate in front of it, so it is a
+    // separate path into the same decision — it must feel the same.
+    @Test
+    fun `discrete tap buzzes once on activation`() {
+        val core = AskCore()
+        val cmds = core.onDiscreteAsk(videoRecording = false, siteVoiceActive = false)
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.SHORT)))
     }
 }

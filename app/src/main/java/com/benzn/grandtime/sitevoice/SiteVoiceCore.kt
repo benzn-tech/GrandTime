@@ -1,5 +1,6 @@
 package com.benzn.grandtime.sitevoice
 
+import com.benzn.grandtime.hardware.VibePattern
 import java.io.File
 
 /** A downloaded inbound Site-voice clip ready to play (or replay from the inbox). */
@@ -27,6 +28,7 @@ sealed interface SiteVoiceCommand {
     /** Return the mic to the video segment (real audio resumes). Emitted after StopRecording. */
     data object ReleaseMicToCapture : SiteVoiceCommand
     data class PlayClip(val clip: VoiceClip) : SiteVoiceCommand
+    data class Vibrate(val pattern: VibePattern) : SiteVoiceCommand
 }
 
 enum class SiteVoiceState { Idle, Recording, Sending, Playing }
@@ -55,14 +57,20 @@ class SiteVoiceCore {
     fun onSosDown(videoRecording: Boolean, askActive: Boolean): List<SiteVoiceCommand> = when (state) {
         SiteVoiceState.Idle ->
             if (askActive) {
-                listOf(SiteVoiceCommand.PlayBusyCue) // Ask holds the mic: mutually exclusive, no-op talk
+                // Ask holds the mic: mutually exclusive, no-op talk
+                listOf(SiteVoiceCommand.PlayBusyCue,
+                       SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT))
             } else {
                 state = SiteVoiceState.Recording
                 borrowedMic = videoRecording // borrow only when a video segment is running
                 buildList {
                     if (videoRecording) add(SiteVoiceCommand.AcquireMicFromCapture)
                     add(SiteVoiceCommand.PlayTalkStartCue)
+                    // Buzz AFTER StartRecording: the executor short-circuits when the
+                    // recorder cannot open the mic, so a buzz ordered first would claim
+                    // "accepted" for a talk that never began. Same rule as AskCore.
                     add(SiteVoiceCommand.StartRecording)
+                    add(SiteVoiceCommand.Vibrate(VibePattern.SHORT))
                     add(SiteVoiceCommand.ArmCapTimer)
                 }
             }
@@ -96,7 +104,10 @@ class SiteVoiceCore {
 
     fun onSendResult(ok: Boolean): List<SiteVoiceCommand> {
         if (state != SiteVoiceState.Sending) return emptyList()
-        val prefix = if (ok) emptyList() else listOf(SiteVoiceCommand.PlayErrorCue)
+        val prefix =
+            if (ok) listOf(SiteVoiceCommand.Vibrate(VibePattern.LONG))
+            else listOf(SiteVoiceCommand.PlayErrorCue,
+                        SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT))
         return drainOrIdle(prefix)
     }
 
@@ -115,7 +126,11 @@ class SiteVoiceCore {
 
     fun onError(): List<SiteVoiceCommand> {
         borrowedMic = false
-        return drainOrIdle(listOf(SiteVoiceCommand.CancelCapTimer, SiteVoiceCommand.PlayErrorCue))
+        return drainOrIdle(listOf(
+            SiteVoiceCommand.CancelCapTimer,
+            SiteVoiceCommand.PlayErrorCue,
+            SiteVoiceCommand.Vibrate(VibePattern.DOUBLE_SHORT),
+        ))
     }
 
     /** Play the next queued inbound (Playing) if any, else settle Idle. Prefix cues emit first. */
