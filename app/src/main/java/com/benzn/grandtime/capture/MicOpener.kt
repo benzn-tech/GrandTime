@@ -79,10 +79,20 @@ class OpenedMic internal constructor(
  */
 @SuppressLint("MissingPermission")
 fun openMic(context: Context, config: AudioCaptureConfig): OpenedMic {
+    // The mask has to match the open below: getMinBufferSize returns a per-mask minimum, and a
+    // mono-sized buffer handed to a stereo AudioRecord holds half as much time per read, which
+    // would quietly change the read cadence the segment roll depends on.
+    val channelMask = if (config.channelCount == 2) {
+        AudioFormat.CHANNEL_IN_STEREO
+    } else {
+        AudioFormat.CHANNEL_IN_MONO
+    }
     val minBuf = AudioRecord.getMinBufferSize(
-        config.sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+        config.sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT
     )
-    val bufferBytes = maxOf(minBuf, config.bufferFloorBytes)
+    // Floor is expressed in bytes for one channel's worth of time, so a stereo request needs
+    // twice the bytes to cover the same duration.
+    val bufferBytes = maxOf(minBuf, config.bufferFloorBytes * config.channelCount)
 
     var chosen: InputDevice? = null
     if (config.preferredMic != null) {
@@ -98,11 +108,14 @@ fun openMic(context: Context, config: AudioCaptureConfig): OpenedMic {
 
     val record = AudioRecord(
         config.source, config.sampleRate,
-        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferBytes
+        channelMask, AudioFormat.ENCODING_PCM_16BIT, bufferBytes
     )
     if (record.state != AudioRecord.STATE_INITIALIZED) {
         record.release()
-        throw IllegalStateException("AudioRecord not initialized (source=${config.source}, rate=${config.sampleRate})")
+        throw IllegalStateException(
+            "AudioRecord not initialized (source=${config.source}, rate=${config.sampleRate}, " +
+                "channels=${config.channelCount})"
+        )
     }
 
     var accepted: Boolean? = null

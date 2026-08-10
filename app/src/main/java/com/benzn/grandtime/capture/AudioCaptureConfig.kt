@@ -30,7 +30,22 @@ data class AudioCaptureConfig(
     val preferredMic: MicChoice? = null,
     val enableNs: Boolean = false,
     val enableAgc: Boolean = false,
+    /**
+     * How many channels to ASK the platform for. Everything that ships records 1.
+     *
+     * Asking for 2 is not the same as getting 2 independent microphones. A HAL is free to
+     * satisfy a stereo request by duplicating one mic into both channels, and it reports
+     * success either way, so the only honest test is to record and compare the channels --
+     * which is what probe block D exists to do. This board is already known to describe
+     * itself inconsistently: getMicrophones() lists one microphone while getDevices() lists
+     * two.
+     */
+    val channelCount: Int = 1,
 ) {
+    init {
+        require(channelCount in 1..2) { "channelCount must be 1 or 2, got $channelCount" }
+    }
+
     companion object {
         /** Standalone WAV recording (and SP-Ask, which reuses AudioRecorder). */
         val DEFAULT_STANDALONE = AudioCaptureConfig(

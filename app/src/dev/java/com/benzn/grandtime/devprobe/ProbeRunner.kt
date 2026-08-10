@@ -46,7 +46,7 @@ class ProbeRunner(private val context: Context) {
         dir.mkdirs()
         File(dir, "capabilities.json").writeText(MicCapabilities.snapshotJson(context))
 
-        for (take in PROBE_TAKES) {
+        for (take in takesFor(block)) {
             runCatching { recordTake(block, take, seconds, dir, onProgress) }
                 .onFailure { e ->
                     // A configuration this board refuses is a result, not a crash. Record why and
@@ -149,7 +149,9 @@ class ProbeRunner(private val context: Context) {
             // and would mislabel every 44.1 kHz take.
             val wav = File(dir, "$base.wav")
             FileOutputStream(wav).use { fos ->
-                fos.write(WavHeader.riffWav(pcmFile.length().toInt(), take.config.sampleRate, 1, 16))
+                fos.write(WavHeader.riffWav(
+                    pcmFile.length().toInt(), take.config.sampleRate,
+                    take.config.channelCount, 16))
                 pcmFile.inputStream().buffered().use { it.copyTo(fos) }
                 // This device may lose power before the files are pulled; a plain `use` close only
                 // flushes to the page cache, so force the WAV to durable storage before moving on.

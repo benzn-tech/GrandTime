@@ -50,4 +50,32 @@ class ProbeTakesTest {
     @Test fun `every block is recorded for every take`() {
         assertEquals(listOf(ProbeBlock.S, ProbeBlock.F, ProbeBlock.N), ProbeBlock.entries.toList())
     }
+
+    @Test fun `block D runs the dual-mic list and every other block keeps the original ten`() {
+        assertEquals(DUAL_TAKES, takesFor(ProbeBlock.D))
+        for (b in listOf(ProbeBlock.S, ProbeBlock.F, ProbeBlock.N)) {
+            assertEquals(PROBE_TAKES, takesFor(b))
+        }
+    }
+
+    @Test fun `block D pairs every stereo take with a mono control at the same settings`() {
+        // Without a mono take recorded in the same block, a channel comparison has nothing to
+        // be compared against except recordings made under different conditions.
+        val mono = DUAL_TAKES.filter { it.config.channelCount == 1 }
+        val stereo = DUAL_TAKES.filter { it.config.channelCount == 2 }
+        assertTrue("needs a mono control", mono.size >= 2)
+        assertTrue("needs stereo takes", stereo.size >= 2)
+        assertEquals(
+            "the first take must be the mono control so drift is bounded on both sides",
+            1, DUAL_TAKES.first().config.channelCount)
+        assertEquals(1, DUAL_TAKES.last().config.channelCount)
+    }
+
+    @Test fun `block D take names are unique and say their channel count`() {
+        assertEquals(DUAL_TAKES.size, DUAL_TAKES.map { it.name }.toSet().size)
+        for (t in DUAL_TAKES) {
+            val expected = if (t.config.channelCount == 2) "stereo" else "mono"
+            assertTrue("${t.name} should start with $expected", t.name.startsWith(expected))
+        }
+    }
 }
