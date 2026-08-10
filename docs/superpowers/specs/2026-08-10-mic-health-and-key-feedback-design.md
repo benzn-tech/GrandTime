@@ -235,6 +235,15 @@ signals by tone alone, which is the feedback channel we already know does not ar
   with no gate (`CoreService.kt:423-424`). The discrete path gets the same activation buzz;
   it has no hold to debounce, and a tap the operator meant is still worth confirming.
 
+**Revision (2026-08-11) — where the activation buzz sits in the command list.**
+Both cores now emit `Vibrate(SHORT)` **after** `StartRecording`, not before it. Both
+executors short-circuit (`if (!recorder.start()) { fail(); return }`), so an activation buzz
+ordered first is delivered for a talk that never began — the operator feels "accepted", then
+either nothing or a refusal buzz behind it. That is the exact failure mode this phase exists
+to remove, so ordering wins over the marginally snappier press-to-buzz latency. Pinned by
+`accept_buzz_comes_after_start_recording` in both core test classes. Accepted cost: the buzz
+now lands inside the first moments of the recording and may be faintly audible in the clip.
+
 ---
 
 ## Testing

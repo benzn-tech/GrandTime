@@ -28,8 +28,8 @@ class SiteVoiceCoreTest {
             listOf(
                 SiteVoiceCommand.AcquireMicFromCapture,
                 SiteVoiceCommand.PlayTalkStartCue,
-                SiteVoiceCommand.Vibrate(VibePattern.SHORT),
                 SiteVoiceCommand.StartRecording,
+                SiteVoiceCommand.Vibrate(VibePattern.SHORT),
                 SiteVoiceCommand.ArmCapTimer,
             ),
             cmds,
@@ -37,6 +37,17 @@ class SiteVoiceCoreTest {
         // Acquire must precede StartRecording so the mic is free before Site-voice opens it.
         assertTrue(cmds.indexOf(SiteVoiceCommand.AcquireMicFromCapture)
             < cmds.indexOf(SiteVoiceCommand.StartRecording))
+    }
+
+    // Same rule as AskCore: the executor short-circuits on a failed recorder.start(), so the
+    // accept buzz is only truthful if it is ordered after StartRecording. Pinned for both the
+    // borrowed-mic and free-mic paths, which build their command lists separately.
+    @Test fun accept_buzz_comes_after_start_recording() {
+        for (video in listOf(false, true)) {
+            val cmds = core().onSosDown(videoRecording = video, askActive = false)
+            assertTrue(cmds.indexOf(SiteVoiceCommand.StartRecording)
+                < cmds.indexOf(SiteVoiceCommand.Vibrate(VibePattern.SHORT)))
+        }
     }
 
     @Test fun down_when_free_does_not_acquire_mic() {

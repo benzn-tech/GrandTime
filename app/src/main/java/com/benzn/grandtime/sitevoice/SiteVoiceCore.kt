@@ -66,8 +66,11 @@ class SiteVoiceCore {
                 buildList {
                     if (videoRecording) add(SiteVoiceCommand.AcquireMicFromCapture)
                     add(SiteVoiceCommand.PlayTalkStartCue)
-                    add(SiteVoiceCommand.Vibrate(VibePattern.SHORT))
+                    // Buzz AFTER StartRecording: the executor short-circuits when the
+                    // recorder cannot open the mic, so a buzz ordered first would claim
+                    // "accepted" for a talk that never began. Same rule as AskCore.
                     add(SiteVoiceCommand.StartRecording)
+                    add(SiteVoiceCommand.Vibrate(VibePattern.SHORT))
                     add(SiteVoiceCommand.ArmCapTimer)
                 }
             }

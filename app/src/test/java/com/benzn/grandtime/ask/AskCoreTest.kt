@@ -28,12 +28,21 @@ class AskCoreTest {
         assertEquals(
             listOf(
                 AskCommand.PlayListeningCue,
-                AskCommand.Vibrate(VibePattern.SHORT),
                 AskCommand.StartRecording,
+                AskCommand.Vibrate(VibePattern.SHORT),
                 AskCommand.ArmCapTimer,
             ),
             cmds,
         )
+    }
+
+    // The accept buzz must not be able to fire for a talk that never started. The executor
+    // short-circuits on a failed recorder.start(), so ordering the buzz after StartRecording is
+    // the whole mechanism — a buzz emitted first would reach the operator before the failure.
+    @Test fun accept_buzz_comes_after_start_recording() {
+        val cmds = core().onPttDown(videoRecording = false)
+        assertTrue(cmds.indexOf(AskCommand.StartRecording)
+            < cmds.indexOf(AskCommand.Vibrate(VibePattern.SHORT)))
     }
 
     @Test fun down_during_video_recording_is_busy_and_stays_idle() {
