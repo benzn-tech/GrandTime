@@ -95,7 +95,7 @@ class AudioProbeActivity : ComponentActivity() {
                         status = "Block ${block.label}: starting"
                         scope.launch {
                             val dir = runCatching {
-                                runner.runBlock(block) { take, dbfs ->
+                                runner.runBlock(block, seconds = block.seconds) { take, dbfs ->
                                     status = "Block ${block.label} — take ${take.index} " +
                                         "${take.name}: %.1f dBFS".format(Locale.US, dbfs)
                                 }

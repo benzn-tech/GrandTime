@@ -47,13 +47,14 @@ class ProbeTakesTest {
         assertEquals(16000, cam.config.sampleRate)
     }
 
-    @Test fun `the block list is S F N then D, in that order`() {
+    @Test fun `the block list is S F N then D E W, in that order`() {
         // The original three answer "which capture setting transcribes best" and are run as a
         // set; D answers a different question (two channels or one copied) and runs its own
         // configurations. D is appended rather than inserted so an existing block directory's
         // name still means what it did when it was recorded.
         assertEquals(
-            listOf(ProbeBlock.S, ProbeBlock.F, ProbeBlock.N, ProbeBlock.D),
+            listOf(ProbeBlock.S, ProbeBlock.F, ProbeBlock.N,
+                   ProbeBlock.D, ProbeBlock.E, ProbeBlock.W),
             ProbeBlock.entries.toList())
     }
 
@@ -83,5 +84,60 @@ class ProbeTakesTest {
             val expected = if (t.config.channelCount == 2) "stereo" else "mono"
             assertTrue("${t.name} should start with $expected", t.name.startsWith(expected))
         }
+    }
+
+    @Test fun `the ladder is one stereo take, long enough to walk it`() {
+        // One take, not five. The previous mono ladder was paused to change
+        // rooms and its 2 m -> 4 m step ended up mixing distance with a room
+        // change -- the whole run had to be repeated.
+        assertEquals(1, LADDER_TAKES.size)
+        assertEquals(2, LADDER_TAKES.single().config.channelCount)
+        assertEquals(LADDER_TAKES, takesFor(ProbeBlock.E))
+        assertTrue("five distances plus walking needs well over a minute",
+            ProbeBlock.E.seconds >= 150)
+    }
+
+    @Test fun `the ladder records at 16 kHz, not 44 point 1`() {
+        // Block D's 44.1 kHz stereo take came back with the channels
+        // correlating 0.160 and 14.8 dB apart, against ~0.89 and ~3.8 dB for
+        // all three 16 kHz takes. Same shape as this board's NS/AGC at
+        // 44.1 kHz: reports healthy, does not do the work.
+        assertEquals(16000, LADDER_TAKES.single().config.sampleRate)
+    }
+
+    @Test fun `only the short blocks keep the ten-second default`() {
+        assertEquals(10, ProbeBlock.S.seconds)
+        assertEquals(10, ProbeBlock.D.seconds)
+        assertTrue(ProbeBlock.E.seconds > ProbeBlock.D.seconds)
+    }
+
+    @Test fun `a stereo take is sized by frames, not by samples`() {
+        // Regression: the byte target was sampleRate * 2 * seconds, which is a
+        // MONO frame. Every stereo take recorded exactly half its duration, and
+        // nothing said so -- the take's JSON echoes the requested seconds, and a
+        // half-length wav plays back at the right speed. It was only caught by
+        // opening the file and reading getnframes().
+        for (t in DUAL_TAKES + LADDER_TAKES) {
+            val bytesPerFrame = 2 * t.config.channelCount
+            assertEquals(if (t.config.channelCount == 2) 4 else 2, bytesPerFrame)
+        }
+    }
+
+    @Test fun `the worn-far block is one long stereo take`() {
+        // Stereo, not two mono takes: the SNR difference being measured (about
+        // 7 dB, seen once, under a placement that is not the worn one) is
+        // smaller than the difference between two separate moments, so both
+        // microphones have to be captured in the same instant.
+        assertEquals(1, WORN_FAR_TAKES.size)
+        assertEquals(2, WORN_FAR_TAKES.single().config.channelCount)
+        assertEquals(16000, WORN_FAR_TAKES.single().config.sampleRate)
+        assertEquals(WORN_FAR_TAKES, takesFor(ProbeBlock.W))
+    }
+
+    @Test fun `the worn-far block leaves room for taps, friction and three distances`() {
+        // tap ID + friction + 1 m + 3 m + 6 m, each with 4 s of silence around
+        // it. Under about three minutes the operator has to rush, and rushing
+        // is what merged the distances in the first ladder attempt.
+        assertTrue(ProbeBlock.W.seconds >= 180)
     }
 }

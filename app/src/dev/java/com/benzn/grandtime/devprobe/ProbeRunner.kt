@@ -100,7 +100,13 @@ class ProbeRunner(private val context: Context) {
                 om.record.startRecording()
                 reportJson = om.reportJson() // routing is only true once recording has started
                 val buf = ByteArray(om.bufferBytes)
-                val target = take.config.sampleRate.toLong() * 2 * seconds
+                // Bytes per FRAME, not per sample: a stereo frame is two 16-bit
+                // samples. Sizing this as if it were mono stopped every stereo
+                // take at half the requested duration -- block D's 10 s takes
+                // ran 5 s and the 200 s ladder ran 100 s, with the JSON still
+                // reporting "seconds": 200 because it echoes the request.
+                val bytesPerFrame = 2 * take.config.channelCount
+                val target = take.config.sampleRate.toLong() * bytesPerFrame * seconds
                 var lastN = 0
                 var peakAll = -120.0
                 var sumSquares = 0.0
