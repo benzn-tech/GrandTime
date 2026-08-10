@@ -1,5 +1,7 @@
 package com.benzn.grandtime.ask
 
+import com.benzn.grandtime.hardware.VibePattern
+
 /** Audio-only side effects (no screen UI — spec §2.4/§2.5). */
 sealed interface AskCommand {
     data object PlayListeningCue : AskCommand
@@ -12,6 +14,7 @@ sealed interface AskCommand {
     data object ArmCapTimer : AskCommand
     data object CancelCapTimer : AskCommand
     data class PlayAnswer(val audioBase64: String) : AskCommand
+    data class Vibrate(val pattern: VibePattern) : AskCommand
 }
 
 enum class AskState { Idle, Listening, Thinking, Playing }
@@ -29,10 +32,13 @@ class AskCore {
     fun onPttDown(videoRecording: Boolean, siteVoiceActive: Boolean = false): List<AskCommand> = when (state) {
         AskState.Idle ->
             if (videoRecording || siteVoiceActive) {
-                listOf(AskCommand.PlayBusyCue)  // mic exclusivity: yield to video OR active Site-voice
+                // Refusal was audible-only, which is the one channel a chest-worn
+                // device cannot rely on. Two buzzes is what refusal already means here.
+                listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT))
             } else {
                 state = AskState.Listening
-                listOf(AskCommand.PlayListeningCue, AskCommand.StartRecording, AskCommand.ArmCapTimer)
+                listOf(AskCommand.PlayListeningCue, AskCommand.Vibrate(VibePattern.SHORT),
+                       AskCommand.StartRecording, AskCommand.ArmCapTimer)
             }
         else -> emptyList()  // ignore re-entrant down mid-ask
     }
@@ -64,12 +70,17 @@ class AskCore {
 
     fun onError(): List<AskCommand> {
         state = AskState.Idle
-        return listOf(AskCommand.CancelCapTimer, AskCommand.PlayErrorCue)
+        return listOf(AskCommand.CancelCapTimer, AskCommand.PlayErrorCue,
+                      AskCommand.Vibrate(VibePattern.DOUBLE_SHORT))
     }
 
+    /** The answer has played and the microphone is back. This arrives unprompted,
+     *  seconds after the key was released, so it is the one moment the operator has
+     *  no other way to learn about. */
     fun onPlaybackDone(): List<AskCommand> {
-        if (state == AskState.Playing) state = AskState.Idle
-        return emptyList()
+        if (state != AskState.Playing) return emptyList()
+        state = AskState.Idle
+        return listOf(AskCommand.Vibrate(VibePattern.LONG))
     }
 
     /** Discrete (tap) trigger for a keymap-routed hard key (Task 13): toggles
