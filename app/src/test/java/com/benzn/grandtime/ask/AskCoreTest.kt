@@ -103,14 +103,120 @@ class AskCoreTest {
         assertEquals(AskState.Listening, c.state)
     }
 
-    @Test fun down_during_video_recording_is_busy_and_stays_idle() {
+    // --- Phase B: borrow the mic from the video instead of refusing ---
+    //
+    // Site-voice has borrowed the mic during video since #91; Ask refused. Same device, two
+    // hold-to-talk keys, one borrows and one refuses, purely because nobody wired Ask up.
+    // The borrow is HELD THROUGH PLAYBACK: the mic is released before the API call, so
+    // returning it at StopRecording would put the agent's spoken answer on the evidence video.
+
+    @Test fun down_during_video_borrows_the_mic_instead_of_refusing() {
         val c = core()
         val cmds = c.onPttDown(videoRecording = true)
+        assertEquals(AskState.Listening, c.state)
+        assertTrue(cmds.contains(AskCommand.AcquireMicFromCapture))
+        assertFalse("refusing is the old behaviour", cmds.contains(AskCommand.PlayBusyCue))
+    }
+
+    /** The capture mic has to be freed before Ask opens its own — SiteVoiceCoreTest pins the
+     *  same ordering for its path. */
+    @Test fun acquire_precedes_start_recording() {
+        val cmds = core().onPttDown(videoRecording = true)
+        assertTrue(cmds.indexOf(AskCommand.AcquireMicFromCapture)
+            < cmds.indexOf(AskCommand.StartRecording))
+    }
+
+    @Test fun down_with_no_video_does_not_acquire() {
+        assertFalse(core().onPttDown(videoRecording = false)
+            .contains(AskCommand.AcquireMicFromCapture))
+    }
+
+    /** Site-voice is a real conflict between two voice features, not a resource to borrow.
+     *  This refusal stays. */
+    @Test fun down_during_site_voice_still_refuses() {
+        val c = core()
+        val cmds = c.onPttDown(videoRecording = false, siteVoiceActive = true)
         assertEquals(AskState.Idle, c.state)
         assertEquals(
             listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)),
-            cmds
+            cmds,
         )
+    }
+
+    @Test fun site_voice_refusal_wins_even_during_video() {
+        val cmds = core().onPttDown(videoRecording = true, siteVoiceActive = true)
+        assertFalse(cmds.contains(AskCommand.AcquireMicFromCapture))
+        assertTrue(cmds.contains(AskCommand.PlayBusyCue))
+    }
+
+    /** The whole point of holding: the mic is released at the top of sendClip(), so returning
+     *  it here lets the video re-acquire and record the agent answering. */
+    @Test fun up_does_not_release_the_borrow() {
+        val c = core().apply { onPttDown(videoRecording = true) }
+        assertFalse(c.onPttUp().contains(AskCommand.ReleaseMicToCapture))
+    }
+
+    @Test fun cap_reached_does_not_release_the_borrow_either() {
+        val c = core().apply { onPttDown(videoRecording = true) }
+        assertFalse(c.onCapReached().contains(AskCommand.ReleaseMicToCapture))
+    }
+
+    /** The LONG buzz means "finished, microphone back". Buzzing before the release states
+     *  something that is not true yet. */
+    @Test fun playback_done_releases_before_the_long_buzz() {
+        val c = core()
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        val cmds = c.onPlaybackDone()
+        assertTrue(cmds.contains(AskCommand.ReleaseMicToCapture))
+        assertTrue(cmds.indexOf(AskCommand.ReleaseMicToCapture)
+            < cmds.indexOf(AskCommand.Vibrate(VibePattern.LONG)))
+    }
+
+    /** Every terminal path must return the mic. A missed release leaves the video's audio
+     *  track silent for the rest of the recording — worse than the refusal it replaced. */
+    @Test fun error_releases_the_borrow() {
+        val c = core().apply { onPttDown(videoRecording = true) }
+        assertTrue(c.onError().contains(AskCommand.ReleaseMicToCapture))
+    }
+
+    @Test fun playback_timeout_releases_the_borrow() {
+        val c = core()
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        assertTrue(c.onPlaybackTimeout().contains(AskCommand.ReleaseMicToCapture))
+    }
+
+    /** Nothing was borrowed, so nothing may be returned: CaptureManager.end() releases
+     *  WHOEVER holds the handover, so a spurious release could return Site-voice's borrow. */
+    @Test fun error_without_a_borrow_emits_no_release() {
+        val c = core().apply { onPttDown(videoRecording = false) }
+        assertFalse(c.onError().contains(AskCommand.ReleaseMicToCapture))
+    }
+
+    @Test fun a_borrow_is_released_exactly_once() {
+        val c = core()
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        assertTrue(c.onPlaybackDone().contains(AskCommand.ReleaseMicToCapture))
+        assertFalse("the borrow already ended", c.onError().contains(AskCommand.ReleaseMicToCapture))
+    }
+
+    /** A second exchange that borrows nothing must not inherit the first one's release. */
+    @Test fun a_later_ask_without_video_does_not_release() {
+        val c = core()
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ=="); c.onPlaybackDone()
+        c.onPttDown(videoRecording = false)
+        assertFalse(c.onError().contains(AskCommand.ReleaseMicToCapture))
+    }
+
+    @Test fun re_entrant_down_while_playing_does_not_acquire_again() {
+        val c = core()
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        assertEquals(emptyList<AskCommand>(), c.onPttDown(videoRecording = true))
+    }
+
+    /** onDiscreteAsk delegates to onPttDown, but nothing pinned that it carries the borrow. */
+    @Test fun a_discrete_tap_during_video_acquires_too() {
+        assertTrue(core().onDiscreteAsk(videoRecording = true)
+            .contains(AskCommand.AcquireMicFromCapture))
     }
 
     @Test fun down_during_site_voice_is_busy_and_stays_idle() {
@@ -219,11 +325,12 @@ class AskCoreTest {
         assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.SHORT)))
     }
 
-    // Two buzzes already means "refused" everywhere else on this device.
+    // Two buzzes already means "refused" everywhere else on this device. Site-voice is now the
+    // only refusal on this path -- video is borrowed from, not refused (Phase B).
     @Test
     fun `refusal buzzes twice`() {
         val core = AskCore()
-        val cmds = core.onPttDown(videoRecording = true, siteVoiceActive = false)
+        val cmds = core.onPttDown(videoRecording = false, siteVoiceActive = true)
         assertTrue(cmds.contains(AskCommand.PlayBusyCue))
         assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
     }

@@ -7,6 +7,7 @@ import com.benzn.grandtime.capture.CaptureState
 import com.benzn.grandtime.core.AppState
 import com.benzn.grandtime.hardware.Haptics
 import com.benzn.grandtime.keymap.KeyAction
+import com.benzn.grandtime.sitevoice.MicHandover
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,6 +28,12 @@ class AskManager(
     private val scope: CoroutineScope,
     private val auth: AuthManager,
     private val apiBaseUrl: String,
+    /** Lets an ask borrow the mic from a running video segment instead of refusing, exactly as
+     *  Site-voice already does. No-op when no video is recording. */
+    private val micHandover: MicHandover = object : MicHandover {
+        override fun begin() = true
+        override fun end() {}
+    },
     private val probe: (String) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -78,6 +85,8 @@ class AskManager(
             AskCommand.ArmCapTimer -> armCap()
             AskCommand.CancelCapTimer -> { capTimer?.cancel(); capTimer = null }
             AskCommand.SendClip -> sendClip()
+            AskCommand.AcquireMicFromCapture -> { probe("ask: borrow mic"); micHandover.begin() }
+            AskCommand.ReleaseMicToCapture -> { probe("ask: return mic"); micHandover.end() }
             is AskCommand.PlayAnswer -> playAnswer(cmd.audioBase64)
             is AskCommand.Vibrate -> haptics.play(cmd.pattern)
         }
@@ -146,16 +155,32 @@ class AskManager(
         }
     }
 
+    /**
+     * Ordering here is load-bearing, not stylistic.
+     *
+     * `discard()` frees Ask's microphone; `end()` reopens the capture one. On this
+     * single-capture ROM the reopen must come SECOND -- run it while Ask still holds the mic and
+     * `buildMic()` fails, which leaves `audioHandover` true inside SegmentRecorder while
+     * `handoverActive` is already false, and the video segment is then stuck silent with nothing
+     * left to recover it. `SiteVoiceManager.fail()` encodes the same order.
+     *
+     * `core.onError()` also emits ReleaseMicToCapture, so `end()` runs twice on this path. It is
+     * idempotent, and a double release is free where a missed one is not.
+     */
     private suspend fun fail() {
         recorder.discard()
         capTimer?.cancel(); capTimer = null
         playTimer?.cancel(); playTimer = null
+        micHandover.end()
         execute(core.onError())
     }
 
     fun shutdown() {
         capTimer?.cancel()
         playTimer?.cancel()
+        // The ONLY release on this path: player.release() below drops the pending onDone, so no
+        // command list is ever produced to carry a ReleaseMicToCapture.
+        micHandover.end()
         recorder.discard()
         player.release()
         sounds.release()

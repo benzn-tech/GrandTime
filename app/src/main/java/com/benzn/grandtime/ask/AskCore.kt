@@ -14,6 +14,12 @@ sealed interface AskCommand {
     data object ArmCapTimer : AskCommand
     data object CancelCapTimer : AskCommand
     data class PlayAnswer(val audioBase64: String) : AskCommand
+    /** Borrow the mic from an active video segment (its audio goes silent). Emitted before
+     *  StartRecording, and only when a video recording is active at key-down. */
+    data object AcquireMicFromCapture : AskCommand
+    /** Return the mic to the video segment. Emitted on every terminal transition that could
+     *  follow a borrow -- NOT at StopRecording, see [borrowedMic]. */
+    data object ReleaseMicToCapture : AskCommand
     data class Vibrate(val pattern: VibePattern) : AskCommand
 }
 
@@ -29,19 +35,54 @@ class AskCore {
     var state: AskState = AskState.Idle
         private set
 
+    /**
+     * True while this ask borrowed the mic from a running video segment.
+     *
+     * Held from key-down until the answer has finished playing, which is longer than
+     * Site-voice holds it. Site-voice returns the mic at StopRecording; Ask cannot, because the
+     * mic is released at the top of `sendClip()` -- before the API call -- so returning it there
+     * lets the video re-acquire and record **the agent's spoken answer into the evidence video**.
+     * A longer gap in the video's audio is the better trade, and it is the same reasoning that
+     * moved the "recording started" announcement out of the recording in #16.
+     *
+     * The cost of that choice is that the borrow now spans two async boundaries, so EVERY
+     * terminal transition has to return it. A missed release leaves the video's audio silent for
+     * the rest of the recording -- worse than the refusal this replaced. Cleared at the same
+     * moment the release is emitted, so no second exchange can re-emit it.
+     */
+    private var borrowedMic = false
+
+    /** Emit the release exactly once, if this ask is holding a borrow. */
+    private fun releaseIfBorrowed(): List<AskCommand> =
+        if (borrowedMic) {
+            borrowedMic = false
+            listOf(AskCommand.ReleaseMicToCapture)
+        } else {
+            emptyList()
+        }
+
     fun onPttDown(videoRecording: Boolean, siteVoiceActive: Boolean = false): List<AskCommand> = when (state) {
         AskState.Idle ->
-            if (videoRecording || siteVoiceActive) {
-                // Refusal was audible-only, which is the one channel a chest-worn
+            if (siteVoiceActive) {
+                // The one refusal left. Site-voice is another voice feature holding the mic for
+                // a person, not a resource to borrow -- taking it would cut someone off
+                // mid-sentence. Refusal was audible-only, which is the one channel a chest-worn
                 // device cannot rely on. Two buzzes is what refusal already means here.
                 listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT))
             } else {
                 state = AskState.Listening
-                // The buzz comes AFTER StartRecording, not before: the executor
-                // short-circuits when the recorder cannot open the mic, so a buzz
-                // ordered first would claim "accepted" for a talk that never began.
-                listOf(AskCommand.PlayListeningCue, AskCommand.StartRecording,
-                       AskCommand.Vibrate(VibePattern.SHORT), AskCommand.ArmCapTimer)
+                borrowedMic = videoRecording // borrow only when a video segment is running
+                buildList {
+                    // Acquire first: the capture mic must be freed before Ask opens its own.
+                    if (videoRecording) add(AskCommand.AcquireMicFromCapture)
+                    add(AskCommand.PlayListeningCue)
+                    // The buzz comes AFTER StartRecording, not before: the executor
+                    // short-circuits when the recorder cannot open the mic, so a buzz
+                    // ordered first would claim "accepted" for a talk that never began.
+                    add(AskCommand.StartRecording)
+                    add(AskCommand.Vibrate(VibePattern.SHORT))
+                    add(AskCommand.ArmCapTimer)
+                }
             }
         else -> emptyList()  // ignore re-entrant down mid-ask
     }
@@ -73,8 +114,8 @@ class AskCore {
 
     fun onError(): List<AskCommand> {
         state = AskState.Idle
-        return listOf(AskCommand.CancelCapTimer, AskCommand.PlayErrorCue,
-                      AskCommand.Vibrate(VibePattern.DOUBLE_SHORT))
+        return listOf(AskCommand.CancelCapTimer) + releaseIfBorrowed() +
+            listOf(AskCommand.PlayErrorCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT))
     }
 
     /** The answer has played and the microphone is back. This arrives unprompted,
@@ -83,7 +124,9 @@ class AskCore {
     fun onPlaybackDone(): List<AskCommand> {
         if (state != AskState.Playing) return emptyList()
         state = AskState.Idle
-        return listOf(AskCommand.Vibrate(VibePattern.LONG))
+        // Release BEFORE the buzz: one long buzz means "finished, microphone back", so buzzing
+        // first states something that is not true yet.
+        return releaseIfBorrowed() + listOf(AskCommand.Vibrate(VibePattern.LONG))
     }
 
     /**

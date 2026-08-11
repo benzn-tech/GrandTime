@@ -147,6 +147,21 @@ class CaptureManager(
         scope.launch {
             AppState.meetingEndedElsewhere.collect { onMeetingEndedElsewhere() }
         }
+        // Whoever silenced a segment for an ask, resume it when the ask is over.
+        //
+        // Needed because a segment started mid-exchange is paused by askInFlight(), NOT by a
+        // borrow: AskCore never emitted an acquire (there was no video at key-down), so it will
+        // never emit the matching release either, and end() alone would find handoverActive
+        // false and return -- leaving that segment silent for its whole length.
+        //
+        // end() is idempotent, so this is also a safety net for a release Ask somehow misses.
+        // The siteVoiceActive guard matters because end() returns WHOEVER holds the handover:
+        // the two features are mutually exclusive today, and this does not assume it stays true.
+        scope.launch {
+            AppState.askActive.collect { active ->
+                if (!active && !AppState.siteVoiceActive.value) end()
+            }
+        }
         // 预览挂/摘:录像态且 UI 给了 surface 才挂;否则摘。setPreviewSurface 只切 GL 目标,
         // 不动相机会话(录像不中断)。distinctUntilChanged 防每次段滚动重复挂。
         scope.launch {
@@ -177,6 +192,12 @@ class CaptureManager(
         sounds.release()
         scope.launch { pipeline.release() }
     }
+
+    /** True while an ask is between key-down and the end of playback. [AppState.askActive] is
+     *  the right flag HERE -- unlike in [MicSilenceMonitor], which needs the physical hold --
+     *  because what must stay off the tape is the spoken answer, which plays long after the
+     *  microphone came back. The two flags now appear in this file for opposite reasons. */
+    private fun askInFlight(): Boolean = AppState.askActive.value
 
     override fun begin(): Boolean {
         // No video segment running → nothing to borrow; Site-voice records normally.
@@ -423,7 +444,11 @@ class CaptureManager(
             quality = settings.videoQuality,
             hevcPreferred = true,
             location = gps.freshFix()?.let { it.first.toFloat() to it.second.toFloat() },
-            startAudioPaused = handoverActive, // rollover mid-handover → new segment records silent
+            // Also paused when an ask is in flight but never borrowed, because there was no video
+            // to borrow from at key-down. Without this the operator can press the video key
+            // mid-exchange and the agent's spoken answer lands on the evidence video -- the exact
+            // outcome the borrow exists to prevent, one key press away.
+            startAudioPaused = handoverActive || askInFlight(),
         ) { error, message ->
             scope.launch {
                 val finalizedId = finalizeVideoDbRow()
@@ -489,7 +514,14 @@ class CaptureManager(
         // there is no live segment (Camera2Pipeline), so a release landing inside startSegment was
         // consumed against nothing and the new segment stayed silent for its whole length. Safe
         // only because SegmentRecorder.resumeAudio() now early-returns when no handover is active.
-        if (handoverActive) pipeline.pauseSegmentAudio() else pipeline.resumeSegmentAudio()
+        if (handoverActive || askInFlight()) {
+            // Claim the handover when the pause was for an ask: end() is a no-op unless
+            // handoverActive is set, so without this the segment would never be resumed.
+            handoverActive = true
+            pipeline.pauseSegmentAudio()
+        } else {
+            pipeline.resumeSegmentAudio()
+        }
         currentVideoRecordId = recordId
         currentVideoFile = file
         currentVideoStartedAt = startedAt

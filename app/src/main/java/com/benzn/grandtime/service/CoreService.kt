@@ -342,6 +342,7 @@ class CoreService : LifecycleService() {
             context = this,
             scope = lifecycleScope,
             auth = auth,
+            micHandover = capture,
             apiBaseUrl = BuildConfig.ORG_API_BASE_URL,
             probe = ::probe,
         )
