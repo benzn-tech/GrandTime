@@ -50,7 +50,9 @@ import com.benzn.grandtime.core.AppState
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
-import com.google.zxing.MultiFormatReader
+import com.google.zxing.ChecksumException
+import com.google.zxing.FormatException
+import com.google.zxing.qrcode.QRCodeReader
 import com.google.zxing.NotFoundException
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
@@ -134,22 +136,46 @@ private fun QrScanScaffold(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var status by remember { mutableStateOf(prompt) }
+    // Three independent sources, deliberately not one variable: the camera's own state, the
+    // per-frame advice, and the verdict of a sign-in attempt. Precedence is fixed here.
+    var scanning by remember { mutableStateOf(prompt) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    var attempt by remember { mutableStateOf<String?>(null) }
+    val status = attempt ?: hint ?: scanning
     var busy by remember { mutableStateOf(false) }
     var lastAttempted by remember { mutableStateOf<String?>(null) }
+    val hints = remember { ScanHints() }
 
     val scanner = remember {
         QrScanner(
             context = context,
-            onStatus = { status = it },
+            onStatus = { scanning = it },
             onFrame = {},
+            // Frame hints and attempt messages are separate state, displayed as
+            // `attempt ?: hint ?: scanning`. A per-frame hint therefore CANNOT overwrite
+            // "Invalid or expired QR code" -- the one message that names a cause the operator
+            // has no other way to discover. Ordering luck is not what keeps that true.
+            onFrameOutcome = { outcome ->
+                hints.onFrame(outcome, elapsedMs = System.currentTimeMillis())
+                hint = hints.hint
+            },
+            // A screen blank tears the surface down and rebuilds it, which reruns start() and
+            // rewrites "Scanning...". lastAttempted lives in the composable and survived, so the
+            // same code could never be retried again: decoded, failed, and stuck on "Scanning..."
+            // with no way out. Clearing it here is what makes the retry real.
+            onRestart = {
+                lastAttempted = null
+                hints.reset()
+                hint = null
+            },
             onDecoded = { raw ->
                 if (busy || raw == lastAttempted) return@QrScanner
                 lastAttempted = raw
+                attempt = null      // a new code: the previous attempt's verdict is stale
                 busy = true
                 scope.launch {
                     try {
-                        onCode(raw) { status = it }
+                        onCode(raw) { attempt = it }
                     } finally {
                         // Re-arm even if the handler threw: leaving the screen
                         // stuck on a dead scanner is worse than a retry, and a
@@ -231,6 +257,9 @@ private class QrScanner(
     private val context: Context,
     private val onStatus: (String) -> Unit,
     private val onFrame: () -> Unit,
+    private val onFrameOutcome: (ScanFrame) -> Unit = {},
+    /** The surface was rebuilt (screen blank, app resume) and scanning starts over. */
+    private val onRestart: () -> Unit = {},
     private val onDecoded: (String) -> Unit,
 ) {
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -241,18 +270,20 @@ private class QrScanner(
     private var reader: ImageReader? = null
     private var stopped = false
 
-    private val zxing = MultiFormatReader().apply {
-        setHints(
-            mapOf(
-                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-                DecodeHintType.TRY_HARDER to true,
-            ),
-        )
-    }
+    // QRCodeReader, NOT MultiFormatReader: the latter declares `throws NotFoundException` only,
+    // catching every other ReaderException internally, so "a code is there but I cannot read it"
+    // was already being computed every frame and thrown away. QRCodeReader distinguishes
+    // not-found from checksum/format, which is exactly the advice the operator was missing.
+    private val zxing = QRCodeReader()
+    private val hints = mapOf(
+        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+        DecodeHintType.TRY_HARDER to true,
+    )
 
     @SuppressLint("MissingPermission") // CAMERA is requested at app launch (MainActivity) and required to record.
     fun start(holder: SurfaceHolder) {
         if (thread != null) return
+        onRestart()
         stopped = false
         thread = HandlerThread("qr-scan").also { it.start() }
         handler = Handler(thread!!.looper)
@@ -322,21 +353,32 @@ private class QrScanner(
             val h = image.height
             image.close()
             onFrame()
-            val source = PlanarYUVLuminanceSource(data, rowStride, h, 0, 0, w, h, false)
-            val bitmap = BinaryBitmap(HybridBinarizer(source))
-            val result = try {
-                zxing.decodeWithState(bitmap)
-            } catch (e: NotFoundException) {
-                // Retry once on the 90°-rotated frame — the terminal is wall-mounted landscape, so a
-                // QR held "upright" to the operator lands sideways in sensor coordinates.
-                try { zxing.decodeWithState(BinaryBitmap(HybridBinarizer(source.rotateCounterClockwise()))) }
-                catch (e2: NotFoundException) { null }
-            } finally {
-                zxing.reset()
+            // The array is buf.remaining(), which on many HALs is rowStride*(h-1)+w -- SMALLER
+            // than the rowStride*h this source declares. Where rowStride > w that throws every
+            // frame into the blanket catch below: a permanent "Scanning..." with no logs, which
+            // is the exact shape of the incident this screen is being changed for.
+            val needed = rowStride * h
+            val padded = if (data.size >= needed) data else data.copyOf(needed)
+            val source = PlanarYUVLuminanceSource(padded, rowStride, h, 0, 0, w, h, false)
+            var located = false
+            // Upright first, then the 90-rotated frame -- the terminal is wall-mounted landscape,
+            // so a QR held "upright" to the operator lands sideways in sensor coordinates.
+            var result = decodeOrClassify(BinaryBitmap(HybridBinarizer(source))) { located = true }
+            if (result == null) {
+                result = decodeOrClassify(
+                    BinaryBitmap(HybridBinarizer(source.rotateCounterClockwise()))
+                ) { located = true }
             }
             // No permanent latch here — every successfully-decoded frame is reported. The composable
             // (onDecoded above) is responsible for de-duplicating repeat decodes of the same code and
             // re-arming after a failed sign-in attempt.
+            onFrameOutcome(
+                when {
+                    result != null -> ScanFrame.DECODED
+                    located -> ScanFrame.LOCATED_UNREADABLE
+                    else -> ScanFrame.NOTHING
+                }
+            )
             if (result != null) {
                 onDecoded(result.text)
             }
@@ -344,6 +386,27 @@ private class QrScanner(
             runCatching { image.close() }
         }
     }
+
+    /**
+     * Decode one bitmap, and tell the caller whether a code was at least *located*.
+     *
+     * ChecksumException / FormatException mean the finder patterns were found and the code was
+     * sampled, but the payload could not be recovered -- too small, too blurry, or damaged. That
+     * is the one state with a concrete remedy ("move closer"), and it is invisible through
+     * MultiFormatReader, which collapses it into not-found.
+     */
+    private fun decodeOrClassify(bitmap: BinaryBitmap, onLocated: () -> Unit): com.google.zxing.Result? =
+        try {
+            zxing.decode(bitmap, hints)
+        } catch (e: NotFoundException) {
+            null
+        } catch (e: ChecksumException) {
+            onLocated(); null
+        } catch (e: FormatException) {
+            onLocated(); null
+        } finally {
+            zxing.reset()
+        }
 
     fun stop() {
         stopped = true
