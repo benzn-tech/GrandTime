@@ -45,7 +45,37 @@ source (sample cursor vs wall clock), and whether a microphone is involved at al
 cursor *absorbs* stalls by construction, so a clean handover mostly proves the cursor hides
 them.
 
-## RESOLVED 2026-08-11 by the instrumented build (0.6.7) — all three candidates were wrong
+## CORRECTED 2026-08-11 — the section below reached the wrong conclusion
+
+The instrumented run said the loss was upstream of the app. **It is not.** Two follow-up
+measurements, both from device counters rather than inference:
+
+**The HAL is realtime.** `dumpsys media.audio_flinger`, record thread, mid-recording:
+`Sample rate: 44100 Hz`, `disc=0`, `rate=1`, `localSR(44100.1)`. Sampling its own `Frames read`
+twice: **668,800 frames in 15.18 s = 44,052 Hz — 99.9% of nominal, zero discontinuities.**
+
+**`hwFrames` was never independent evidence.** `AudioRecord.getTimestamp()`'s `framePosition` is
+a **client-side** position: frames dropped before they reach the client are never counted, so it
+tracks our own reads. Latest run: `lostFrames = hwFrames − readFrames = 502` frames = **0.011 s**.
+It cannot tell "the hardware never produced it" from "it was dropped on the way to us", and the
+section below read it as the former.
+
+| stage | corrected |
+|---|---|
+| HAL delivery | **99.9% of realtime, disc=0** |
+| startup latency before the mic produces | ~1.7 s — real, but not loss |
+| **AudioFlinger → our reads** | **~1.4 s over ~21 s (≈6.7%)** |
+
+**So it is a client-side ring overrun, and it is app-addressable.** The ring/draining direction
+declared dead below is live again. The 48 kHz idea is separately dead: 44.1 kHz *is* the record
+thread's native rate on this device, and `audio_policy_configuration.xml` lists it on every input
+port.
+
+**The lesson is the same one this project keeps re-learning**: a number that moves with the thing
+you are measuring cannot measure it. `framePosition` was downstream of the very drop it was
+supposed to detect.
+
+## Superseded: what the instrumented build appeared to show
 
 One 30s recording, no handover:
 
