@@ -45,7 +45,53 @@ source (sample cursor vs wall clock), and whether a microphone is involved at al
 cursor *absorbs* stalls by construction, so a clean handover mostly proves the cursor hides
 them.
 
-## Three candidate mechanisms, none yet chosen
+## RESOLVED 2026-08-11 by the instrumented build (0.6.7) — all three candidates were wrong
+
+One 30s recording, no handover:
+
+```
+audio diag: reads=152 readFrames=1245184 hwFrames=1255236 lostFrames=10052
+            slowReads=35 readMax=276ms readAvg=110ms
+            muxWaitMax=10ms muxWaitTotal=68ms
+            minBuf=3528 ring=8192 inCap=16384
+```
+
+and the same segment's audio packets: **1216 packets x 1024 = 1,245,184 samples — exactly
+readFrames.**
+
+| stage | audio |
+|---|---|
+| wall clock | 30.08s |
+| **hardware delivered** (`hwFrames`) | **28.46s** |
+| loop read | 28.24s |
+| reached the file | **28.24s — identical to what was read** |
+
+- **`muxerLock` is not the cause.** Max wait 10 ms, 68 ms total across 30 s. The 1.2 gaps/s vs
+  1 IDR/s correlation was a coincidence.
+- **The loop is not the cause.** It loses 0.23 s of what the hardware hands it, and **nothing at
+  all** between read and file. The encoder and muxer are innocent.
+- **The ring arithmetic was right but irrelevant** — `minBuf` is 3528, so the ring is the
+  assumed 8192 bytes / 92.9 ms.
+
+**The deficit is upstream: the hardware delivered 1.62 s less than wall clock.** The gap shape
+agrees — 22 discrete stalls of 60–380 ms totalling ~1.7 s. During each the blocking read waited
+and got nothing, because there was nothing.
+
+**This kills every buffering, pacing and loop-balancing fix**, including the ones this document
+first proposed: you cannot catch samples that were never produced.
+
+### Next hypothesis (untested, do not implement blind)
+
+`AUDIO_SAMPLE_RATE = 44100`. On MediaTek platforms the native capture rate is usually **48000**,
+and asking for a non-native rate forces HAL resampling — a well-known source of exactly this
+kind of periodic glitching. 28.24/30.08 = 93.9% is far too large for clock drift but is the
+right shape for a resampler dropping blocks.
+
+Testing it is a one-constant change, but it alters the recorded audio format, so it needs its
+own measurement run and its own decision — **not a blind flip tonight.** The `audio diag` line
+now makes the comparison a single recording.
+
+## Three candidate mechanisms, none yet chosen (superseded — kept for the record)
 
 1. **`muxerLock` contention.** `KEY_I_FRAME_INTERVAL = 1` means one large IDR per second, and
    the audio thread must take the same lock to write its packets. **17 gaps over 13.9 s ≈ 1.2/s
