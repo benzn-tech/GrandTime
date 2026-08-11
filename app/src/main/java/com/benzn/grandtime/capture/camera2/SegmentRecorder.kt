@@ -140,7 +140,14 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     @SuppressLint("MissingPermission") // 调用方(prepare/resumeAudio)已确保 RECORD_AUDIO
     private fun buildMic(): AudioRecord {
         val minBuf = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val bufSize = maxOf(minBuf, 4096 * 2)
+        // One second of ring, matching the audio-only recorder's policy (AudioRecorder: sr * 2
+        // bytes). The old 8192 bytes was 92.9ms -- and this loop reads 16384 bytes at a time,
+        // TWICE the ring it reads from, while also driving two codec dequeues and a muxer write
+        // under a lock shared with the video thread. Measured consequence: the HAL delivers
+        // 99.9% of realtime with zero discontinuities, and ~6.7% of it is dropped between
+        // AudioFlinger and this loop. The audio-only path, same mic and same device, has a 1s
+        // ring, does nothing but write a file, and loses nothing.
+        val bufSize = maxOf(minBuf, AUDIO_SAMPLE_RATE * 2)
         dxMinBuf = minBuf; dxRingBytes = bufSize
         val ar = AudioRecord(MediaRecorder.AudioSource.MIC, AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize)
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
