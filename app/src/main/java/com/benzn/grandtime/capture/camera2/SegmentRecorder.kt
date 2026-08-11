@@ -40,6 +40,9 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     // reading the mic. DISTINCT from the terminal audioStopRequested (which queues EOS + ends the
     // track). Only the AudioRecord is released/reopened; the AAC codec + muxer track stay alive.
     @Volatile private var audioHandover = false
+    /** Owns every audio timestamp: keeps them monotonic (a backwards one makes MediaMuxer drop the
+     *  whole track, silently) and paces the silence fill against samples rather than loop cost. */
+    private val ptsPacer = AudioPtsPacer(sampleRate = AUDIO_SAMPLE_RATE, samplesPerFrame = SILENCE_CHUNK_BYTES / 2)
     private val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // muxer(视频/音频线程共享,muxerLock 串行化 addTrack/start/writeSampleData/stop)
@@ -55,13 +58,16 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     companion object {
         private const val AUDIO_SAMPLE_RATE = 44100
         private const val AUDIO_BIT_RATE = 128_000
-        // Silence pacing: feed exactly ONE AAC frame of PCM16 mono silence per sleep (1024 samples ×
+        // Silence fill: exactly ONE AAC frame of PCM16 mono silence per iteration (1024 samples ×
         // 2 bytes). The loop drains one encoder output buffer per iteration, so a one-frame chunk
-        // keeps at most ~1 frame undrained per sleep — robust on devices with a small AAC output
-        // pool (≤4) that a full mic-buffer (~4 frames) per sleep could stall. Real-time paced: one
-        // frame of silence per frame-duration.
+        // keeps at most ~1 frame undrained — robust on devices with a small AAC output pool (≤4)
+        // that a full mic-buffer (~4 frames) per iteration could stall.
+        //
+        // The CADENCE is not here any more. It used to be a fixed 23ms sleep, which is one frame
+        // of payload but far less than a real iteration costs (the two 10ms codec timeouts land on
+        // top of it) — so the wall-clock timestamps outran the samples and the audio track came out
+        // sparse. [AudioPtsPacer] owns it now.
         private const val SILENCE_CHUNK_BYTES = 2048
-        private const val SILENCE_SLEEP_MS = SILENCE_CHUNK_BYTES / 2 * 1000L / AUDIO_SAMPLE_RATE // 1024/44100 s ≈ 23 ms
     }
 
     /** 配置视频编码器(+可选音频)+ muxer,返回视频编码器输入 Surface。未启动 drain(留给 start())。 */
@@ -105,9 +111,9 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         return true
     }
 
-    /** Build a MIC AudioRecord with the fixed capture params. Throws if not INITIALIZED. Silence
-     *  pacing uses a fixed one-AAC-frame chunk (SILENCE_CHUNK_BYTES), so the mic buffer size is only
-     *  used to size the AudioRecord itself. */
+    /** Build a MIC AudioRecord with the fixed capture params. Throws if not INITIALIZED. The
+     *  silence fill uses a fixed one-AAC-frame chunk (SILENCE_CHUNK_BYTES), so the mic buffer size
+     *  is only used to size the AudioRecord itself. */
     @SuppressLint("MissingPermission") // 调用方(prepare/resumeAudio)已确保 RECORD_AUDIO
     private fun buildMic(): AudioRecord {
         val minBuf = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -239,17 +245,39 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
                     val inBuf = ac.getInputBuffer(inIdx)
                     if (inBuf != null) {
                         inBuf.clear()
-                        val ptsUs = System.nanoTime() / 1000  // 墙钟微秒,与视频输入面帧时戳同基准,近似 A/V 同步
+                        // 墙钟微秒,与视频输入面帧时戳同基准,近似 A/V 同步。每个时戳都过 pacer:
+                        // 它保证时戳单调(倒退会让 MediaMuxer 判定音轨 malformed 并停写,而下面的
+                        // writeSampleData 裹在 runCatching 里 —— 那是一次静默的整轨丢失),
+                        // 并让静音帧的时间线跟着样本数走而不是跟着循环开销走。
+                        val nowUs = System.nanoTime() / 1000
                         if (audioStopRequested) {             // terminal only: end the AAC input stream
-                            ac.queueInputBuffer(inIdx, 0, 0, ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            ac.queueInputBuffer(inIdx, 0, 0, ptsPacer.eos(nowUs), MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             sawInputEos = true
                         } else {
                             val ar = audioRecord              // read field fresh: may be null mid-handover
-                            val n = if (audioHandover || ar == null) {
-                                fillSilence(inBuf)            // paced silence, non-terminal
+                            var n: Int
+                            var ptsUs: Long
+                            if (audioHandover || ar == null) {
+                                val pacing = ptsPacer.silence(nowUs)
+                                // Sleep BEFORE stamping: a frame stamped in the future hands the
+                                // next live frame a timestamp it cannot beat.
+                                if (pacing.sleepMs > 0) runCatching { Thread.sleep(pacing.sleepMs) }
+                                n = fillSilence(inBuf)
+                                ptsUs = pacing.ptsUs
                             } else {
                                 val r = runCatching { ar.read(inBuf, inBuf.capacity()) }.getOrDefault(0)
-                                if (r > 0) r else fillSilence(inBuf) // transient <=0 → silence, NOT EOS
+                                if (r > 0) {
+                                    n = r
+                                    ptsUs = ptsPacer.live(nowUs)
+                                    ptsPacer.onLiveAudio()
+                                } else {
+                                    // transient <=0 → one silence frame, NOT EOS. Paced like any
+                                    // other fill, so a stutter cannot stamp ahead of the clock.
+                                    val pacing = ptsPacer.silence(nowUs)
+                                    if (pacing.sleepMs > 0) runCatching { Thread.sleep(pacing.sleepMs) }
+                                    n = fillSilence(inBuf)
+                                    ptsUs = pacing.ptsUs
+                                }
                             }
                             ac.queueInputBuffer(inIdx, 0, n, ptsUs, 0)
                         }
@@ -275,14 +303,17 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     }
 
     /** Write one AAC frame of PCM silence into [buf] (reused codec buffers may hold stale audio) and
-     *  pace the loop ~one frame-duration so PTS advances at the real-time cadence and the encoder is
-     *  neither flooded with near-identical timestamps nor stalled by an undrained backlog. Returns
-     *  the byte count written. */
+     *  return the byte count written.
+     *
+     *  Pacing is NOT done here any more. It used to sleep a fixed frame-duration, which made the
+     *  timeline advance with the loop's real cost (two 10ms codec timeouts on top of the sleep)
+     *  while the payload stayed a fixed 1024 samples -- the track claimed more time than it
+     *  carried, by 22-44% of the handover window on a real recording. [AudioPtsPacer] owns the
+     *  cadence now, and the caller sleeps BEFORE stamping. */
     private fun fillSilence(buf: java.nio.ByteBuffer): Int {
         val n = minOf(SILENCE_CHUNK_BYTES, buf.capacity()).coerceAtLeast(2)
         buf.position(0)
         repeat(n) { buf.put(0.toByte()) }
-        runCatching { Thread.sleep(SILENCE_SLEEP_MS) }
         return n
     }
 
