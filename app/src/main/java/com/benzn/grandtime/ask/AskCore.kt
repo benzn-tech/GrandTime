@@ -86,6 +86,23 @@ class AskCore {
         return listOf(AskCommand.Vibrate(VibePattern.LONG))
     }
 
+    /**
+     * The player never called back.
+     *
+     * [AskPlayer] has three completion paths — normal, async error, setup throw — and a
+     * MediaPlayer that stalls without erroring hits none of them. Nothing else in this feature
+     * is bounded (only the API call has a timeout), so without this the FSM stays in Playing
+     * forever: `AppState.askActive` sticks true, Site-voice refuses every press and Ask ignores
+     * every press, until the service is restarted.
+     *
+     * Guarded on Playing so a timer that loses the cancel race after a normal finish is a
+     * no-op — otherwise a good answer would be chased by a refusal buzz.
+     */
+    fun onPlaybackTimeout(): List<AskCommand> {
+        if (state != AskState.Playing) return emptyList()
+        return onError()  // a stuck playback IS a failure: same cues, same buzz, same Idle
+    }
+
     /** Discrete (tap) trigger for a keymap-routed hard key (Task 13): toggles
      * start-listening / stop-and-send, so a rebound key works without hold. */
     fun onDiscreteAsk(videoRecording: Boolean, siteVoiceActive: Boolean = false): List<AskCommand> = when (state) {

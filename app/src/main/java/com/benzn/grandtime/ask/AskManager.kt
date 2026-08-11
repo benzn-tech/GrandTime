@@ -37,6 +37,8 @@ class AskManager(
     private val player = AskPlayer(File(appContext.cacheDir, "ask"))
     private val haptics = Haptics(appContext)
     private var capTimer: Job? = null
+    /** Watchdog for a playback that never calls back. See [AskCore.onPlaybackTimeout]. */
+    private var playTimer: Job? = null
 
     private val videoRecording: Boolean
         get() = AppState.captureState.value is CaptureState.RecordingVideo
@@ -115,19 +117,45 @@ class AskManager(
         val bytes = runCatching { Base64.decode(audioBase64, Base64.DEFAULT) }.getOrNull()
         if (bytes == null || bytes.isEmpty()) { fail(); return }
         probe("ask: playing answer")
+        armPlayWatchdog()
         player.play(bytes) { ok ->
-            scope.launch { execute(if (ok) core.onPlaybackDone() else core.onError()) }
+            scope.launch {
+                playTimer?.cancel(); playTimer = null
+                execute(if (ok) core.onPlaybackDone() else core.onError())
+            }
+        }
+    }
+
+    /**
+     * Nothing else bounds playback. [AskPlayer] reports normal completion, an async error and a
+     * setup throw — a MediaPlayer that stalls without erroring reports none of them, and the ask
+     * would sit in Playing forever, wedging Site-voice too.
+     *
+     * Generous on purpose: this is a stuck-process guard, not a latency budget. An answer clip is
+     * seconds long, so two minutes cannot fire on a healthy playback. [AskPlayer.release] drops
+     * the pending callback, so the player is released first and the FSM is moved by the timeout
+     * itself. Mirrors [armCap]; [core] is only ever mutated from this single-threaded scope.
+     */
+    private fun armPlayWatchdog() {
+        playTimer?.cancel()
+        playTimer = scope.launch {
+            delay(PLAY_CAP_MILLIS)
+            probe("ask: playback watchdog fired — the player never called back")
+            player.release()
+            execute(core.onPlaybackTimeout())
         }
     }
 
     private suspend fun fail() {
         recorder.discard()
         capTimer?.cancel(); capTimer = null
+        playTimer?.cancel(); playTimer = null
         execute(core.onError())
     }
 
     fun shutdown() {
         capTimer?.cancel()
+        playTimer?.cancel()
         recorder.discard()
         player.release()
         sounds.release()
@@ -135,5 +163,7 @@ class AskManager(
 
     companion object {
         const val CAP_MILLIS = 15_000L  // recording cap (spec §9)
+        /** Playback watchdog. Not a latency budget — see [armPlayWatchdog]. */
+        const val PLAY_CAP_MILLIS = 120_000L
     }
 }

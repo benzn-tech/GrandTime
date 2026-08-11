@@ -59,8 +59,11 @@ FSM returns to Idle.
 - Reuse `onError()` rather than adding a state — a timed-out playback IS an error, and it
   already does the right things (cancel cap timer, cue, double buzz, Idle).
 
-Test: `AskCoreTest` cannot see a timer. The real assertion lives at manager level and is
-enabled by Task 1.4's seams — pin that `a playback that never calls back still returns to Idle`.
+**Implemented differently from this draft, and better:** the timeout is a *pure transition*
+`AskCore.onPlaybackTimeout()` guarded on `Playing`, so the behaviour is pinned by six
+`AskCoreTest` cases rather than needing dependency injection to observe. `AskManager` only
+arms/cancels the timer, in the exact shape of the already-shipped `armCap()`. That made
+Task 1.4 unnecessary for this PR — see below.
 
 ## Task 1.2 — Close the end-side rollover race
 
@@ -90,14 +93,19 @@ invariant instead of a reviewer.
 (The alternative — publishing `askActive`/`siteVoiceActive` before `execute()` — is a larger
 behavioural change to two features and is not needed once the signature enforces it.)
 
-## Task 1.4 — Make `AskManager` testable
+## Task 1.4 — Make `AskManager` testable — **DEFERRED to PR 2, deliberately**
 
-**File:** `ask/AskManager.kt`
+The review is right that `AskManager` is untestable at JVM level: it constructs its recorder,
+player, sounds and haptics internally, and `AskRecorder`/`AskPlayer` are concrete classes with
+no interface, so seams mean introducing them.
 
-It constructs its recorder, player, sounds and haptics internally, so nothing about its
-ordering can be asserted at JVM level. Add an `internal constructor` taking the collaborators,
-exactly as `AskRecorder` already does (`AskRecorder.kt:16-20`), keeping the public constructor
-as the production path. This is what makes Tasks 1.1 and 2.3 verifiable rather than reviewed.
+It is not needed here — Task 1.1 moved the decision into the pure core instead — and it IS
+needed in PR 2, where `fail()`'s ordering (discard before `end()`) genuinely cannot be
+asserted any other way. Doing it there keeps this PR to the two hazards it is about.
+
+**Left undone knowingly, not overlooked**: PR 1's timer *plumbing* (arm on play, cancel on
+callback, cancel in `fail`/`shutdown`) is verified by reading and by mirroring `armCap()`,
+not by a test.
 
 ---
 

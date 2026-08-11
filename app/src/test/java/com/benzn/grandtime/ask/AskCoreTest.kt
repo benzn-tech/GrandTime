@@ -45,6 +45,64 @@ class AskCoreTest {
             < cmds.indexOf(AskCommand.Vibrate(VibePattern.SHORT)))
     }
 
+    // AskPlayer has exactly three completion paths (complete / async error / setup throw). A
+    // MediaPlayer that stalls without erroring hits none of them, and nothing in ask/ has a
+    // timeout — so the FSM sits in Playing forever, AppState.askActive stays true, and BOTH
+    // voice features are dead until the service restarts. These pin the escape hatch.
+    @Test fun playback_timeout_from_playing_ends_the_ask() {
+        val c = core()
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        assertEquals(AskState.Playing, c.state)
+        val cmds = c.onPlaybackTimeout()
+        assertEquals(AskState.Idle, c.state)
+        assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.DOUBLE_SHORT)))
+    }
+
+    /** A stuck playback is a failure, so it must feel like one. The LONG buzz means "finished,
+     *  microphone back" — using it here would report success for an answer nobody heard. */
+    @Test fun playback_timeout_buzzes_refusal_not_completion() {
+        val c = core()
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        val cmds = c.onPlaybackTimeout()
+        assertFalse(cmds.contains(AskCommand.Vibrate(VibePattern.LONG)))
+    }
+
+    /** The timer is armed when playback starts and cancelled on the callback, but a cancel can
+     *  always lose a race with an already-dispatched fire. A late timeout must do NOTHING —
+     *  otherwise a perfectly good answer is followed by an error buzz, and (once Phase B lands)
+     *  it would release a microphone borrow belonging to the NEXT exchange. */
+    @Test fun a_timeout_arriving_after_a_normal_finish_does_nothing() {
+        val c = core()
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPlaybackDone()
+        assertEquals(AskState.Idle, c.state)
+        assertEquals(emptyList<AskCommand>(), c.onPlaybackTimeout())
+    }
+
+    @Test fun a_timeout_while_listening_does_nothing() {
+        val c = core()
+        c.onPttDown(videoRecording = false)
+        assertEquals(emptyList<AskCommand>(), c.onPlaybackTimeout())
+        assertEquals(AskState.Listening, c.state)
+    }
+
+    @Test fun a_timeout_while_thinking_does_nothing() {
+        val c = core()
+        c.onPttDown(videoRecording = false); c.onPttUp()
+        assertEquals(AskState.Thinking, c.state)
+        assertEquals(emptyList<AskCommand>(), c.onPlaybackTimeout())
+    }
+
+    /** After the timeout the operator must be able to ask again — the whole point is that the
+     *  feature is not dead until the service restarts. */
+    @Test fun a_new_ask_works_after_a_playback_timeout() {
+        val c = core()
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPlaybackTimeout()
+        assertTrue(c.onPttDown(videoRecording = false).contains(AskCommand.StartRecording))
+        assertEquals(AskState.Listening, c.state)
+    }
+
     @Test fun down_during_video_recording_is_busy_and_stays_idle() {
         val c = core()
         val cmds = c.onPttDown(videoRecording = true)

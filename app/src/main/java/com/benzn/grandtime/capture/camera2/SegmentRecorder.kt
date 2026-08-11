@@ -304,6 +304,12 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
      *  the segment), log, and return false — NEVER crash the recording. No-op/true if not enabled. */
     fun resumeAudio(): Boolean {
         if (!audioEnabled) return true
+        // Not in a handover → nothing to resume, and rebuilding here would open a SECOND
+        // AudioRecord while the live one keeps running: the old handle is only cleared by
+        // pauseAudioForHandover(), so an unguarded rebuild overwrites [audioRecord] and leaks
+        // the recording one. Required before CaptureManager's post-startSegment re-assert can
+        // safely call this on the else branch.
+        if (!audioHandover) return true
         return runCatching {
             val ar = buildMic()
             ar.startRecording()
