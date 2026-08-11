@@ -43,6 +43,29 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     /** Owns every audio timestamp: keeps them monotonic (a backwards one makes MediaMuxer drop the
      *  whole track, silently) and paces the silence fill against samples rather than loop cost. */
     private val ptsPacer = AudioPtsPacer(sampleRate = AUDIO_SAMPLE_RATE, samplesPerFrame = SILENCE_CHUNK_BYTES / 2)
+
+    // ---- Diagnostics for the live-path sample loss (see the 2026-08-11 spec). Written ONLY by
+    // the audio thread, read ONLY after it has joined, emitted as ONE probe line in stop().
+    // Never logged per read: probe() appends to a file and is not synchronised, and this runs on
+    // the thread whose job is draining the microphone.
+    //
+    // These exist to adjudicate between three candidate mechanisms — loss upstream of the ring,
+    // muxerLock contention against the 1-per-second IDR, and the loop's own imbalance — because
+    // the cheap fix for any one of them is a no-op for the other two.
+    private var dxMinBuf = -1
+    private var dxRingBytes = -1
+    private var dxInBufCapacity = -1
+    private var dxReads = 0L
+    private var dxReadBytes = 0L
+    private var dxReadMaxUs = 0L
+    private var dxReadTotalUs = 0L
+    private var dxSlowReads = 0L          // reads that took longer than the audio they returned
+    private var dxMuxWaitMaxUs = 0L
+    private var dxMuxWaitTotalUs = 0L
+    private var dxSilenceFrames = 0L
+    /** Frames the HARDWARE says it captured, vs samples we actually read. The decisive number:
+     *  a gap here means the loss is upstream of us, not in the encode loop. */
+    private var dxHwFrames = -1L
     private val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // muxer(视频/音频线程共享,muxerLock 串行化 addTrack/start/writeSampleData/stop)
@@ -118,6 +141,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     private fun buildMic(): AudioRecord {
         val minBuf = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val bufSize = maxOf(minBuf, 4096 * 2)
+        dxMinBuf = minBuf; dxRingBytes = bufSize
         val ar = AudioRecord(MediaRecorder.AudioSource.MIC, AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize)
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
             ar.release(); throw IllegalStateException("AudioRecord 未初始化")
@@ -264,9 +288,19 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
                                 if (pacing.sleepMs > 0) runCatching { Thread.sleep(pacing.sleepMs) }
                                 n = fillSilence(inBuf)
                                 ptsUs = pacing.ptsUs
+                                dxSilenceFrames++
                             } else {
+                                if (dxInBufCapacity < 0) dxInBufCapacity = inBuf.capacity()
+                                val readStart = System.nanoTime()
                                 val r = runCatching { ar.read(inBuf, inBuf.capacity()) }.getOrDefault(0)
+                                val readUs = (System.nanoTime() - readStart) / 1000
+                                dxReads++; dxReadTotalUs += readUs
+                                if (readUs > dxReadMaxUs) dxReadMaxUs = readUs
                                 if (r > 0) {
+                                    dxReadBytes += r
+                                    // A read that took longer than the audio it returned means the
+                                    // loop is not keeping up and the ring was empty when it asked.
+                                    if (readUs > r.toLong() / 2 * 1_000_000L / AUDIO_SAMPLE_RATE) dxSlowReads++
                                     n = r
                                     ptsUs = ptsPacer.live(nowUs)
                                     ptsPacer.onLiveAudio()
@@ -294,7 +328,17 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
                 val outBuf = ac.getOutputBuffer(outIdx)
                 if (outBuf != null && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && info.size > 0) {
                     outBuf.position(info.offset); outBuf.limit(info.offset + info.size)
-                    synchronized(muxerLock) { if (muxerStarted) runCatching { muxer!!.writeSampleData(audioTrack, outBuf, info) } }
+                    // Timed because the video thread holds this same lock while writing one large
+                    // IDR per second (KEY_I_FRAME_INTERVAL = 1), and the observed gap rate of
+                    // ~1.2/s matches that cadence suspiciously well. If the audio thread is
+                    // blocked here it is not reading the microphone.
+                    val lockStart = System.nanoTime()
+                    synchronized(muxerLock) {
+                        val waitUs = (System.nanoTime() - lockStart) / 1000
+                        dxMuxWaitTotalUs += waitUs
+                        if (waitUs > dxMuxWaitMaxUs) dxMuxWaitMaxUs = waitUs
+                        if (muxerStarted) runCatching { muxer!!.writeSampleData(audioTrack, outBuf, info) }
+                    }
                 }
                 runCatching { ac.releaseOutputBuffer(outIdx, false) }
                 if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
@@ -357,11 +401,43 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
         }
     }
 
+    /**
+     * One line, once per segment, after the audio thread has joined.
+     *
+     * Adjudicates the live-path sample loss measured on 0.6.6 (17 gaps over 13.9s, 1.40s of audio
+     * never read) between three candidates that the packet timestamps alone cannot separate:
+     *  - `hwFrames` vs `readFrames` -- the hardware captured frames we never took (upstream/ring);
+     *  - `muxWaitMax` -- the audio thread was blocked behind the video thread's 1-per-second IDR;
+     *  - `slowReads` / `readMax` -- the loop itself could not keep up.
+     * `minBuf` and `inCap` are logged because the whole ring-size argument rests on values that
+     * have never actually been read off this device.
+     */
+    private fun emitAudioDiagnostics() {
+        if (!audioEnabled || dxReads == 0L) return
+        val readFrames = dxReadBytes / 2
+        val hw = if (dxHwFrames >= 0) dxHwFrames.toString() else "n/a"
+        val lostFrames = if (dxHwFrames >= 0) dxHwFrames - readFrames else -1
+        probe(
+            "audio diag: reads=$dxReads readFrames=$readFrames hwFrames=$hw lostFrames=$lostFrames " +
+                "silenceFrames=$dxSilenceFrames slowReads=$dxSlowReads " +
+                "readMax=${dxReadMaxUs / 1000}ms readAvg=${dxReadTotalUs / dxReads / 1000}ms " +
+                "muxWaitMax=${dxMuxWaitMaxUs / 1000}ms muxWaitTotal=${dxMuxWaitTotalUs / 1000}ms " +
+                "minBuf=$dxMinBuf ring=$dxRingBytes inCap=$dxInBufCapacity"
+        )
+    }
+
     /** 结束段:音/视频各自 EOS → 两 drain 线程排空 → 关 muxer/codec/audio。幂等。 */
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
         if (codec == null) return
         audioStopRequested = true                        // 音频循环下次读到标志,发 input EOS
+        // Ask the hardware how many frames it captured, BEFORE stopping it -- this is the number
+        // that says whether samples were lost upstream of us or inside the encode loop, and it is
+        // unavailable once the AudioRecord is stopped and released.
+        runCatching {
+            val ts = android.media.AudioTimestamp()
+            audioRecord?.let { if (it.getTimestamp(ts, android.media.AudioTimestamp.TIMEBASE_MONOTONIC) == AudioRecord.SUCCESS) dxHwFrames = ts.framePosition }
+        }
         runCatching { audioRecord?.stop() }              // 先停录音,解开可能阻塞的 read
         runCatching { codec?.signalEndOfInputStream() }  // 视频 EOS
         videoThread?.join(2500)
@@ -371,6 +447,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
             videoThread?.join(500); audioThread?.join(500)
             if (videoThread?.isAlive == true || audioThread?.isAlive == true) probe("segment drain 线程未在超时内退出")
         }
+        emitAudioDiagnostics()                            // 线程已 join,计数器可安全读取
         runCatching { audioRecord?.release() }            // release 放到 join 之后,避免 use-after-release
         runCatching { audioCodec?.stop() }; runCatching { audioCodec?.release() }
         synchronized(muxerLock) {
