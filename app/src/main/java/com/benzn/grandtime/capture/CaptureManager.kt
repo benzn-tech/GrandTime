@@ -178,7 +178,7 @@ class CaptureManager(
         scope.launch { pipeline.release() }
     }
 
-    override suspend fun begin(): Boolean {
+    override fun begin(): Boolean {
         // No video segment running → nothing to borrow; Site-voice records normally.
         if (core.state !is CaptureState.RecordingVideo) return true
         handoverActive = true
@@ -186,7 +186,7 @@ class CaptureManager(
         return true
     }
 
-    override suspend fun end() {
+    override fun end() {
         if (!handoverActive) return
         handoverActive = false
         val ok = pipeline.resumeSegmentAudio()
@@ -478,12 +478,18 @@ class CaptureManager(
             pipeline.release()
             return false
         }
-        // Close the rollover race (SegmentRecorder review): if Site-voice began a handover during
-        // this segment's async startup — after startAudioPaused was already sampled — the new segment
-        // could have opened its real mic despite an active borrow. Re-assert the pause now that the
-        // segment is live. Idempotent; no-op when no handover is active. Both run on the same Main
-        // dispatcher, so this observes any begin() that interleaved across startSegment's suspend.
-        if (handoverActive) pipeline.pauseSegmentAudio()
+        // Close the rollover race (SegmentRecorder review): if a handover began or ENDED during
+        // this segment's async startup — after startAudioPaused was already sampled — the new
+        // segment could have opened its real mic despite an active borrow, or been left silent
+        // after the borrow was already returned. Re-assert the current truth now that the segment
+        // is live. Both run on the same Main dispatcher, so this observes anything that
+        // interleaved across startSegment's suspend.
+        //
+        // The else branch is the half that was missing: resumeSegmentAudio() returns true when
+        // there is no live segment (Camera2Pipeline), so a release landing inside startSegment was
+        // consumed against nothing and the new segment stayed silent for its whole length. Safe
+        // only because SegmentRecorder.resumeAudio() now early-returns when no handover is active.
+        if (handoverActive) pipeline.pauseSegmentAudio() else pipeline.resumeSegmentAudio()
         currentVideoRecordId = recordId
         currentVideoFile = file
         currentVideoStartedAt = startedAt
