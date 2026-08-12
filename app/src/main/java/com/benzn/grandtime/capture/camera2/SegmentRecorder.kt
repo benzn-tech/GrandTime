@@ -66,6 +66,10 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     /** Frames the HARDWARE says it captured, vs samples we actually read. The decisive number:
      *  a gap here means the loss is upstream of us, not in the encode loop. */
     private var dxHwFrames = -1L
+    /** True once the mic has been rebuilt by [resumeAudio]. AudioRecord.getTimestamp()'s
+     *  framePosition counts from the CURRENT object's startRecording, so a rebuild resets it and
+     *  the hardware-vs-read comparison stops meaning anything. */
+    private var dxMicRebuilt = false
     private val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // muxer(视频/音频线程共享,muxerLock 串行化 addTrack/start/writeSampleData/stop)
@@ -400,6 +404,7 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
             }
             audioRecord = ar
             audioHandover = false
+            dxMicRebuilt = true
             true
         }.getOrElse {
             probe("resumeAudio 失败,本段音频保持静音: ${it.message}")
@@ -422,8 +427,13 @@ class SegmentRecorder(private val probe: (String) -> Unit = {}) {
     private fun emitAudioDiagnostics() {
         if (!audioEnabled || dxReads == 0L) return
         val readFrames = dxReadBytes / 2
-        val hw = if (dxHwFrames >= 0) dxHwFrames.toString() else "n/a"
-        val lostFrames = if (dxHwFrames >= 0) dxHwFrames - readFrames else -1
+        // A handover rebuilds the AudioRecord, and framePosition restarts with the new object --
+        // so hwFrames would only cover the stretch after the mic came back and lostFrames would
+        // come out NEGATIVE (measured: -182274). A number that needs a footnote to read is worse
+        // than no number, so say n/a instead of inviting the next reader to reason about it.
+        val comparable = dxHwFrames >= 0 && !dxMicRebuilt
+        val hw = if (comparable) dxHwFrames.toString() else "n/a"
+        val lostFrames: Any = if (comparable) dxHwFrames - readFrames else "n/a(mic rebuilt)"
         probe(
             "audio diag: reads=$dxReads readFrames=$readFrames hwFrames=$hw lostFrames=$lostFrames " +
                 "silenceFrames=$dxSilenceFrames slowReads=$dxSlowReads " +
