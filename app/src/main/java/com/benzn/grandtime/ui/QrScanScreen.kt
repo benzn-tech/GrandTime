@@ -269,6 +269,8 @@ private class QrScanner(
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
     private var stopped = false
+    private var lastLoggedOutcome: ScanFrame? = null
+    private var lastLoggedAtMs = 0L
 
     // QRCodeReader, NOT MultiFormatReader: the latter declares `throws NotFoundException` only,
     // catching every other ReaderException internally, so "a code is there but I cannot read it"
@@ -372,13 +374,20 @@ private class QrScanner(
             // No permanent latch here — every successfully-decoded frame is reported. The composable
             // (onDecoded above) is responsible for de-duplicating repeat decodes of the same code and
             // re-arming after a failed sign-in attempt.
-            onFrameOutcome(
-                when {
-                    result != null -> ScanFrame.DECODED
-                    located -> ScanFrame.LOCATED_UNREADABLE
-                    else -> ScanFrame.NOTHING
-                }
-            )
+            val outcome = when {
+                result != null -> ScanFrame.DECODED
+                located -> ScanFrame.LOCATED_UNREADABLE
+                else -> ScanFrame.NOTHING
+            }
+            // One line per second, not per frame: enough to answer "what does ZXing actually see
+            // at the distance where this fails" without flooding a log the operator has to read.
+            val now = System.currentTimeMillis()
+            if (outcome != lastLoggedOutcome || now - lastLoggedAtMs > 1000) {
+                lastLoggedOutcome = outcome
+                lastLoggedAtMs = now
+                android.util.Log.i("GrandTime", "qr frame: $outcome (${w}x$h)")
+            }
+            onFrameOutcome(outcome)
             if (result != null) {
                 onDecoded(result.text)
             }

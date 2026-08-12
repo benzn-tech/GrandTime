@@ -79,10 +79,39 @@ constraint (user-visible copy in English; the operators are NZ construction staf
    `rowStride > w` it throws every frame into a blanket catch: persistent `Scanning…`, no logs,
    exactly this incident's shape.
 
-**Known limitation, to be probed on device, not assumed away:** for a QR that is genuinely too
-small, the finder patterns may be unresolvable too, so the decode fails as *not-found* and the
-"too small" hint never fires. If the device test shows that, the honest fallback is the timeout
-message, not a cleverer classifier.
+### ⚠️ The headline feature may be inert on this hardware — UNVERIFIED
+
+For a QR that is genuinely too small, the **finder patterns are likely unresolvable too**. The
+decode then fails as *not-found*, not as checksum/format, and `LOCATED_UNREADABLE` — the whole
+point of the change — **never fires**. In that case the only message the operator actually gets
+in the failing scenario is the 15-second timeout.
+
+**This is a prediction, not a measurement.** The first device pass reported no "move closer"
+message and no "expired" message, but in both steps the code was held at a distance that never
+decoded, so those steps did not test what they were meant to test, and the log buffer contains
+no frame outcomes at all. **Nothing here is confirmed either way.**
+
+A per-second probe ships with this change precisely to settle it whenever someone next hits the
+problem: `qr frame: NOTHING|LOCATED_UNREADABLE|DECODED (WxH)` in logcat while the scan screen is
+open. It is deliberately not removed — the question it answers is the one that cost an hour, and
+one line per second on one screen is a cheap standing answer.
+
+**If the probe later shows only `NOTHING` at the failing distance**, the honest conclusion is
+that the located/unreadable distinction is dead weight on this device and the timeout message is
+what does the work. Say that in this file rather than leaving a clever branch that never runs.
+
+### What is definitely worth having regardless
+
+Three things in this change do not depend on the classifier firing:
+
+- **the retry-unblock** — a screen blank could permanently prevent re-scanning the same code;
+- **the luminance-buffer hardening** — on any HAL with `rowStride > w` the old code threw every
+  frame into a blanket catch, i.e. permanent `Scanning…` with no logs;
+- **the hint/attempt separation** — a frame hint can no longer overwrite a real redeem failure.
+
+The product decision recorded at the time: the operator does not want sophistication here, only
+a scanner that achieves its purpose. This change is therefore not to be extended further; if the
+classifier turns out to be inert, delete it rather than improving it.
 
 ## Superseded first draft
 
