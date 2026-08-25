@@ -54,6 +54,15 @@ object AppState {
     val pendingGroup = MutableStateFlow<com.benzn.grandtime.capture.GroupExit.PendingGroup?>(null)
 
     /**
+     * When the Start meeting button was pressed, or null (VizField C1).
+     *
+     * Read it through [com.benzn.grandtime.capture.MeetingStart.claim], never directly —
+     * that is what enforces expiry, and a stale press would label whatever hardware-key
+     * recording comes next, hours later, as a meeting.
+     */
+    val pendingMeetingStart = MutableStateFlow<Long?>(null)
+
+    /**
      * True while the "has the meeting ended?" question is outstanding.
      *
      * Raised by [com.benzn.grandtime.capture.CaptureManager] 20s after a stop and

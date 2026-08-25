@@ -290,6 +290,9 @@ class CaptureManager(
      */
     @Volatile private var activeGroupId: String? = null
 
+    /** "meeting" while the current session was opened by the Start meeting entry; see [MeetingStart]. */
+    @Volatile private var activeSessionType: String? = null
+
     /**
      * Another device answered "the meeting has ended".
      *
@@ -354,6 +357,10 @@ class CaptureManager(
         AppState.meetingExitPrompt.value = false
         val groupId = GroupExit.activeGroupId(AppState.pendingGroup.value, startedAtMillis)
         activeGroupId = groupId
+        // Claim-and-clear: the button's intent labels exactly one start, whatever kind it
+        // turns out to be — clearing on a video start too keeps a stale press from waiting.
+        activeSessionType = MeetingStart.claim(AppState.pendingMeetingStart.value, startedAtMillis)
+        AppState.pendingMeetingStart.value = null
         // Everything (incl. the `as GrandTimeApp` cast) runs inside the IO launch + runCatching so
         // nothing can throw onto the capture coroutine — this fires at record-start before the
         // segment is even opened (Opus review: keep the capture path crash-proof).
@@ -362,7 +369,7 @@ class CaptureManager(
                 val app = context.applicationContext as com.benzn.grandtime.GrandTimeApp
                 val siteId = AppState.selectedSite.value?.id
                 val token = app.authManager.freshIdToken() ?: return@launch
-                sessionsApi.open(token, sessionId, startedAtMillis, kind, siteId, groupId)
+                sessionsApi.open(token, sessionId, startedAtMillis, kind, siteId, groupId, activeSessionType)
             }
         }
     }
@@ -382,6 +389,7 @@ class CaptureManager(
     private fun fireSessionClose(sessionId: String, endedAtMillis: Long, intent: String = "idle") {
         flushSilenceMonitor()
         activeGroupId = null
+        activeSessionType = null
         // Restart the expiry clock. The group deliberately OUTLIVES the recording —
         // a meeting where everyone stops to walk to the next building is still one
         // meeting, and expiring here would force a pointless re-scan. What ends the
@@ -530,7 +538,7 @@ class CaptureManager(
                 id = recordId, kind = "video", filePath = file.absolutePath, fileName = file.name,
                 startedAt = startedAt, codec = result.codec, resolution = result.resolution,
                 segmentIndex = cmd.segmentIndex, sessionId = cmd.sessionId, createdAt = startedAt,
-                groupId = activeGroupId,
+                groupId = activeGroupId, sessionType = activeSessionType,
                 siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
             )
         )
@@ -641,7 +649,7 @@ class CaptureManager(
                     id = recordId, kind = "photo", filePath = file.absolutePath, fileName = file.name,
                     startedAt = startedAt, endedAt = startedAt, sizeBytes = file.length(),
                     codec = "jpeg", sessionId = cmd.sessionId, createdAt = startedAt,
-                    groupId = activeGroupId,
+                    groupId = activeGroupId, sessionType = activeSessionType,
                     siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(),
                 )
             )
@@ -820,7 +828,7 @@ class CaptureManager(
                 id = id, kind = "audio", filePath = seg.file.absolutePath, fileName = seg.file.name,
                 startedAt = seg.startedAtMs, endedAt = seg.endedAtMs, durationMs = seg.endedAtMs - seg.startedAtMs,
                 sizeBytes = seg.file.length(), codec = "wav", segmentIndex = seg.index, sessionId = sessionId,
-                groupId = activeGroupId,
+                groupId = activeGroupId, sessionType = activeSessionType,
                 siteId = AppState.selectedSite.value?.id, authorSub = currentAuthorSub(), createdAt = seg.startedAtMs,
             )
         )

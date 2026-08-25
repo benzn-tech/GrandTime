@@ -119,6 +119,7 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                 // after the recording, and the group it belonged to may since
                 // have ended. The row is what remembers.
                 groupId = record.groupId,
+                sessionType = record.sessionType,
             )
 
             val urlResult = client.uploadUrl(idToken, req)

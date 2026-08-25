@@ -99,6 +99,14 @@ data class UploadUrlReq(
      * fills the value, never clears it, so the two paths cannot fight.
      */
     val groupId: String? = null,
+
+    /**
+     * "meeting" when the Start meeting entry opened this recording's session (VizField C1);
+     * null otherwise. Rides here for the same reason [groupId] does: /open is fire-and-forget
+     * and offline is normal on a site, so the type also travels on the one call guaranteed to
+     * arrive eventually.
+     */
+    val sessionType: String? = null,
 )
 
 /**
@@ -151,6 +159,7 @@ class RecordingsApiClient(
         // Omitted rather than sent as null for a solo recording, so the solo
         // request stays byte-identical to what it was before this existed.
         req.groupId?.let { body.put("groupId", it) }
+        req.sessionType?.let { body.put("sessionType", it) }
 
         val result = runCatching { http.postJson("$baseUrl/org/recordings/upload-url", idToken, body.toString()) }
             .getOrElse { return UploadUrlResult.Busy(0) }   // no response at all -> transient

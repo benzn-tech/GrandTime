@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dev-flavour launcher label: must be tellable from "VizField" at a glance.
+         Dev builds are never installed on pilot devices. -->
+    <string name="app_name">devvizfield</string>
+</resources>

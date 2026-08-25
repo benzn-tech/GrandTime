@@ -29,8 +29,12 @@ android {
         // the only way to tell them apart was to pull the APK and grep the dex.
         // versionCode is what Android compares on install; versionName is what
         // a person reads in Settings.
-        versionCode = 25
-        versionName = "0.6.11"
+        versionCode = 26
+        versionName = "0.7.0"
+        // TODO(A2.5): the vizfield flavours must switch to the NEW Cognito pool in the
+        // VizField AWS account once it exists (frozen decision F2 — cross-account reuse is
+        // impossible). Until then they share this pool so the app can be exercised on-device;
+        // its tokens are useless at the vizfield gateway, so no FieldSight data path opens up.
         buildConfigField("String", "COGNITO_POOL_ID", "\"ap-southeast-2_q88pd6XXr\"")
         buildConfigField("String", "COGNITO_CLIENT_ID", "\"4ratjdjonqm17tln6bs2761ci3\"")
         buildConfigField("String", "COGNITO_REGION", "\"ap-southeast-2\"")
@@ -59,6 +63,31 @@ android {
             buildConfigField("boolean", "SITE_VOICE_ENABLED", "true")
             // QR login env tag — must match the "env" field the web app encodes into the login QR.
             buildConfigField("String", "QR_ENV", "\"test\"")
+        }
+        // VizField (C1): the SAME app pointed at the VizField world. The gateway is burned in
+        // at compile time — which backend a recording lands in is decided by the flavour, not
+        // by config or git branch. These two flavours must be structurally unable to reach any
+        // FieldSight gateway or bucket; FlavourIsolationTest pins that per-variant.
+        create("vizfield") {
+            dimension = "env"
+            applicationId = "com.benzn.vizfield"
+            // Frozen production gateway domain (PLAYBOOK F4). Backend goes live with A2.5;
+            // until then uploads queue as Busy retries, which is the designed offline behavior.
+            buildConfigField("String", "ORG_API_BASE_URL", "\"https://api.vizfield.com/api\"")
+            // No VizField WS backend exists; an enabled site voice could only reach FieldSight's.
+            buildConfigField("String", "SITE_VOICE_WS_URL", "\"\"")
+            buildConfigField("boolean", "SITE_VOICE_ENABLED", "false")
+            buildConfigField("String", "QR_ENV", "\"vizfield\"")
+        }
+        create("vizfieldDev") {
+            dimension = "env"
+            applicationId = "com.benzn.vizfield.dev"   // side-by-side, never overwrites the prod app
+            // Reserved test hostname on the vizfield.com zone (A2.5 binds it). Deliberately NOT
+            // a FieldSight gateway: a dev build must be unable to reach a production bucket.
+            buildConfigField("String", "ORG_API_BASE_URL", "\"https://api-test.vizfield.com/api\"")
+            buildConfigField("String", "SITE_VOICE_WS_URL", "\"\"")
+            buildConfigField("boolean", "SITE_VOICE_ENABLED", "false")
+            buildConfigField("String", "QR_ENV", "\"vizfield-test\"")
         }
     }
 

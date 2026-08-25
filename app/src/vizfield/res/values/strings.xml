@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- VizField launcher label (C1). Production flavour of the VizField world. -->
+    <string name="app_name">VizField</string>
+</resources>
