@@ -96,6 +96,28 @@ class SessionsApiClientTest {
         assertFalse(JSONObject(fake.body!!).has("groupId"))
     }
 
+    // ---- session_type=meeting entry (VizField C1) -------------------------
+
+    @Test fun open_sends_sessionType_when_the_meeting_entry_started_the_session() {
+        val fake = FakeHttp(200)
+        SessionsApiClient("https://api.example/prod/api", fake).open(
+            idToken = "TOK", sessionId = sid, startedAtMillis = startMs,
+            kind = "audio", siteId = null, sessionType = "meeting",
+        )
+        assertEquals("meeting", JSONObject(fake.body!!).getString("sessionType"))
+    }
+
+    @Test fun open_omits_sessionType_for_an_ordinary_recording() {
+        // Same rule as groupId: absent, not null — the non-meeting request stays
+        // byte-identical to what every deployed backend already receives.
+        val fake = FakeHttp(200)
+        SessionsApiClient("https://api.example/prod/api", fake).open(
+            idToken = "TOK", sessionId = sid, startedAtMillis = startMs,
+            kind = "audio", siteId = null,
+        )
+        assertFalse(JSONObject(fake.body!!).has("sessionType"))
+    }
+
     @Test fun open_still_works_without_the_new_argument() {
         // Every existing caller passes five arguments. The new one is
         // defaulted, so they keep compiling and keep behaving identically.

@@ -27,6 +27,7 @@ class SessionsApiClient(
         kind: String,
         siteId: String?,
         groupId: String? = null,
+        sessionType: String? = null,
     ): Boolean {
         val body = JSONObject()
             .put("startedAt", iso(startedAtMillis))
@@ -36,6 +37,9 @@ class SessionsApiClient(
         // Omitted rather than sent as null for a solo recording, so the solo
         // request stays byte-identical to what it was before this existed.
         groupId?.let { body.put("groupId", it) }
+        // VizField C1: "meeting" when the Start meeting entry opened this session.
+        // Same omission rule as groupId — an ordinary recording gains no field.
+        sessionType?.let { body.put("sessionType", it) }
         return post("$baseUrl/org/sessions/$sessionId/open", idToken, body)
     }
 

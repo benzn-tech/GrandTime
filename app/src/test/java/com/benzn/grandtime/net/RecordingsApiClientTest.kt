@@ -276,4 +276,38 @@ class RecordingsApiClientTest {
             startedAt = "2026-08-06T09:00:00+12:00"))
         assertTrue(!org.json.JSONObject(sent).has("groupId"))
     }
+
+    // ---- session_type=meeting riding on the upload (VizField C1) ------------
+
+    @Test fun `upload-url carries sessionType when the recording is a meeting`() {
+        // Same rationale as groupId: /open is fire-and-forget and offline is normal
+        // on a site, so the one call guaranteed to arrive carries the type too.
+        var sent = ""
+        val client = RecordingsApiClient("https://api.example.com/prod/api", object : HttpFns {
+            override fun postJson(url: String, authToken: String, jsonBody: String): HttpResult {
+                sent = jsonBody
+                return HttpResult(200, """{"recordingId":"r","uploadUrl":"u","s3Key":"k"}""")
+            }
+            override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
+        })
+        client.uploadUrl("idtok", UploadUrlReq(
+            kind = "audio", clientUuid = "c", fileName = "f.wav", contentType = "audio/wav",
+            startedAt = "2026-08-06T09:00:00+12:00", sessionType = "meeting"))
+        assertEquals("meeting", org.json.JSONObject(sent).getString("sessionType"))
+    }
+
+    @Test fun `a non-meeting upload-url body gains no sessionType field`() {
+        var sent = ""
+        val client = RecordingsApiClient("https://api.example.com/prod/api", object : HttpFns {
+            override fun postJson(url: String, authToken: String, jsonBody: String): HttpResult {
+                sent = jsonBody
+                return HttpResult(200, """{"recordingId":"r","uploadUrl":"u","s3Key":"k"}""")
+            }
+            override fun putFile(url: String, contentType: String, file: java.io.File): Int = 200
+        })
+        client.uploadUrl("idtok", UploadUrlReq(
+            kind = "audio", clientUuid = "c", fileName = "f.wav", contentType = "audio/wav",
+            startedAt = "2026-08-06T09:00:00+12:00"))
+        assertTrue(!org.json.JSONObject(sent).has("sessionType"))
+    }
 }

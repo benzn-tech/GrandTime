@@ -63,4 +63,11 @@ data class CaptureRecord(
      * freezing quietly becomes deleting — the exact loss the freeze exists to prevent.
      */
     val frozenCreditMs: Long = 0,
+
+    /**
+     * "meeting" when the Start meeting entry opened this recording's session (VizField C1);
+     * null for every other start (hardware key, QR join). Persisted like [groupId]: /open is
+     * best-effort and offline is normal, so the type must survive on the row the upload reads.
+     */
+    val sessionType: String? = null,
 )

@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [CaptureRecord::class], version = 5, exportSchema = false)
+@Database(entities = [CaptureRecord::class], version = 6, exportSchema = false)
 abstract class CaptureDb : RoomDatabase() {
     abstract fun captureRecords(): CaptureRecordDao
 
@@ -53,9 +53,18 @@ abstract class CaptureDb : RoomDatabase() {
             }
         }
 
+        // sessionType: "meeting" when the Start meeting entry opened the session (VizField C1),
+        // null otherwise. Persisted like groupId and for the same reason: an upload retried
+        // days later must still carry it, and /open failing offline must not lose it.
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE capture_records ADD COLUMN sessionType TEXT")
+            }
+        }
+
         fun get(context: Context): CaptureDb = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, CaptureDb::class.java, "capture.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
                 .also { instance = it }
         }

@@ -336,6 +336,30 @@ fun HomeScreen() {
                 // a SECOND group, and the two halves of one meeting would never
                 // merge. For the lead the two are the same value.
                 val codeId = group?.groupId ?: capture.sessionIdOrNull()
+                if (capture is CaptureState.Idle) {
+                    // VizField C1: the one big entry. Starts an ordinary audio session whose
+                    // metadata carries sessionType=meeting; the intent expires (MeetingStart)
+                    // so a press the service never saw cannot mislabel a later recording.
+                    Button(
+                        onClick = {
+                            AppState.pendingMeetingStart.value = System.currentTimeMillis()
+                            AppState.screenCaptureActions.tryEmit(KeyAction.START_STOP_AUDIO)
+                        },
+                        modifier = Modifier.fillMaxWidth().height(72.dp),
+                        shape = MaterialTheme.shapes.small,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    ) {
+                        Text(
+                            "Start meeting",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
                 if (group != null) {
                     Text(
                         "Recording as part of a meeting",
