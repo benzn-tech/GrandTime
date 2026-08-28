@@ -2,6 +2,7 @@ package com.benzn.grandtime.net
 
 import com.benzn.grandtime.auth.HttpResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -241,6 +242,46 @@ class RecordingsApiClientTest {
         val r = clientReturning(429, "").completeStatus("idtok", "r1", 1L)
         assertTrue(RecordingsApiClient.isTransient(r.code))
         assertTrue(!r.groupEnded)
+    }
+
+    // ---- the speaker count riding on the same response ----------------------
+    //
+    // Same passenger seat as groupEnded, same hard rule: it can never change the upload's own
+    // verdict. The one thing that is different is that ABSENT and ZERO mean different things,
+    // and the client must not collapse them — every backend build that does not send the field
+    // yet returns absent, and a zero on screen is a finding the server never made.
+
+    @Test fun `complete reports the speaker count when the server sends one`() {
+        val r = clientReturning(200, """{"ok":true,"speakers":3}""").completeStatus("idtok", "r1", 1L)
+        assertEquals(3, r.speakers)
+        assertEquals(200, r.code)
+    }
+
+    @Test fun `a confirmed zero is reported as zero, not as absent`() {
+        assertEquals(0, clientReturning(200, """{"speakers":0}""").completeStatus("idtok", "r1", 1L).speakers)
+    }
+
+    @Test fun `a response without the field reports null, not zero`() {
+        // Today's backend. The screen must show nothing rather than "0 speakers".
+        assertNull(clientReturning(200, """{"ok":true}""").completeStatus("idtok", "r1", 1L).speakers)
+    }
+
+    @Test fun `a malformed body costs the count, not the upload`() {
+        val r = clientReturning(200, "<html>gateway</html>").completeStatus("idtok", "r1", 1L)
+        assertEquals(200, r.code)
+        assertNull(r.speakers)
+    }
+
+    @Test fun `a nonsense speakers value is not shown`() {
+        // A negative or non-numeric value is the server contradicting itself; showing it would
+        // be worse than showing nothing.
+        assertNull(clientReturning(200, """{"speakers":-2}""").completeStatus("idtok", "r1", 1L).speakers)
+        assertNull(clientReturning(200, """{"speakers":"lots"}""").completeStatus("idtok", "r1", 1L).speakers)
+    }
+
+    @Test fun `the count never rescues a failed complete`() {
+        val r = clientReturning(503, """{"speakers":2}""").completeStatus("idtok", "r1", 1L)
+        assertEquals(503, r.code)
     }
 
     // ---- the group riding on the upload -------------------------------------

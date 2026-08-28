@@ -300,6 +300,10 @@ class CaptureManager(
             if (!ok) break
         }
         AppState.captureState.value = core.state
+        // One place, so a pause, an end, a failure and a camera loss cannot each forget it: the
+        // meter is only ever lit by a live audio capture. Leaving it at its last value would show
+        // a paused session still hearing the room.
+        if (core.state !is CaptureState.RecordingAudio) AppState.micLevel.value = 0f
     }
 
     /** 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
@@ -403,6 +407,10 @@ class CaptureManager(
         // A new recording answers the question by itself: they are not done.
         meetingPromptJob?.cancel()
         AppState.meetingExitPrompt.value = false
+        // The previous session's speaker count is not this session's. It is tagged with a session
+        // id and the screen checks that too, but clearing here means the number is absent rather
+        // than stale for the seconds before the first chunk of this session comes back.
+        AppState.sessionSpeakers.value = null
         val groupId = GroupExit.activeGroupId(AppState.pendingGroup.value, startedAtMillis)
         activeGroupId = groupId
         // Claim-and-clear: the button's intent labels exactly one start, whatever kind it
@@ -851,6 +859,11 @@ class CaptureManager(
             // single-threaded scope, so the hop is what keeps that true — and it keeps a disk
             // write off the thread that is supposed to be draining the microphone.
             log = { line -> scope.launch { probe(line) } },
+            // Straight to the StateFlow, NOT hopped onto [scope] like log is: this arrives ten
+            // times a second and a launch each time would queue more work than the meter is
+            // worth. MutableStateFlow.value is safe to set from any thread, and a dropped or
+            // reordered level is a frame of a meter, not a lost measurement.
+            onLevel = { level -> AppState.micLevel.value = level },
         ).also { silenceMonitor = it }
 
     /**

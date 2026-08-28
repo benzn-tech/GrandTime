@@ -106,6 +106,36 @@ object AppState {
     /** 刚拍摄照片的绝对路径(#81 快门确认闪现);null=无待展示。写入方=CaptureManager,读取方=全局悬浮层。 */
     val lastPhotoFlash = MutableStateFlow<String?>(null)
 
+    /**
+     * Live microphone level, 0f..1f — the loudest sample in the last ~100ms.
+     *
+     * Feeds the meter on the recording screen, whose job is to answer "is this thing still
+     * recording?" from across a room in the instant the screen lights up. It is written from the
+     * REAL sample stream ([com.benzn.grandtime.capture.MicSilenceMonitor]) and never animated
+     * independently: on this device a refused capture returns a positive length and a buffer of
+     * zeros, so a meter that moved on its own would be a confident lie about the one fault the
+     * operator most needs to see. Flat bars mean flat audio.
+     *
+     * Audio sessions only — a video session builds no monitor, and its own liveness proof is the
+     * camera preview. Reset to 0f by [com.benzn.grandtime.capture.CaptureManager] whenever the
+     * state leaves RecordingAudio, so a paused or finished session cannot leave the meter lit.
+     */
+    val micLevel = MutableStateFlow(0f)
+
+    /**
+     * How many speakers the backend has confirmed in the session so far, or null when it has not
+     * said (yet, or at all).
+     *
+     * Rides back on the chunk-upload `complete` response, the same passenger channel
+     * [meetingEndedElsewhere] uses, because a body-worn device holds no connection open. Tagged
+     * with the session it describes: uploads for a FINISHED session keep landing after the next
+     * one has started, and an untagged count would show the previous recording's speakers under
+     * the current one's timer.
+     */
+    val sessionSpeakers = MutableStateFlow<SessionSpeakers?>(null)
+
+    data class SessionSpeakers(val sessionId: String, val count: Int)
+
     fun addProbe(entry: ProbeEntry) {
         probeEntries.value = (listOf(entry) + probeEntries.value).take(PROBE_LIMIT)
     }

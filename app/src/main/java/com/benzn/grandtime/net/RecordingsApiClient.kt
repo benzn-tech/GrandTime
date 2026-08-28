@@ -195,7 +195,11 @@ class RecordingsApiClient(
         val result = runCatching {
             http.postJson("$baseUrl/org/recordings/$recordingId/complete", idToken, body.toString())
         }.getOrElse { return CompleteResult(NO_RESPONSE, groupEnded = false) }
-        return CompleteResult(result.code, groupEnded = parseGroupEnded(result.body))
+        return CompleteResult(
+            result.code,
+            groupEnded = parseGroupEnded(result.body),
+            speakers = parseSpeakers(result.body),
+        )
     }
 
     /**
@@ -214,13 +218,29 @@ class RecordingsApiClient(
     }.getOrDefault(false)
 
     /**
+     * How many speakers the backend has confirmed in this session so far, or null.
+     *
+     * Same passenger seat as [parseGroupEnded], and the same rule: unreadable is not an error.
+     * Null and 0 are DIFFERENT and the screen shows them differently — null is "the backend has
+     * not told us", 0 is "it has processed the batch and heard nobody" — so an absent field must
+     * not fall back to zero, which would state a finding the server never made.
+     */
+    private fun parseSpeakers(body: String?): Int? = runCatching {
+        JSONObject(body ?: "").optInt("speakers", -1).takeIf { it >= 0 }
+    }.getOrNull()
+
+    /**
      * The outcome of a `complete`.
      *
      * [code] is what it always was, so `isTransient` and the whole retry budget
-     * are untouched. [groupEnded] is a passenger: the server has no other way to
-     * reach a device that is not holding a connection open.
+     * are untouched. [groupEnded] and [speakers] are passengers: the server has no
+     * other way to reach a device that is not holding a connection open.
+     *
+     * [speakers] is null whenever the server did not say — including every build of the backend
+     * that does not send the field yet. The screen shows nothing at all in that case rather than
+     * a zero.
      */
-    data class CompleteResult(val code: Int, val groupEnded: Boolean)
+    data class CompleteResult(val code: Int, val groupEnded: Boolean, val speakers: Int? = null)
 
     companion object {
         /** No HTTP status was ever obtained (socket/DNS/timeout). Transient by definition. */

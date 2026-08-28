@@ -51,7 +51,18 @@ class MicSilenceMonitor(
      *  Reading it here would blind the detector for tens of seconds. */
     private val micBorrowed: () -> Boolean = { false },
     private val log: (String) -> Unit = {},
+    /**
+     * Loudest sample in the window just ended, as 0f..1f, about ten times a second.
+     *
+     * The recording screen's meter is driven from here rather than from its own animation because
+     * this loop is already looking at every sample, and because a meter that moves without the
+     * samples moving would hide exactly the fault this class exists to catch. Called on the
+     * AudioRecorder worker thread — keep the callback cheap and thread-safe.
+     */
+    private val onLevel: (Float) -> Unit = {},
 ) {
+    /** ~100ms of audio: fast enough to look live, slow enough to not flood the UI thread. */
+    private val levelIntervalSamples: Long = sampleRate / 10L
     /** A run must reach this long to be logged or annotated. Gaps between words are normal. */
     private val thresholdSamples: Long = sampleRate.toLong()
 
@@ -70,6 +81,8 @@ class MicSilenceMonitor(
     private var runStartOffsetSamples = 0L
     private var currentChunk = Int.MIN_VALUE
     private var chunkSamples = 0L
+    private var levelPeak = 0
+    private var levelSamples = 0L
 
     /**
      * Feed one `AudioRecord.read()` result. [n] is the byte count read() returned — only the
@@ -88,6 +101,16 @@ class MicSilenceMonitor(
             val lo = buf[i * 2].toInt() and 0xFF
             val hi = buf[i * 2 + 1].toInt()
             val value = (hi shl 8) or lo  // hi keeps its sign, so this sign-extends
+            val magnitude = if (value < 0) -value else value
+            // The meter's window. Deliberately a peak over the window and not an average: a level
+            // that is zero here is DIGITALLY zero, which is the fault signature, and averaging
+            // would smear the onset of one back into the room noise before it.
+            if (magnitude > levelPeak) levelPeak = magnitude
+            if (++levelSamples >= levelIntervalSamples) {
+                onLevel(levelPeak.toFloat() / MAX_MAGNITUDE)
+                levelPeak = 0
+                levelSamples = 0L
+            }
             if (value == 0) {
                 if (runSamples == 0L) {
                     runStartChunk = currentChunk
@@ -123,7 +146,6 @@ class MicSilenceMonitor(
                 runBorrowed = false
                 runLogged = false
                 runAnnotated = false
-                val magnitude = if (value < 0) -value else value
                 if (magnitude > peak) peak = magnitude
             }
             chunkSamples++
@@ -138,4 +160,9 @@ class MicSilenceMonitor(
         peakAmplitude = peak,
         recordedSecondsS = (totalSamples / sampleRate).toInt(),
     )
+
+    private companion object {
+        /** Full scale for signed 16-bit PCM. */
+        const val MAX_MAGNITUDE = 32_768f
+    }
 }
