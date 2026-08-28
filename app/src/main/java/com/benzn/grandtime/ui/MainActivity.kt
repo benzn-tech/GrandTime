@@ -194,11 +194,15 @@ private fun MainScaffold() {
     BackHandler(enabled = isRecording) {}
     val running by AppState.serviceRunning.collectAsStateWithLifecycle()
 
-    // Service 侧 captureState 驱动导航:进入 RecordingVideo/PausedVideo → 全屏 RECORDING;
-    // 两者都离开(停止/失败)且当前在 RECORDING → 回 HOME。
+    // Service 侧 captureState 驱动导航:任何非 Idle 采集态 → 全屏 RECORDING;回 Idle → HOME。
+    //
+    // Audio used to be excluded, which left the answer to "is this still recording?" as a line of
+    // body text on a Home card. On a device worn on a chest, the person wakes the screen for two
+    // seconds and does not read: an audio session has to take over the screen for the same reason
+    // a video one does.
     val capture by AppState.captureState.collectAsStateWithLifecycle()
     LaunchedEffect(capture) {
-        val recording = capture is CaptureState.RecordingVideo || capture is CaptureState.PausedVideo
+        val recording = capture !is CaptureState.Idle
         if (recording && screen != Screen.RECORDING) screen = Screen.RECORDING
         else if (!recording && screen == Screen.RECORDING) screen = Screen.HOME
     }

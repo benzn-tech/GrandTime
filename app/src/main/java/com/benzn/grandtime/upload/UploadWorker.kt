@@ -158,6 +158,12 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                     // server can reach a device that is not holding a connection
                     // open. Handled by CaptureManager, which owns the recorder.
                     if (completed.groupEnded) AppState.meetingEndedElsewhere.tryEmit(Unit)
+                    // Same channel, same reason. Tagged with the session this chunk belongs to:
+                    // a finished session's chunks keep uploading while the next one records, and
+                    // an untagged count would appear under the wrong recording's timer.
+                    completed.speakers?.let {
+                        AppState.sessionSpeakers.value = AppState.SessionSpeakers(record.sessionId, it)
+                    }
                     when {
                         status in 200..299 -> {
                             dao.markUploadStatus(recordId, "uploaded")

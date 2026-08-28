@@ -221,4 +221,56 @@ class MicSilenceMonitorTest {
         assertEquals(7, m.snapshot().longestSilentRunS)
         assertEquals(7, m.snapshot().silentSecondsS)
     }
+
+    // ---- the live level that drives the recording screen's meter -------------
+    //
+    // The meter exists to answer "is this still recording?" in a two-second glance. It is fed
+    // from HERE, off the real samples, rather than animated on its own -- because the fault this
+    // whole class is about is a capture that looks healthy from every other angle. A meter that
+    // moved while the samples were zeros would hide it behind a reassuring animation.
+
+    private fun levels(block: (MicSilenceMonitor) -> Unit): List<Float> {
+        val out = mutableListOf<Float>()
+        block(MicSilenceMonitor(sampleRate = sr, onLevel = { out.add(it) }))
+        return out
+    }
+
+    @Test fun the_level_reports_about_ten_times_a_second() {
+        // One second of audio, so the meter updates often enough to look alive without
+        // flooding the UI with a callback per buffer.
+        val out = levels { it.onPcm(pcm(sr, 8000), sr * 2, chunkIndex = 1) }
+        assertEquals(10, out.size)
+    }
+
+    @Test fun the_level_tracks_the_loudest_sample_in_its_window() {
+        val out = levels { it.onPcm(pcm(sr, 16384), sr * 2, chunkIndex = 1) }
+        assertEquals(0.5f, out.first(), 0.01f)
+    }
+
+    @Test fun digital_silence_reports_exactly_zero() {
+        // The whole point. Zero here is what puts "No sound reaching the microphone" on screen,
+        // so it must be reachable and must not be smeared into a small positive number.
+        val out = levels { it.onPcm(pcm(sr), sr * 2, chunkIndex = 1) }
+        assertTrue(out.isNotEmpty())
+        assertTrue(out.all { it == 0f })
+    }
+
+    @Test fun a_quiet_room_is_not_silence() {
+        // A peak, not an average, for exactly this: room tone is small but nonzero, and a
+        // warning that fired during a pause in the conversation would train people to ignore it.
+        val out = levels { it.onPcm(pcm(sr, 40), sr * 2, chunkIndex = 1) }
+        assertTrue(out.all { it > 0f })
+    }
+
+    @Test fun the_level_does_not_disturb_the_silence_counters() {
+        // The counters are the shipped fault detector; the meter is a passenger on the same loop.
+        val m = MicSilenceMonitor(sampleRate = sr, onLevel = {})
+        repeat(3) { m.onPcm(pcm(sr), sr * 2, chunkIndex = 1) }
+        m.onPcm(pcm(sr, 900), sr * 2, chunkIndex = 2)
+        val s = m.snapshot()
+        assertEquals(3, s.longestSilentRunS)
+        assertEquals(3, s.silentSecondsS)
+        assertEquals(900, s.peakAmplitude)
+        assertEquals(4, s.recordedSecondsS)
+    }
 }
