@@ -38,6 +38,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -108,29 +110,7 @@ class CaptureManager(
     init {
         // 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
         pipeline.onCameraLost = {
-            scope.launch {
-                if (core.state is CaptureState.RecordingVideo) {
-                    val wifiOnly = settingsStore.settings.first().videoUploadWifiOnly
-                    finalizeVideoDbRow()?.let {
-                        uploadEnqueuer.enqueue(it, requireUnmetered = uploadRequiresUnmetered("video", wifiOnly))
-                    }
-                    stopWatermarkTimer()
-                    gps.stop()
-                    sounds.stopRecording()
-                    val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
-                    execute(core.onFailure("Camera lost — recording stopped"))
-                    if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
-                } else if (core.state is CaptureState.PausedVideo) {
-                    // Camera lost in the narrow race before pause-cleanup released it (#3 releases the
-                    // camera on pause): no live segment to finalize — clean up + close the session (idle).
-                    val endingSessionId = (core.state as? CaptureState.PausedVideo)?.sessionId
-                    stopWatermarkTimer()
-                    gps.stop()
-                    sounds.stopRecording()
-                    execute(core.onFailure("Camera lost — recording stopped"))
-                    if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
-                }
-            }
+            scope.launch { sessionLock.withLock { onCameraLost() } }
         }
         // 首启一次性迁移(不变)
         scope.launch(Dispatchers.IO) {
@@ -145,7 +125,7 @@ class CaptureManager(
         }
         // Someone else ended the meeting. Stop here too, then ask about resuming.
         scope.launch {
-            AppState.meetingEndedElsewhere.collect { onMeetingEndedElsewhere() }
+            AppState.meetingEndedElsewhere.collect { sessionLock.withLock { onMeetingEndedElsewhere() } }
         }
         // Whoever silenced a segment for an ask, resume it when the ask is over.
         //
@@ -176,11 +156,46 @@ class CaptureManager(
         KeyAction.END_AUDIO, KeyAction.TOGGLE_TORCH, KeyAction.ADJUST_VOLUME,
     )
 
+    /**
+     * One capture-lifecycle change at a time.
+     *
+     * [CaptureCore] decides synchronously — the state is RecordingVideo the instant the start key
+     * is read — but the machinery behind that decision is asynchronous and SLOW: a cold start awaits
+     * the spoken announcement (up to [CaptureSounds.ANNOUNCE_TIMEOUT_MS]) and then a Camera2 session
+     * configuration, and only at the very end of that does [Camera2Pipeline.segment] become live.
+     * Every one of those is a suspension point, and [handle] used to launch each key press into its
+     * own coroutine, so a second press ran straight through the middle of the first one.
+     *
+     * That combination silently ate stops. A pause or an end pressed during a start's ~2s of
+     * startup reached [Camera2Pipeline.stopSegment] while there was still no segment to stop; it
+     * returns early in that case, no onFinalized callback ever comes, and since START_STOP_VIDEO and
+     * END_VIDEO on RecordingVideo BOTH leave the transition to that callback, the machine stayed in
+     * RecordingVideo with the key press gone. On the device that is a stop key that does nothing and
+     * a recording that keeps running — the worst way for an evidence recorder to fail.
+     *
+     * Serializing makes a press that lands mid-startup wait for it and then apply, instead of
+     * landing in the hole. The timers and callbacks below take the same lock, so each of them also
+     * re-reads [CaptureCore.state] at the moment it actually runs rather than the moment it was
+     * scheduled. Held only across the lifecycle actions: a photo, the torch and the volume must stay
+     * responsive while a start is announcing, and none of them start or stop a session.
+     *
+     * Not taken inside [execute] — the failure paths call it re-entrantly.
+     */
+    private val sessionLock = Mutex()
+
+    private val lifecycleActions = setOf(
+        KeyAction.START_STOP_VIDEO, KeyAction.END_VIDEO, KeyAction.START_STOP_AUDIO, KeyAction.END_AUDIO,
+    )
+
     fun handle(action: KeyAction) {
         scope.launch {
-            if (!preflight(action)) return@launch
-            execute(core.onAction(action))
+            if (action in lifecycleActions) sessionLock.withLock { runAction(action) } else runAction(action)
         }
+    }
+
+    private suspend fun runAction(action: KeyAction) {
+        if (!preflight(action)) return
+        execute(core.onAction(action))
     }
 
     fun shutdown() {
@@ -258,6 +273,13 @@ class CaptureManager(
                 is CaptureCommand.StopVideo -> {
                     segmentTimer?.cancel()
                     pendingStopReason = cmd.reason
+                    // A stop is only ever DELIVERED by stopSegment's onFinalized callback — neither
+                    // START_STOP_VIDEO nor END_VIDEO changes the state itself while recording. So a
+                    // stop issued with no live segment goes nowhere and the machine stays in
+                    // RecordingVideo with the key dead. [sessionLock] is what makes that
+                    // unreachable; this line is here so that if it ever happens again it says so in
+                    // the probe log instead of looking like a hardware fault.
+                    if (!pipeline.isRecording) probe("StopVideo(${cmd.reason}) with no live segment")
                     pipeline.stopSegment()
                     true
                 }
@@ -278,6 +300,32 @@ class CaptureManager(
             if (!ok) break
         }
         AppState.captureState.value = core.state
+    }
+
+    /** 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
+     *  Runs under [sessionLock] — it drives the same state machine the key actions do. */
+    private suspend fun onCameraLost() {
+        if (core.state is CaptureState.RecordingVideo) {
+            val wifiOnly = settingsStore.settings.first().videoUploadWifiOnly
+            finalizeVideoDbRow()?.let {
+                uploadEnqueuer.enqueue(it, requireUnmetered = uploadRequiresUnmetered("video", wifiOnly))
+            }
+            stopWatermarkTimer()
+            gps.stop()
+            sounds.stopRecording()
+            val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
+            execute(core.onFailure("Camera lost — recording stopped"))
+            if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
+        } else if (core.state is CaptureState.PausedVideo) {
+            // Camera lost in the narrow race before pause-cleanup released it (#3 releases the
+            // camera on pause): no live segment to finalize — clean up + close the session (idle).
+            val endingSessionId = (core.state as? CaptureState.PausedVideo)?.sessionId
+            stopWatermarkTimer()
+            gps.stop()
+            sounds.stopRecording()
+            execute(core.onFailure("Camera lost — recording stopped"))
+            if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
+        }
     }
 
     /**
@@ -458,7 +506,11 @@ class CaptureManager(
             // outcome the borrow exists to prevent, one key press away.
             startAudioPaused = handoverActive || askInFlight(),
         ) { error, message ->
-            scope.launch {
+            // Under the lock like every other lifecycle path: this callback lands from the teardown
+            // thread and, on a rollover, opens the NEXT segment — another stretch where the state
+            // says RecordingVideo but there is nothing live to stop yet. Nothing held under the lock
+            // waits on this callback, so taking it here cannot deadlock the stop that triggered it.
+            scope.launch { sessionLock.withLock {
                 val finalizedId = finalizeVideoDbRow()
                 if (error) {
                     stopWatermarkTimer()
@@ -498,7 +550,7 @@ class CaptureManager(
                         pipeline.release()
                     }
                 }
-            }
+            } }
         }
         if (result == null) {
             // 段起动失败也是终态(core.onFailure 一律回 Idle)——不管是不是段 1,都要收尾计时器/GPS。
@@ -608,7 +660,10 @@ class CaptureManager(
         segmentTimer?.cancel()
         segmentTimer = scope.launch {
             delay(seconds * 1000L)
-            execute(core.onSegmentTimerFired())
+            // Under the lock, so a rollover cannot cut into a key press mid-startup and vice versa.
+            // The state is re-read here rather than at schedule time: if a pause won the race while
+            // this was waiting, onSegmentTimerFired correctly returns nothing.
+            sessionLock.withLock { execute(core.onSegmentTimerFired()) }
         }
     }
 
