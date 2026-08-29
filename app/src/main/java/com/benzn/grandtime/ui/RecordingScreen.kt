@@ -240,6 +240,10 @@ private fun StatusLine(capture: CaptureState, paused: Boolean) {
  * buffer of zeros, so an idling animation here would be a confident lie about the one fault that
  * is otherwise invisible until someone reads a transcript. Flat bars mean flat audio, and after a
  * few seconds of digital silence the screen says so in words.
+ *
+ * Heights are on a dB scale ([meterFraction]), not the raw amplitude. These devices record
+ * quiet enough that a linear meter would draw a talking person and a dead microphone at the
+ * same height, defeating the rule above by a different route.
  */
 @Composable
 private fun MicMeter(active: Boolean) {
@@ -279,7 +283,7 @@ private fun MicMeter(active: Boolean) {
             modifier = Modifier.height(48.dp),
         ) {
             for ((i, value) in history.withIndex()) {
-                val target = if (active) value else 0f
+                val target = if (active) meterFraction(value) else 0f
                 val h by animateFloatAsState(targetValue = target, label = "bar$i")
                 Box(
                     Modifier
@@ -363,6 +367,29 @@ internal fun speakerSuffix(count: Int?): String = when (count) {
     1 -> " · 1 speaker"
     else -> " · $count speakers"
 }
+
+/**
+ * A peak amplitude (0f..1f) as a share of the meter's height, on a dB scale.
+ *
+ * Linear amplitude is unreadable on this hardware. These devices record QUIET — the measured
+ * median across the fleet is -36 to -33 dBFS, which as a raw amplitude is 0.016..0.022. On a
+ * linear meter 48dp tall that is a bar less than one dp above the 4dp floor: a person talking and
+ * a microphone returning digital zero would look the SAME, and looking the same is the one thing
+ * this meter may never do. Ears hear loudness logarithmically and meters have to as well.
+ *
+ * [FLOOR_DBFS] is the bottom of the scale, chosen so the fleet's normal speech lands near the
+ * middle rather than on the floor. Anything quieter than it, and exact zero, return 0f — the bar
+ * then sits at its 4dp floor, which is what "nothing is arriving" is supposed to look like.
+ */
+internal fun meterFraction(peak: Float): Float {
+    if (peak <= 0f) return 0f
+    val dbfs = 20.0 * kotlin.math.log10(peak.toDouble().coerceAtMost(1.0))
+    return ((dbfs - FLOOR_DBFS) / -FLOOR_DBFS).toFloat().coerceIn(0f, 1f)
+}
+
+/** Bottom of the meter's scale. -60 dBFS puts this fleet's typical -36..-33 dBFS speech at
+ *  40-45% height, well clear of the floor, while still leaving headroom above it. */
+private const val FLOOR_DBFS = -60.0
 
 /** Seconds of digital silence before the screen stops implying the microphone is fine. Long enough
  *  that a pause in the conversation never trips it — the level is a PEAK, so a quiet room is not
