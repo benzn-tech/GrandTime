@@ -113,9 +113,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 从系统设置页(如 overlay 授权)返回时重踢一次——startForegroundService
-        // 打给已在跑的服务是廉价 no-op,借此触发 CoreService.onStartCommand 里
-        // 的 overlayGuard.show() 幂等重挂,捕获"服务已起、权限后补"的场景。
+        // 从系统设置页(如 overlay 授权)返回时重踢一次,借此触发 CoreService.onStartCommand
+        // 里的 overlayGuard.show() 幂等重挂,捕获"服务已起、权限后补"的场景。
+        //
+        // This is NOT a cheap no-op, whatever this comment used to claim. Every
+        // startForegroundService() arms a fresh 5-second deadline that only startForeground()
+        // disarms, running service or not — and when onStartCommand did not re-assert foreground,
+        // a resume that landed on a busy main thread killed the process with
+        // ForegroundServiceDidNotStartInTimeException, losing the recording with it. CoreService
+        // now re-asserts on every start command; keep it that way if this call stays.
         startCore()
     }
 

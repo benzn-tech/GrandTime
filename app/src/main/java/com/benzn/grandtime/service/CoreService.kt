@@ -110,6 +110,22 @@ class CoreService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        // EVERY startForegroundService() arms a fresh 5-second deadline in ActivityManagerService,
+        // whether or not this service is already running, and only startForeground() disarms it.
+        // onCreate's call covers the FIRST start and nothing after it, while MainActivity.onResume
+        // re-kicks startForegroundService on every resume — so a resume that lands while the main
+        // thread is busy (the device thrashing, a video segment finalizing) blew the deadline and
+        // the system killed the process outright:
+        //
+        //   FATAL EXCEPTION: main
+        //   RemoteServiceException$ForegroundServiceDidNotStartInTimeException
+        //       at MainActivity.startCore(MainActivity.kt:123) <- onResume
+        //
+        // Reproduced on F2S202503103059 (0.6.11) on 2026-08-29 at 10:51:53, thirty seconds after a
+        // recording ended, and it took the whole recording with it. Re-asserting foreground here is
+        // idempotent and cheap — the notification is rebuilt, the service stays in the state it was
+        // already in — and it is the only thing that disarms a deadline this service did not arm.
+        startForeground(NOTIFICATION_ID, buildNotification(lastNotificationText))
         // 幂等:SAW 权限可能在服务已运行后才授予(如用户从设置页返回),
         // MainActivity.onResume 会重踢 startForegroundService 触发这里——
         // show() 内部对"已显示"或"SAW 未授权"均 no-op,重复调用无害。
@@ -466,6 +482,11 @@ class CoreService : LifecycleService() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
+    /** What the notification currently says. [onStartCommand] has to re-assert foreground on every
+     *  start command, and doing that with a hardcoded string would silently reset a live
+     *  "Recording video" back to "Standing by" every time the operator opens the app. */
+    @Volatile private var lastNotificationText = "Standing by"
+
     private fun buildNotification(text: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_fieldsight)
@@ -475,6 +496,7 @@ class CoreService : LifecycleService() {
             .build()
 
     private fun notifyStatus(text: String) {
+        lastNotificationText = text
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(text))
     }
