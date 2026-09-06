@@ -50,6 +50,11 @@ class VoiceWsClient(
     private var running = false
     private var attempt = 0
     private var connectJob: Job? = null
+
+    /** What reaches the probe log. See [WsLogGate]: the idle-timeout reconnect cycle is routine
+     *  and must not be announced, but silence must never be indistinguishable from a dead client. */
+    private val logGate = WsLogGate()
+    private var lastDropReason: String? = null
     // Bumped on every new attempt and on stop(); a listener whose captured gen != this is stale.
     // @Volatile: written on Main but read from each listener callback's gen-guard on the OkHttp
     // reader thread, so a superseded attempt reliably observes the bump and invalidates itself.
@@ -82,6 +87,9 @@ class VoiceWsClient(
         runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
         socket?.close(1000, "stop"); socket = null
         AppState.siteVoiceConnected.value = false
+        // A stopped client is down, and the next start() must be free to announce its connect.
+        // Without this the first line after a restart would be swallowed as "already up".
+        logGate.onStopped()
     }
 
     /** Enqueue a sendVoice frame. Returns false if the socket isn't currently open. */
@@ -96,6 +104,10 @@ class VoiceWsClient(
         connectJob = scope.launch {
             if (!immediate) delay(WsBackoff.delayMillis(attempt))
             if (gen != generation || !running) return@launch
+            // The first retry after a drop is the routine idle-timeout cycle and stays silent. By
+            // the SECOND, the reconnect that would have closed that cycle has already failed, so
+            // this is an outage and has to be on the record.
+            logGate.onRetryFailed(attempt, lastDropReason)?.let(probe)
             val token = tokenProvider() ?: run {
                 probe("site-voice: no idToken; retry")
                 attempt++; scheduleConnect(immediate = false); return@launch
@@ -124,7 +136,7 @@ class VoiceWsClient(
                 socket = webSocket
                 attempt = 0
                 AppState.siteVoiceConnected.value = true
-                probe("site-voice: connected")
+                logGate.onConnected()?.let(probe)
                 onConnected()
             }
         }
@@ -158,8 +170,12 @@ class VoiceWsClient(
             if (gen != generation) return@launch
             socket = null
             AppState.siteVoiceConnected.value = false
-            probe("site-voice: dropped ($why)")
+            lastDropReason = why
+            // Silent by design. At this instant a routine idle-timeout cycle and a real outage look
+            // identical; the gate waits for a retry to fail before calling it one. See [WsLogGate].
+            logGate.onDropped()?.let(probe)
             if (running) { attempt++; scheduleConnect(immediate = false) }
         }
     }
+
 }
