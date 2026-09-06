@@ -29,8 +29,8 @@ android {
         // the only way to tell them apart was to pull the APK and grep the dex.
         // versionCode is what Android compares on install; versionName is what
         // a person reads in Settings.
-        versionCode = 28
-        versionName = "0.7.2"
+        versionCode = 29
+        versionName = "0.7.3"
         // TODO(A2.5): the vizfield flavours must switch to the NEW Cognito pool in the
         // VizField AWS account once it exists (frozen decision F2 — cross-account reuse is
         // impossible). Until then they share this pool so the app can be exercised on-device;
