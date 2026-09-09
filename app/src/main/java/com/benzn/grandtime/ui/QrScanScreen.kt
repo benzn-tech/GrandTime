@@ -53,6 +53,7 @@ import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.auth.QrLoginParser
 import com.benzn.grandtime.auth.SignInResult
 import com.benzn.grandtime.wifi.WifiQrParser
+import com.benzn.grandtime.wifi.WifiScan
 import com.benzn.grandtime.wifi.WifiSecurity
 import com.benzn.grandtime.capture.GroupExit
 import com.benzn.grandtime.capture.SessionGroup
@@ -168,9 +169,15 @@ fun WifiJoinScreen(onDone: () -> Unit) {
         // A new code answers a new question: whatever the last one ended in is no longer the
         // message to show, or it would hide every hint and camera error underneath it.
         outcome = null
-        when (val net = WifiQrParser.parse(raw)) {
-            null -> setStatus("Not a Wi-Fi code - try again")
-            else -> when (net.security) {
+        val scan = WifiQrParser.parse(raw)
+        when (scan) {
+            is WifiScan.NotWifi -> setStatus("Not a Wi-Fi code - try again")
+            // Says WHICH kind. "Try again" for a password Android cannot accept is advice that
+            // can never work, however many times it is followed.
+            is WifiScan.Unusable -> setStatus(scan.message)
+            is WifiScan.Ok -> {
+              val net = scan.network
+              when (net.security) {
                 // Android's suggestion API has no WEP at all, so naming it beats "could not read".
                 WifiSecurity.WEP ->
                     setStatus("WEP networks cannot be added this way - ask for the password")
@@ -188,11 +195,13 @@ fun WifiJoinScreen(onDone: () -> Unit) {
                     runCatching {
                         val builder = WifiNetworkSuggestion.Builder().setSsid(net.ssid)
                         if (net.hidden) builder.setIsHiddenSsid(true)
-                        net.password?.let {
-                            when (net.security) {
-                                WifiSecurity.WPA3 -> builder.setWpa3Passphrase(it)
-                                else -> builder.setWpa2Passphrase(it)
-                            }
+                        // Only where the code says the network is protected. `T:nopass;P:x` is
+                        // contradictory and nothing emits it, but building a PSK from it would
+                        // save a secured network the operator never described.
+                        when (net.security) {
+                            WifiSecurity.WPA3 -> net.password?.let(builder::setWpa3Passphrase)
+                            WifiSecurity.WPA -> net.password?.let(builder::setWpa2Passphrase)
+                            else -> Unit
                         }
                         val intent = Intent(Settings.ACTION_WIFI_ADD_NETWORKS)
                             .putParcelableArrayListExtra(
@@ -203,6 +212,7 @@ fun WifiJoinScreen(onDone: () -> Unit) {
                         setStatus("Android would not accept that network - scan a different code")
                     }
                 }
+              }
             }
         }
     }
@@ -397,7 +407,9 @@ private class QrScanner(
                 lastAfLogMs = now
                 android.util.Log.i(
                     "GrandTime",
-                    "qr af: state=$state focusDistance=$distance manual=${sweep.hasTakenOver}")
+                    "qr af: state=$state focusDistance=$distance " +
+                        "lensState=${result.get(CaptureResult.LENS_STATE)} " +
+                        "manual=${sweep.hasTakenOver}")
             }
             // Only a camera that never acts is taken over, and only once.
             if (sweep.noteAf(state == null || state == CaptureResult.CONTROL_AF_STATE_INACTIVE)) {
@@ -433,6 +445,17 @@ private class QrScanner(
 
         val cameraId = pickBackCamera() ?: run { onStatus("No back camera found"); return }
         val chars = manager.getCameraCharacteristics(cameraId)
+        // Whether manual focus is even offered, and whether the lens reports where it is. Asked
+        // once, at start, because it separates "the HAL will not move the lens" from "the HAL
+        // moves it and does not say so" -- which no amount of staring at the preview can.
+        android.util.Log.i(
+            "GrandTime",
+            "qr af: canRequestFocus=" +
+                chars.availableCaptureRequestKeys.contains(CaptureRequest.LENS_FOCUS_DISTANCE) +
+                " reportsFocus=" +
+                chars.availableCaptureResultKeys.contains(CaptureResult.LENS_FOCUS_DISTANCE) +
+                " reportsAfState=" +
+                chars.availableCaptureResultKeys.contains(CaptureResult.CONTROL_AF_STATE))
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val analysisSize = chooseSize(map?.getOutputSizes(ImageFormat.YUV_420_888))
         val previewSize = chooseSize(map?.getOutputSizes(SurfaceHolder::class.java))
@@ -460,12 +483,6 @@ private class QrScanner(
                                     addTarget(previewSurface)
                                     addTarget(analysisSurface)
                                     set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                                    // Autofocus is OFF because on this HAL it does nothing.
-                                    // Measured: CONTROL_AF_STATE stayed INACTIVE and
-                                    // LENS_FOCUS_DISTANCE stayed 0.0 through four explicit
-                                    // AF_TRIGGER_START calls, on a lens advertising MACRO and a
-                                    // 5cm minimum. Leaving AF on would just park it at infinity,
-                                    // which is where the blurred close-ups came from.
                                     // Start with the camera's own autofocus. It is switched off
                                     // only after it has been WATCHED failing to run -- see
                                     // FocusSweep.noteAf. Twenty terminals share this build and
