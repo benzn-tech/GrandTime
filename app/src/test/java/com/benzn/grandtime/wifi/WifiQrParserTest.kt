@@ -160,4 +160,21 @@ class WifiQrParserTest {
     @Test fun an_unknown_field_is_skipped_not_fatal() {
         assertEquals("A", ok("WIFI:S:A;T:WPA;P:pw;PH2:MSCHAPV2;;").ssid)
     }
+
+    /**
+     * Two behaviours a mutation run predicted no test would notice: a second `S:` silently
+     * replacing the first, and an SSID's spaces being trimmed away. Both would join the wrong
+     * network and report success -- `"Site "` and `"Site"` are different networks, and Android's
+     * own reader does not trim either.
+     */
+    @Test fun the_first_value_for_a_key_wins() {
+        assertEquals("First", ok("WIFI:S:First;S:Second;T:WPA;P:pw;;").ssid)
+        assertEquals("one", ok("WIFI:S:A;P:one;P:two;T:WPA;;").password)
+    }
+
+    @Test fun spaces_inside_a_name_or_password_are_part_of_it() {
+        val p = ok("WIFI:S: Site 3 ;T:WPA;P: pw ;;")
+        assertEquals(" Site 3 ", p.ssid)
+        assertEquals(" pw ", p.password)
+    }
 }
