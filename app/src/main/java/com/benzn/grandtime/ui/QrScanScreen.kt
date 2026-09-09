@@ -47,15 +47,6 @@ import com.benzn.grandtime.auth.SignInResult
 import com.benzn.grandtime.capture.GroupExit
 import com.benzn.grandtime.capture.SessionGroup
 import com.benzn.grandtime.core.AppState
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.BinaryBitmap
-import com.google.zxing.DecodeHintType
-import com.google.zxing.ChecksumException
-import com.google.zxing.FormatException
-import com.google.zxing.qrcode.QRCodeReader
-import com.google.zxing.NotFoundException
-import com.google.zxing.PlanarYUVLuminanceSource
-import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.launch
 
 /**
@@ -270,17 +261,8 @@ private class QrScanner(
     private var reader: ImageReader? = null
     private var stopped = false
     private var lastLoggedOutcome: ScanFrame? = null
+    private var lastFailureLoggedAtMs = 0L
     private var lastLoggedAtMs = 0L
-
-    // QRCodeReader, NOT MultiFormatReader: the latter declares `throws NotFoundException` only,
-    // catching every other ReaderException internally, so "a code is there but I cannot read it"
-    // was already being computed every frame and thrown away. QRCodeReader distinguishes
-    // not-found from checksum/format, which is exactly the advice the operator was missing.
-    private val zxing = QRCodeReader()
-    private val hints = mapOf(
-        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-        DecodeHintType.TRY_HARDER to true,
-    )
 
     @SuppressLint("MissingPermission") // CAMERA is requested at app launch (MainActivity) and required to record.
     fun start(holder: SurfaceHolder) {
@@ -355,67 +337,35 @@ private class QrScanner(
             val h = image.height
             image.close()
             onFrame()
-            // The array is buf.remaining(), which on many HALs is rowStride*(h-1)+w -- SMALLER
-            // than the rowStride*h this source declares. Where rowStride > w that throws every
-            // frame into the blanket catch below: a permanent "Scanning..." with no logs, which
-            // is the exact shape of the incident this screen is being changed for.
-            val needed = rowStride * h
-            val padded = if (data.size >= needed) data else data.copyOf(needed)
-            val source = PlanarYUVLuminanceSource(padded, rowStride, h, 0, 0, w, h, false)
-            var located = false
-            // Upright first, then the 90-rotated frame -- the terminal is wall-mounted landscape,
-            // so a QR held "upright" to the operator lands sideways in sensor coordinates.
-            var result = decodeOrClassify(BinaryBitmap(HybridBinarizer(source))) { located = true }
-            if (result == null) {
-                result = decodeOrClassify(
-                    BinaryBitmap(HybridBinarizer(source.rotateCounterClockwise()))
-                ) { located = true }
-            }
-            // No permanent latch here — every successfully-decoded frame is reported. The composable
-            // (onDecoded above) is responsible for de-duplicating repeat decodes of the same code and
-            // re-arming after a failed sign-in attempt.
-            val outcome = when {
-                result != null -> ScanFrame.DECODED
-                located -> ScanFrame.LOCATED_UNREADABLE
-                else -> ScanFrame.NOTHING
-            }
+            val decoded = QrFrameDecoder.decode(data, rowStride, w, h)
             // One line per second, not per frame: enough to answer "what does ZXing actually see
             // at the distance where this fails" without flooding a log the operator has to read.
             val now = System.currentTimeMillis()
-            if (outcome != lastLoggedOutcome || now - lastLoggedAtMs > 1000) {
-                lastLoggedOutcome = outcome
+            if (decoded.outcome != lastLoggedOutcome || now - lastLoggedAtMs > 1000) {
+                lastLoggedOutcome = decoded.outcome
                 lastLoggedAtMs = now
-                android.util.Log.i("GrandTime", "qr frame: $outcome (${w}x$h)")
+                android.util.Log.i("GrandTime", "qr frame: ${decoded.outcome} (${w}x$h)")
             }
-            onFrameOutcome(outcome)
-            if (result != null) {
-                onDecoded(result.text)
-            }
+            // No permanent latch here -- every successfully-decoded frame is reported. The
+            // composable de-duplicates repeats and re-arms after a failed sign-in attempt.
+            onFrameOutcome(decoded.outcome)
+            decoded.text?.let { onDecoded(it) }
         } catch (e: Exception) {
             runCatching { image.close() }
+            // This catch used to leave nothing behind at all. On device that produced 1065
+            // analysed frames, zero log lines, a preview running normally at 16.7fps, and a
+            // screen that only ever said "Scanning...". A guard that swallows in silence cannot
+            // be told apart from a guard that never ran.
+            val now = System.currentTimeMillis()
+            if (now - lastFailureLoggedAtMs > 1000) {
+                lastFailureLoggedAtMs = now
+                android.util.Log.w(
+                    "GrandTime",
+                    "qr frame failed: " + e.javaClass.simpleName + ": " + e.message,
+                )
+            }
         }
     }
-
-    /**
-     * Decode one bitmap, and tell the caller whether a code was at least *located*.
-     *
-     * ChecksumException / FormatException mean the finder patterns were found and the code was
-     * sampled, but the payload could not be recovered -- too small, too blurry, or damaged. That
-     * is the one state with a concrete remedy ("move closer"), and it is invisible through
-     * MultiFormatReader, which collapses it into not-found.
-     */
-    private fun decodeOrClassify(bitmap: BinaryBitmap, onLocated: () -> Unit): com.google.zxing.Result? =
-        try {
-            zxing.decode(bitmap, hints)
-        } catch (e: NotFoundException) {
-            null
-        } catch (e: ChecksumException) {
-            onLocated(); null
-        } catch (e: FormatException) {
-            onLocated(); null
-        } finally {
-            zxing.reset()
-        }
 
     fun stop() {
         stopped = true
