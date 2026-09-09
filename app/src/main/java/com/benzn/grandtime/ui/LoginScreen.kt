@@ -32,9 +32,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.auth.SignInResult
 import kotlinx.coroutines.launch
+
+/** Two points over Material3's labelLarge (14sp), which is small for gloved hands on a 320dp
+ *  screen held at arm's length. Named so both scan buttons cannot drift apart. */
+private val SCAN_LABEL_SIZE = 16.sp
 
 @Composable
 fun LoginScreen(onSignedIn: () -> Unit) {
@@ -53,10 +58,22 @@ fun LoginScreen(onSignedIn: () -> Unit) {
     // Toggles the QR scanner in place of the login form. Scanning is a pre-login action — no
     // email/password needed first.
     var showScanner by rememberSaveable { mutableStateOf(false) }
+    // Wi-Fi is a pre-login action too, and more so: without a network there is nothing to sign in
+    // to. That is why it sits above sign-in rather than in Settings, which is behind the login it
+    // would be needed to reach.
+    var showWifi by rememberSaveable { mutableStateOf(false) }
 
     // The device's physical back key would otherwise exit the app (login is the root screen). While the
     // scanner is up, send back to the login form instead — mirrors the top-left back arrow.
-    BackHandler(enabled = showScanner) { showScanner = false }
+    BackHandler(enabled = showScanner || showWifi) { showScanner = false; showWifi = false }
+
+    if (showWifi) {
+        Column(Modifier.fillMaxSize()) {
+            AppTopBar(title = "Scan Wi-Fi QR", showBack = true, onBack = { showWifi = false }, serviceRunning = false)
+            WifiJoinScreen(onDone = { showWifi = false })
+        }
+        return
+    }
 
     if (showScanner) {
         Column(Modifier.fillMaxSize()) {
@@ -86,8 +103,20 @@ fun LoginScreen(onSignedIn: () -> Unit) {
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Right under the header so it's always visible on the short landscape terminal screen —
-            // this is where the real "扫码登录" entry lives. Same yellow fill as Sign in below.
+            // Wi-Fi first, because it comes first: on a device with no network, sign-in cannot
+            // even be attempted. Both scan entries sit above the form so they stay visible on the
+            // short terminal screen without scrolling.
+            Button(
+                onClick = { showWifi = true }, enabled = !loading,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
+                ),
+            ) {
+                Text("Scan Wi-Fi QR", fontSize = SCAN_LABEL_SIZE)
+            }
+            Spacer(Modifier.height(24.dp))
             Button(
                 onClick = { showScanner = true }, enabled = !loading,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -96,10 +125,8 @@ fun LoginScreen(onSignedIn: () -> Unit) {
                     contentColor = MaterialTheme.colorScheme.onSecondary,
                 ),
             ) {
-                Text("Scan QR to Sign in")
+                Text("Scan QR to Sign in", fontSize = SCAN_LABEL_SIZE)
             }
-            Spacer(Modifier.height(24.dp))
-            Text("Sign in", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(
                 value = email, onValueChange = { email = it }, label = { Text("Email") },
