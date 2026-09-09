@@ -75,12 +75,47 @@ class WifiQrParserTest {
     }
 
     /**
-     * A hex SSID is written `S:"48656c6c6f"`. We do not decode it, and joining the network named
-     * by the literal digits would be a silent wrong answer — the operator would be told it worked
-     * and then not be on the network. Refusing says something they can act on.
+     * Quotes are part of the name, not a hex marker.
+     *
+     * An earlier version of this refused `S:"..."` on the theory that it meant a hex-encoded SSID.
+     * That reads the zxing wiki backwards — quotes mark a name that merely LOOKS like hex — and
+     * Android's own reader (`WifiQrCode.parseZxingWifiQrCode`) has no hex handling at all. Android
+     * does not escape `"` when it shares, so a network genuinely called `"Site"` arrives with
+     * them, its own scanner joins it, and refusing here would be the only thing that could not.
      */
-    @Test fun a_hex_ssid_is_refused_rather_than_taken_literally() {
-        assertNull(WifiQrParser.parse("""WIFI:S:"48656c6c6f";T:WPA;P:pw;;"""))
+    @Test fun quotes_are_part_of_the_name() {
+        assertEquals(""""Site"""", WifiQrParser.parse("""WIFI:S:"Site";T:WPA;P:pw;;""")!!.ssid)
+    }
+
+    /**
+     * `P:ab;cd` from a generator that forgot to escape. Keeping `ab` would save a password that
+     * cannot connect, and Settings does not verify a passphrase — the operator would be told
+     * "Saved" and simply never get on the network. A stray field with no key is the only evidence
+     * that a value was cut, so it is refused.
+     */
+    @Test fun an_unescaped_separator_inside_a_value_is_refused_not_truncated() {
+        assertNull(WifiQrParser.parse("WIFI:S:Site;T:WPA;P:ab;cd;;"))
+    }
+
+    /**
+     * WPA2-EAP appears on the zxing wiki and in some generators. A suggestion built from it as a
+     * PSK saves and never connects, which is the same silent failure WEP would have had before it
+     * was named.
+     */
+    @Test fun enterprise_is_named_rather_than_saved_as_a_psk() {
+        assertEquals(WifiSecurity.ENTERPRISE,
+            WifiQrParser.parse("WIFI:S:A;T:WPA2-EAP;P:pw;;")!!.security)
+    }
+
+    /**
+     * Android's WifiNetworkSuggestion.Builder throws IllegalArgumentException for these, and the
+     * throw happens on a coroutine where it kills the process. A password autocorrected from
+     * `O'Brien` to `O’Brien` is an ordinary way to get here.
+     */
+    @Test fun input_android_cannot_accept_is_refused_here_rather_than_thrown_later() {
+        assertNull(WifiQrParser.parse("WIFI:S:Site;T:WPA;P:O’Brien2024;;"))
+        assertNull(WifiQrParser.parse("WIFI:S:" + "a".repeat(33) + ";T:WPA;P:pw;;"))
+        assertEquals(32, WifiQrParser.parse("WIFI:S:" + "a".repeat(32) + ";T:WPA;P:pw;;")!!.ssid.length)
     }
 
     @Test fun an_empty_ssid_is_not_a_network() {

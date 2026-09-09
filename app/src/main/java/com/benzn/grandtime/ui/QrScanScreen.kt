@@ -11,6 +11,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.media.ImageReader
 import android.net.wifi.WifiNetworkSuggestion
 import android.os.Handler
@@ -35,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -141,6 +144,7 @@ fun QrJoinMeetingScreen(onJoined: () -> Unit) {
 fun WifiJoinScreen(onDone: () -> Unit) {
     var asked by remember { mutableStateOf<String?>(null) }
     var outcome by remember { mutableStateOf<String?>(null) }
+    var rearm by remember { mutableStateOf(0) }
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
@@ -149,36 +153,54 @@ fun WifiJoinScreen(onDone: () -> Unit) {
         outcome = when (codes?.firstOrNull()) {
             Settings.ADD_WIFI_RESULT_SUCCESS -> { onDone(); "Saved $name" }
             Settings.ADD_WIFI_RESULT_ALREADY_EXISTS -> { onDone(); "$name was already saved" }
-            // Cancelled, or the system refused. Say which is unknowable from here, so say neither.
-            else -> "$name was not saved - scan again to retry"
+            // Cancelled, or the system refused. Which is unknowable from here, so say neither --
+            // but DO make the advice true: the latch has to be cleared or the same code held up
+            // again is dropped without a word.
+            else -> { rearm++; "$name was not saved - scan again to retry" }
         }
     }
 
-    QrScanScaffold(prompt = "Point the camera at the Wi-Fi QR", attempt = outcome) { raw, setStatus ->
+    QrScanScaffold(
+        prompt = "Point the camera at the Wi-Fi QR",
+        attempt = outcome,
+        rearm = rearm,
+    ) { raw, setStatus ->
+        // A new code answers a new question: whatever the last one ended in is no longer the
+        // message to show, or it would hide every hint and camera error underneath it.
+        outcome = null
         when (val net = WifiQrParser.parse(raw)) {
             null -> setStatus("Not a Wi-Fi code - try again")
             else -> when (net.security) {
                 // Android's suggestion API has no WEP at all, so naming it beats "could not read".
                 WifiSecurity.WEP ->
                     setStatus("WEP networks cannot be added this way - ask for the password")
+                // Saved as a PSK an enterprise network would connect to nothing while reporting
+                // success, which is worse than saying it plainly.
+                WifiSecurity.ENTERPRISE ->
+                    setStatus("${net.ssid} needs a username and password - add it in Settings")
                 else -> {
                     asked = net.ssid
-                    outcome = null
                     setStatus("Confirm ${net.ssid} on the next screen")
-                    val builder = WifiNetworkSuggestion.Builder().setSsid(net.ssid)
-                    if (net.hidden) builder.setIsHiddenSsid(true)
-                    net.password?.let {
-                        when (net.security) {
-                            WifiSecurity.WPA3 -> builder.setWpa3Passphrase(it)
-                            else -> builder.setWpa2Passphrase(it)
+                    // The builder is INSIDE the catch. Its setters throw IllegalArgumentException
+                    // for input the parser cannot fully anticipate, and this runs on a coroutine
+                    // where an escaping exception kills the process -- on the login screen, taking
+                    // the recording service with it.
+                    runCatching {
+                        val builder = WifiNetworkSuggestion.Builder().setSsid(net.ssid)
+                        if (net.hidden) builder.setIsHiddenSsid(true)
+                        net.password?.let {
+                            when (net.security) {
+                                WifiSecurity.WPA3 -> builder.setWpa3Passphrase(it)
+                                else -> builder.setWpa2Passphrase(it)
+                            }
                         }
-                    }
-                    val intent = Intent(Settings.ACTION_WIFI_ADD_NETWORKS).putParcelableArrayListExtra(
-                        Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(builder.build()))
-                    runCatching { launcher.launch(intent) }.onFailure {
-                        // The activity was measured present on this ROM, but a stripped build
-                        // elsewhere would land here rather than crashing the scanner.
-                        setStatus("This device cannot add Wi-Fi networks from a code")
+                        val intent = Intent(Settings.ACTION_WIFI_ADD_NETWORKS)
+                            .putParcelableArrayListExtra(
+                                Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(builder.build()))
+                        launcher.launch(intent)
+                    }.onFailure {
+                        rearm++
+                        setStatus("Android would not accept that network - scan a different code")
                     }
                 }
             }
@@ -204,6 +226,13 @@ private fun QrScanScaffold(
      *  everything, the same precedence a sign-in failure has, and the caller clears it when a new
      *  code is scanned so a stale answer cannot outlive its question. */
     attempt: String? = null,
+    /** Bump to forget the last code, so the SAME one can be scanned again.
+     *
+     *  The dedup latch is normally cleared by the surface being rebuilt, but the Wi-Fi panel is a
+     *  dialog-themed window: this Activity is only PAUSED, the SurfaceView survives, and the latch
+     *  outlives it. Without this, "scan again to retry" is a dead end -- the operator holds the
+     *  same code up and every frame is dropped in silence. */
+    rearm: Int = 0,
     onCode: suspend (raw: String, setStatus: (String) -> Unit) -> Unit,
 ) {
     val context = LocalContext.current
@@ -217,6 +246,7 @@ private fun QrScanScaffold(
     var busy by remember { mutableStateOf(false) }
     var lastAttempted by remember { mutableStateOf<String?>(null) }
     val hints = remember { ScanHints() }
+    LaunchedEffect(rearm) { if (rearm > 0) lastAttempted = null }
 
     val scanner = remember {
         QrScanner(
@@ -341,6 +371,53 @@ private class QrScanner(
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
     private var stopped = false
+    private var repeating: CaptureRequest.Builder? = null
+    private var lastAfLogMs = 0L
+    private val sweep = FocusSweep()
+
+    /**
+     * Watches autofocus, and pokes it when nothing is happening.
+     *
+     * Measured on this camera: minimumFocusDistance 20 dioptres (5cm) and MACRO among its AF
+     * modes, so the hardware can focus on a code held close. Hyperfocal is 3m, so a lens left
+     * parked produces exactly the reported symptom -- blurred close up, and by the distance it
+     * looks sharp the code is too small to read. Continuous AF was requested but never observed,
+     * because the repeating request was submitted with a null callback.
+     */
+    private val afWatcher = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            s: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            val state = result.get(CaptureResult.CONTROL_AF_STATE)
+            val distance = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+            val now = System.currentTimeMillis()
+            if (now - lastAfLogMs > 1000) {
+                lastAfLogMs = now
+                android.util.Log.i(
+                    "GrandTime",
+                    "qr af: state=$state focusDistance=$distance manual=${sweep.hasTakenOver}")
+            }
+            // Only a camera that never acts is taken over, and only once.
+            if (sweep.noteAf(state == null || state == CaptureResult.CONTROL_AF_STATE_INACTIVE)) {
+                android.util.Log.i("GrandTime", "qr af: autofocus never ran -- placing the lens by hand")
+                applyFocus()
+            }
+        }
+    }
+
+    /** Move the lens. Returns quietly if the session is gone -- teardown races the analysis. */
+    private fun applyFocus() {
+        val builder = repeating ?: return
+        val s = session ?: return
+        runCatching {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, sweep.position)
+            s.setRepeatingRequest(builder.build(), afWatcher, handler)
+            android.util.Log.i("GrandTime", "qr af: focus -> ${sweep.position}")
+        }
+    }
     private var lastLoggedOutcome: ScanFrame? = null
     private var lastFailureLoggedAtMs = 0L
     private var lastLoggedAtMs = 0L
@@ -348,6 +425,7 @@ private class QrScanner(
     @SuppressLint("MissingPermission") // CAMERA is requested at app launch (MainActivity) and required to record.
     fun start(holder: SurfaceHolder) {
         if (thread != null) return
+        sweep.reset()
         onRestart()
         stopped = false
         thread = HandlerThread("qr-scan").also { it.start() }
@@ -378,12 +456,27 @@ private class QrScanner(
                             override fun onConfigured(s: CameraCaptureSession) {
                                 if (stopped) { s.close(); return }
                                 session = s
-                                val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                                repeating = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                                     addTarget(previewSurface)
                                     addTarget(analysisSurface)
-                                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                                }.build()
-                                s.setRepeatingRequest(req, null, handler)
+                                    set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                    // Autofocus is OFF because on this HAL it does nothing.
+                                    // Measured: CONTROL_AF_STATE stayed INACTIVE and
+                                    // LENS_FOCUS_DISTANCE stayed 0.0 through four explicit
+                                    // AF_TRIGGER_START calls, on a lens advertising MACRO and a
+                                    // 5cm minimum. Leaving AF on would just park it at infinity,
+                                    // which is where the blurred close-ups came from.
+                                    // Start with the camera's own autofocus. It is switched off
+                                    // only after it has been WATCHED failing to run -- see
+                                    // FocusSweep.noteAf. Twenty terminals share this build and
+                                    // only one has been shown to ignore AF.
+                                    set(CaptureRequest.CONTROL_AF_MODE,
+                                        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                }
+                                // A null callback was the whole reason focus could not be
+                                // diagnosed: the app never saw AF state, so "the lens is parked"
+                                // and "the lens is hunting and failing" were indistinguishable.
+                                s.setRepeatingRequest(repeating!!.build(), afWatcher, handler)
                                 onStatus("Scanning…")
                             }
 
@@ -430,6 +523,9 @@ private class QrScanner(
             // No permanent latch here -- every successfully-decoded frame is reported. The
             // composable de-duplicates repeats and re-arms after a failed sign-in attempt.
             onFrameOutcome(decoded.outcome)
+            // The lens is ours to move on this device, and the only evidence of a good position
+            // is a frame that read something.
+            if (sweep.onFrame(decoded.outcome == ScanFrame.DECODED, now)) applyFocus()
             decoded.text?.let { onDecoded(it) }
         } catch (e: Exception) {
             runCatching { image.close() }
@@ -454,7 +550,7 @@ private class QrScanner(
         runCatching { session?.close() }
         runCatching { camera?.close() }
         runCatching { reader?.close() }
-        session = null; camera = null; reader = null
+        session = null; camera = null; reader = null; repeating = null
         thread?.quitSafely()
         thread = null; handler = null
     }
