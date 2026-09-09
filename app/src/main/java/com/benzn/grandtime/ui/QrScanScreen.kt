@@ -2,6 +2,7 @@ package com.benzn.grandtime.ui
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.ImageFormat
@@ -11,7 +12,9 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
+import android.net.wifi.WifiNetworkSuggestion
 import android.os.Handler
+import android.provider.Settings
 import android.os.HandlerThread
 import android.util.Size
 import android.view.SurfaceHolder
@@ -19,6 +22,8 @@ import android.view.SurfaceView
 import android.view.ViewGroup
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Column
@@ -44,6 +49,8 @@ import com.benzn.grandtime.BuildConfig
 import com.benzn.grandtime.GrandTimeApp
 import com.benzn.grandtime.auth.QrLoginParser
 import com.benzn.grandtime.auth.SignInResult
+import com.benzn.grandtime.wifi.WifiQrParser
+import com.benzn.grandtime.wifi.WifiSecurity
 import com.benzn.grandtime.capture.GroupExit
 import com.benzn.grandtime.capture.SessionGroup
 import com.benzn.grandtime.core.AppState
@@ -112,6 +119,75 @@ fun QrJoinMeetingScreen(onJoined: () -> Unit) {
 }
 
 /**
+ * Join a Wi-Fi network by scanning the QR a phone produces from "share this Wi-Fi".
+ *
+ * Typing a passphrase on a 320dp screen with the terminal's hardware keys is the worst input this
+ * device asks anyone to do, and it is asked at the worst moment: before there is a network, so
+ * before anyone can sign in. That is why this entry lives on the login screen and not in Settings,
+ * which is behind the login it would be needed to reach.
+ *
+ * `Settings.ACTION_WIFI_ADD_NETWORKS` is the only route open to an ordinary app. Since Android 10
+ * `WifiManager.addNetwork` returns -1 for us; `WifiNetworkSuggestion` on its own is only a hint the
+ * platform may act on later; and `WifiNetworkSpecifier` binds the network to this process, which
+ * would drop the moment the app goes away and take the upload queue with it. This one hands the
+ * network to the system, the operator confirms once, and it is saved like any other.
+ *
+ * Measured on the F2SP ROM before this was written: the system's own Wi-Fi QR scanner is gone
+ * (`com.android.settings.wifi.dpp.*` does not exist, nothing handles
+ * PROCESS_WIFI_EASY_CONNECT_URI), so there is no way to do this without the app. The activity this
+ * launches does exist and was started to confirm it, rather than trusted because it resolved.
+ */
+@Composable
+fun WifiJoinScreen(onDone: () -> Unit) {
+    var asked by remember { mutableStateOf<String?>(null) }
+    var outcome by remember { mutableStateOf<String?>(null) }
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val codes = result.data?.getIntegerArrayListExtra(Settings.EXTRA_WIFI_NETWORK_RESULT_LIST)
+        val name = asked ?: "that network"
+        outcome = when (codes?.firstOrNull()) {
+            Settings.ADD_WIFI_RESULT_SUCCESS -> { onDone(); "Saved $name" }
+            Settings.ADD_WIFI_RESULT_ALREADY_EXISTS -> { onDone(); "$name was already saved" }
+            // Cancelled, or the system refused. Say which is unknowable from here, so say neither.
+            else -> "$name was not saved - scan again to retry"
+        }
+    }
+
+    QrScanScaffold(prompt = "Point the camera at the Wi-Fi QR", attempt = outcome) { raw, setStatus ->
+        when (val net = WifiQrParser.parse(raw)) {
+            null -> setStatus("Not a Wi-Fi code - try again")
+            else -> when (net.security) {
+                // Android's suggestion API has no WEP at all, so naming it beats "could not read".
+                WifiSecurity.WEP ->
+                    setStatus("WEP networks cannot be added this way - ask for the password")
+                else -> {
+                    asked = net.ssid
+                    outcome = null
+                    setStatus("Confirm ${net.ssid} on the next screen")
+                    val builder = WifiNetworkSuggestion.Builder().setSsid(net.ssid)
+                    if (net.hidden) builder.setIsHiddenSsid(true)
+                    net.password?.let {
+                        when (net.security) {
+                            WifiSecurity.WPA3 -> builder.setWpa3Passphrase(it)
+                            else -> builder.setWpa2Passphrase(it)
+                        }
+                    }
+                    val intent = Intent(Settings.ACTION_WIFI_ADD_NETWORKS).putParcelableArrayListExtra(
+                        Settings.EXTRA_WIFI_NETWORK_LIST, arrayListOf(builder.build()))
+                    runCatching { launcher.launch(intent) }.onFailure {
+                        // The activity was measured present on this ROM, but a stripped build
+                        // elsewhere would land here rather than crashing the scanner.
+                        setStatus("This device cannot add Wi-Fi networks from a code")
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/**
  * Camera surface + decode plumbing shared by every QR flow.
  *
  * [onCode] runs at most once per distinct code and never concurrently with
@@ -123,6 +199,11 @@ fun QrJoinMeetingScreen(onJoined: () -> Unit) {
 @Composable
 private fun QrScanScaffold(
     prompt: String,
+    /** A verdict that arrives outside [onCode] -- the Wi-Fi flow learns whether the network was
+     *  saved from a system dialog, long after the frame that read the code. Non-null wins over
+     *  everything, the same precedence a sign-in failure has, and the caller clears it when a new
+     *  code is scanned so a stale answer cannot outlive its question. */
+    attempt: String? = null,
     onCode: suspend (raw: String, setStatus: (String) -> Unit) -> Unit,
 ) {
     val context = LocalContext.current
@@ -131,8 +212,8 @@ private fun QrScanScaffold(
     // per-frame advice, and the verdict of a sign-in attempt. Precedence is fixed here.
     var scanning by remember { mutableStateOf(prompt) }
     var hint by remember { mutableStateOf<String?>(null) }
-    var attempt by remember { mutableStateOf<String?>(null) }
-    val status = attempt ?: hint ?: scanning
+    var ownAttempt by remember { mutableStateOf<String?>(null) }
+    val status = attempt ?: ownAttempt ?: hint ?: scanning
     var busy by remember { mutableStateOf(false) }
     var lastAttempted by remember { mutableStateOf<String?>(null) }
     val hints = remember { ScanHints() }
@@ -162,11 +243,11 @@ private fun QrScanScaffold(
             onDecoded = { raw ->
                 if (busy || raw == lastAttempted) return@QrScanner
                 lastAttempted = raw
-                attempt = null      // a new code: the previous attempt's verdict is stale
+                ownAttempt = null      // a new code: the previous attempt's verdict is stale
                 busy = true
                 scope.launch {
                     try {
-                        onCode(raw) { attempt = it }
+                        onCode(raw) { ownAttempt = it }
                     } finally {
                         // Re-arm even if the handler threw: leaving the screen
                         // stuck on a dead scanner is worse than a retry, and a
