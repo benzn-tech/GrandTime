@@ -13,8 +13,13 @@ import org.junit.Test
  */
 class WifiQrParserTest {
 
+    private fun ok(raw: String) = (WifiQrParser.parse(raw) as WifiScan.Ok).network
+    private fun refused(raw: String) = WifiQrParser.parse(raw).also {
+        assertTrue("expected a refusal for: $raw", it !is WifiScan.Ok)
+    }
+
     @Test fun a_shared_network_parses() {
-        val p = WifiQrParser.parse("WIFI:S:SiteOffice;T:WPA;P:hunter2;;")!!
+        val p = ok("WIFI:S:SiteOffice;T:WPA;P:hunter2;;")
         assertEquals("SiteOffice", p.ssid)
         assertEquals("hunter2", p.password)
         assertEquals(WifiSecurity.WPA, p.security)
@@ -22,7 +27,7 @@ class WifiQrParserTest {
     }
 
     @Test fun fields_may_arrive_in_any_order() {
-        val p = WifiQrParser.parse("WIFI:P:hunter2;H:true;T:WPA;S:SiteOffice;;")!!
+        val p = ok("WIFI:P:hunter2;H:true;T:WPA;S:SiteOffice;;")
         assertEquals("SiteOffice", p.ssid)
         assertEquals("hunter2", p.password)
         assertTrue(p.hidden)
@@ -30,13 +35,13 @@ class WifiQrParserTest {
 
     /** Separators inside the value. Rejecting or truncating these is the common bug. */
     @Test fun escaped_separators_survive() {
-        val p = WifiQrParser.parse("""WIFI:S:Level 3\; Wing B;T:WPA;P:a\:b\;c\,d\\e;;""")!!
+        val p = ok("""WIFI:S:Level 3\; Wing B;T:WPA;P:a\:b\;c\,d\\e;;""")
         assertEquals("Level 3; Wing B", p.ssid)
         assertEquals("""a:b;c,d\e""", p.password)
     }
 
     @Test fun an_open_network_has_no_password() {
-        val p = WifiQrParser.parse("WIFI:S:Guest;T:nopass;;")!!
+        val p = ok("WIFI:S:Guest;T:nopass;;")
         assertEquals(WifiSecurity.OPEN, p.security)
         assertNull(p.password)
     }
@@ -46,13 +51,13 @@ class WifiQrParserTest {
      * Guessing WPA for a passwordless network would produce a suggestion Android rejects.
      */
     @Test fun a_missing_type_is_inferred_from_whether_there_is_a_password() {
-        assertEquals(WifiSecurity.WPA, WifiQrParser.parse("WIFI:S:A;P:pw;;")!!.security)
-        assertEquals(WifiSecurity.OPEN, WifiQrParser.parse("WIFI:S:A;;")!!.security)
+        assertEquals(WifiSecurity.WPA, ok("WIFI:S:A;P:pw;;").security)
+        assertEquals(WifiSecurity.OPEN, ok("WIFI:S:A;;").security)
     }
 
     @Test fun wpa3_is_its_own_kind() {
-        assertEquals(WifiSecurity.WPA3, WifiQrParser.parse("WIFI:S:A;T:SAE;P:pw;;")!!.security)
-        assertEquals(WifiSecurity.WPA3, WifiQrParser.parse("WIFI:S:A;T:WPA3;P:pw;;")!!.security)
+        assertEquals(WifiSecurity.WPA3, ok("WIFI:S:A;T:SAE;P:pw;;").security)
+        assertEquals(WifiSecurity.WPA3, ok("WIFI:S:A;T:WPA3;P:pw;;").security)
     }
 
     /**
@@ -60,18 +65,18 @@ class WifiQrParserTest {
      * Android's suggestion API has no WEP at all, so the refusal has to name the reason.
      */
     @Test fun wep_is_recognised_rather_than_rejected_as_unreadable() {
-        assertEquals(WifiSecurity.WEP, WifiQrParser.parse("WIFI:S:A;T:WEP;P:pw;;")!!.security)
+        assertEquals(WifiSecurity.WEP, ok("WIFI:S:A;T:WEP;P:pw;;").security)
     }
 
     @Test fun keys_and_prefix_are_case_insensitive() {
-        val p = WifiQrParser.parse("wifi:s:A;t:wpa;p:pw;;")!!
+        val p = ok("wifi:s:A;t:wpa;p:pw;;")
         assertEquals("A", p.ssid)
         assertEquals("pw", p.password)
         assertEquals(WifiSecurity.WPA, p.security)
     }
 
     @Test fun the_trailing_double_semicolon_is_optional() {
-        assertEquals("A", WifiQrParser.parse("WIFI:S:A;T:WPA;P:pw")!!.ssid)
+        assertEquals("A", ok("WIFI:S:A;T:WPA;P:pw").ssid)
     }
 
     /**
@@ -84,7 +89,7 @@ class WifiQrParserTest {
      * them, its own scanner joins it, and refusing here would be the only thing that could not.
      */
     @Test fun quotes_are_part_of_the_name() {
-        assertEquals(""""Site"""", WifiQrParser.parse("""WIFI:S:"Site";T:WPA;P:pw;;""")!!.ssid)
+        assertEquals(""""Site"""", ok("""WIFI:S:"Site";T:WPA;P:pw;;""").ssid)
     }
 
     /**
@@ -94,7 +99,7 @@ class WifiQrParserTest {
      * that a value was cut, so it is refused.
      */
     @Test fun an_unescaped_separator_inside_a_value_is_refused_not_truncated() {
-        assertNull(WifiQrParser.parse("WIFI:S:Site;T:WPA;P:ab;cd;;"))
+        refused("WIFI:S:Site;T:WPA;P:ab;cd;;")
     }
 
     /**
@@ -104,7 +109,7 @@ class WifiQrParserTest {
      */
     @Test fun enterprise_is_named_rather_than_saved_as_a_psk() {
         assertEquals(WifiSecurity.ENTERPRISE,
-            WifiQrParser.parse("WIFI:S:A;T:WPA2-EAP;P:pw;;")!!.security)
+            ok("WIFI:S:A;T:WPA2-EAP;P:pw;;").security)
     }
 
     /**
@@ -113,14 +118,14 @@ class WifiQrParserTest {
      * `O'Brien` to `O’Brien` is an ordinary way to get here.
      */
     @Test fun input_android_cannot_accept_is_refused_here_rather_than_thrown_later() {
-        assertNull(WifiQrParser.parse("WIFI:S:Site;T:WPA;P:O’Brien2024;;"))
-        assertNull(WifiQrParser.parse("WIFI:S:" + "a".repeat(33) + ";T:WPA;P:pw;;"))
-        assertEquals(32, WifiQrParser.parse("WIFI:S:" + "a".repeat(32) + ";T:WPA;P:pw;;")!!.ssid.length)
+        refused("WIFI:S:Site;T:WPA;P:O’Brien2024;;")
+        refused("WIFI:S:" + "a".repeat(33) + ";T:WPA;P:pw;;")
+        assertEquals(32, ok("WIFI:S:" + "a".repeat(32) + ";T:WPA;P:pw;;").ssid.length)
     }
 
     @Test fun an_empty_ssid_is_not_a_network() {
-        assertNull(WifiQrParser.parse("WIFI:S:;T:WPA;P:pw;;"))
-        assertNull(WifiQrParser.parse("WIFI:T:WPA;P:pw;;"))
+        refused("WIFI:S:;T:WPA;P:pw;;")
+        refused("WIFI:T:WPA;P:pw;;")
     }
 
     @Test fun other_codes_are_not_wifi_codes() {
@@ -131,7 +136,28 @@ class WifiQrParserTest {
             "WIFI",
             "MECARD:N:Someone;;",
         )) {
-            assertNull(raw, WifiQrParser.parse(raw))
+            refused(raw)
         }
+    }
+
+    /**
+     * Four different causes used to share one message telling the operator to scan again. For a
+     * password Android cannot accept, scanning again cannot ever work -- so the reason has to
+     * reach the screen. This is the same defect as advertising a retry that is deduped away.
+     */
+    @Test fun a_refusal_says_which_kind_it_is() {
+        assertEquals(WifiScan.NotWifi, WifiQrParser.parse("https://example.com"))
+        val curly = WifiQrParser.parse("WIFI:S:Site;T:WPA;P:O’Brien2024;;")
+        assertTrue(curly is WifiScan.Unusable)
+        assertTrue("names the password, not the scan",
+            (curly as WifiScan.Unusable).message.contains("password"))
+    }
+
+    /**
+     * The WFA spec has multi-character keys (PH2, for enterprise). Refusing a whole code because
+     * of a field we ignore anyway would say "not a Wi-Fi code" about a Wi-Fi code.
+     */
+    @Test fun an_unknown_field_is_skipped_not_fatal() {
+        assertEquals("A", ok("WIFI:S:A;T:WPA;P:pw;PH2:MSCHAPV2;;").ssid)
     }
 }
