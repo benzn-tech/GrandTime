@@ -12,6 +12,24 @@ enum class WifiSecurity {
     ENTERPRISE,
 }
 
+/**
+ * What a scanned code turned out to be.
+ *
+ * Three outcomes, not two, because they call for opposite things from the operator. "Not a Wi-Fi
+ * code" means scan a different code; a password Android cannot accept means go and fix the code,
+ * and telling that person to "try again" is advice that cannot work however many times they
+ * follow it.
+ */
+sealed interface WifiScan {
+    /** Not a Wi-Fi QR at all -- a login code, a URL, a business card. */
+    data object NotWifi : WifiScan
+
+    /** A Wi-Fi QR that cannot be acted on, and why, in words for the person holding the phone. */
+    data class Unusable(val message: String) : WifiScan
+
+    data class Ok(val network: WifiQrPayload) : WifiScan
+}
+
 /** A network described by the QR a phone produces from "share this Wi-Fi". */
 data class WifiQrPayload(
     val ssid: String,
@@ -36,10 +54,9 @@ object WifiQrParser {
     /** WifiSsid.fromUtf8Text's limit, and it throws rather than truncating. */
     private const val MAX_SSID_BYTES = 32
 
-    /** Null for anything that is not a Wi-Fi QR we can act on. */
-    fun parse(raw: String): WifiQrPayload? {
+    fun parse(raw: String): WifiScan {
         val text = raw.trim()
-        if (!text.lowercase().startsWith(PREFIX)) return null
+        if (!text.lowercase().startsWith(PREFIX)) return WifiScan.NotWifi
 
         val fields = mutableMapOf<Char, String>()
         for (field in splitUnescaped(text.substring(PREFIX.length), ';')) {
@@ -49,29 +66,40 @@ object WifiQrParser {
             // value -- `P:ab;cd` leaves `cd` here. Keeping `ab` would save a password that cannot
             // connect, and nothing downstream verifies a passphrase, so the operator would be told
             // "Saved" and simply never get on the network.
-            if (at <= 0) return null
+            if (at <= 0) return WifiScan.Unusable(
+                "That code is damaged - ask for a new one")
             val key = field.substring(0, at).trim().lowercase()
-            if (key.length != 1) return null
+            // Skip keys we do not know rather than refusing the code. The WFA spec has multi-
+            // character ones (PH2 for enterprise), and rejecting the whole code because of a
+            // field we ignore anyway would report the wrong thing entirely.
+            if (key.length != 1) continue
             // First occurrence wins; a second S: is a malformed code, not an override.
             fields.putIfAbsent(key[0], unescape(field.substring(at + 1)))
         }
 
         val ssid = fields['s'].orEmpty()
-        if (ssid.isEmpty()) return null
+        if (ssid.isEmpty()) return WifiScan.Unusable("That code names no network")
         // Refused HERE because WifiNetworkSuggestion.Builder throws IllegalArgumentException for
         // both, on a coroutine, where it takes the process with it. A password autocorrected from
         // `O'Brien` to a curly quote is an ordinary way to arrive.
-        if (ssid.toByteArray(Charsets.UTF_8).size > MAX_SSID_BYTES) return null
+        if (ssid.toByteArray(Charsets.UTF_8).size > MAX_SSID_BYTES) {
+            return WifiScan.Unusable("That network name is too long for Android to save")
+        }
 
         val password = fields['p']?.takeIf { it.isNotEmpty() }
-        if (password != null && password.any { it.code > 127 }) return null
+        // The realistic one: a keyboard autocorrecting O'Brien to a curly quote. The code scans
+        // perfectly and Android's own builder throws on it, so the operator has to be told to fix
+        // the code -- "try again" would be a scan that can never succeed.
+        if (password != null && password.any { it.code > 127 }) {
+            return WifiScan.Unusable("That password has a character Android cannot use - retype it")
+        }
 
-        return WifiQrPayload(
+        return WifiScan.Ok(WifiQrPayload(
             ssid = ssid,
             password = password,
             security = securityOf(fields['t'], password),
             hidden = fields['h']?.equals("true", ignoreCase = true) == true,
-        )
+        ))
     }
 
     /**

@@ -30,9 +30,19 @@ class FocusSweep(
      *  At ~16fps this is about a second — long enough that a camera merely between hunts is not
      *  mistaken for one that never hunts. */
     private val takeOverAfterInactiveFrames: Int = 16,
+    /** Frames to let the camera settle before counting anything against it. In
+     *  CONTINUOUS_PICTURE the state is INACTIVE until the HAL decides to start a passive scan,
+     *  and MediaTek's waits for a scene change -- so the first second is exactly when a working
+     *  camera looks broken. */
+    private val graceFrames: Int = 16,
+    /** Non-decoding frames after a decode before the sweep is allowed to move again. Without it
+     *  the lens holds the rung that worked even after the operator changes distance. */
+    private val unsettleAfterFrames: Int = 48,
 ) {
     private var index = 0
+    private var seenFrames = 0
     private var inactiveRun = 0
+    private var sinceDecode = 0
     private var lastStepMs = 0L
     // Not `lastStepMs == 0L`: a frame can legitimately arrive at time zero, and the sentinel
     // would then swallow the first step. A test caught exactly that.
@@ -60,13 +70,18 @@ class FocusSweep(
      * the caller can switch the capture request to AF_MODE_OFF exactly once.
      */
     fun noteAf(inactive: Boolean): Boolean {
+        // Latched: once the lens is ours the camera's AF has been switched OFF, and OFF reports
+        // INACTIVE forever. Reading that back as evidence -- in either direction -- would just be
+        // reading our own decision. In-flight results from before the switch would otherwise hand
+        // control back and forth for a second every time.
+        if (hasTakenOver) return false
+        if (seenFrames < graceFrames) { seenFrames++; return false }
         if (!inactive) {
-            // The camera is doing its job. Anything it does counts as evidence, so one good state
-            // undoes the whole run rather than decrementing.
+            // The camera is doing its job. Anything it does counts, so one good state undoes the
+            // whole run rather than decrementing.
             inactiveRun = 0
             return false
         }
-        if (hasTakenOver) return false
         inactiveRun++
         return hasTakenOver
     }
@@ -79,9 +94,16 @@ class FocusSweep(
         if (decoded) {
             // Hold. Re-scanning a second code from the same distance should not start over.
             settled = true
+            sinceDecode = 0
             return false
         }
-        if (settled) return false
+        if (settled) {
+            // ...but not forever. After a refused code the operator moves the phone, and a lens
+            // pinned to the rung that read the last one would never find the new distance.
+            if (++sinceDecode < unsettleAfterFrames) return false
+            settled = false
+            sinceDecode = 0
+        }
         // Nothing to do while the camera is still focusing itself.
         if (!hasTakenOver) return false
         if (!started) { started = true; lastStepMs = nowMs; return false }
@@ -94,7 +116,9 @@ class FocusSweep(
     /** A new scanning session: start from infinity again. */
     fun reset() {
         index = 0
+        seenFrames = 0
         inactiveRun = 0
+        sinceDecode = 0
         lastStepMs = 0L
         started = false
         settled = false
