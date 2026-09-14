@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -19,6 +20,26 @@
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.GrandTime">
+        <!--
+            WorkManager is initialised on demand (GrandTimeApp is a Configuration.Provider),
+            not by androidx.startup during process start.
+
+            Auto-initialisation opens WorkManager's SQLite database before Application.onCreate
+            runs. On a disk filled to 0 bytes that throws SQLiteFullException inside
+            ForceStopRunnable, and the app crashed on every launch, before the sign-in screen,
+            with nothing of ours having run. Initialising on demand is what lets onCreate give
+            space back first.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
         <activity
             android:name=".ui.MainActivity"
             android:exported="true">

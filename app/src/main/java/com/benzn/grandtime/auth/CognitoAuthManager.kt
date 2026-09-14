@@ -19,6 +19,17 @@ class CognitoAuthManager(
     private val dao: CaptureRecordDao,
     private val publicRoot: () -> File,
     private val scope: CoroutineScope,
+    /**
+     * Runs whenever a signed-in account stops being signed in: an explicit sign-out, or a refresh
+     * token the server no longer accepts.
+     *
+     * Exists for the selected site. It used to survive sign-out, and this device is handed between
+     * clients monthly, so the next person inherited the previous client's site -- and
+     * `recordings.site_id` is what the backend treats as authoritative, so their recordings were
+     * filed under it. Failures are swallowed: clearing a preference must never be able to stop a
+     * sign-out from completing.
+     */
+    private val onSignedOut: suspend () -> Unit = {},
 ) : AuthManager {
 
     private val _loginState = MutableStateFlow<LoginState>(LoginState.LoggedOut)
@@ -37,7 +48,9 @@ class CognitoAuthManager(
             is AuthOutcome.Tokens -> { idTokenCache = r.idToken; true }
             is AuthOutcome.Error -> true // 网络问题保留登录态
             AuthOutcome.AuthInvalid -> { // refresh token 真失效 → 登出
-                tokenStore.clear(); idTokenCache = null; applyLoggedOut(); false
+                tokenStore.clear(); idTokenCache = null; applyLoggedOut()
+                runCatching { onSignedOut() }
+                false
             }
             AuthOutcome.NewPasswordRequired -> true
         }
@@ -88,6 +101,7 @@ class CognitoAuthManager(
         tokenStore.clear()
         idTokenCache = null
         applyLoggedOut()
+        runCatching { onSignedOut() }
     }
 
     override suspend fun freshIdToken(): String? {

@@ -79,6 +79,46 @@ class CaptureManager(
     private val torch = TorchController(context, pipeline)
     private val volume = VolumeCycler(context)
     private val storage = MediaStorage({ MediaStorage.publicRoot(context) }, scopeProvider = { AppState.mediaScope.value })
+
+    /**
+     * Gives space back by deleting the oldest recordings, uploaded ones first -- see StoragePolicy.
+     *
+     * Asked for directly: when storage runs out, overwrite the oldest recordings whoever made them,
+     * so the device keeps recording. Before this, a full disk only refused to START a capture; a
+     * session already running wrote the partition to zero, which took the app's databases with it
+     * and left the device unable to start.
+     */
+    private val reclaimer = StorageReclaimer(
+        mediaRoot = { MediaStorage.fieldSightRoot(context) },
+        recordingFreeBytes = { MediaStorage.publicRoot(context).usableSpace },
+        databaseFreeBytes = { context.filesDir.usableSpace },
+        sameVolume = { context.filesDir.totalSpace == MediaStorage.publicRoot(context).totalSpace },
+        log = { line -> scope.launch { probe(line) } },
+    )
+
+    private fun recordingFreeBytes(): Long = MediaStorage.publicRoot(context).usableSpace
+
+    /** Never throws: a failed reclaim leaves the space check to say no, which is the safe answer. */
+    private suspend fun reclaimTo(targetBytes: Long, protectSessionId: String?) {
+        runCatching {
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                reclaimer.reclaim(dao.listAll(), protectSessionId, targetBytes) { ids -> dao.markMissing(ids) }
+            }
+        }.onFailure { probe("rolling reclaim failed: ${it.message}") }
+    }
+
+    private suspend fun ensureRoomToStart(): Boolean {
+        if (StoragePolicy.canStart(recordingFreeBytes())) return true
+        reclaimTo(StoragePolicy.startTarget(), protectSessionId = core.state.sessionIdOrNull())
+        return StoragePolicy.canStart(recordingFreeBytes())
+    }
+
+    /** [lastSegmentBytes]: the segment being written or just finished -- the size the next one will be. */
+    private suspend fun ensureRoomToContinue(lastSegmentBytes: Long, protectSessionId: String?): Boolean {
+        if (StoragePolicy.canContinue(recordingFreeBytes(), lastSegmentBytes)) return true
+        reclaimTo(StoragePolicy.continueTarget(lastSegmentBytes), protectSessionId)
+        return StoragePolicy.canContinue(recordingFreeBytes(), lastSegmentBytes)
+    }
     private val sounds = CaptureSounds(context)
     private val gps = GpsTracker(context)
     private val sessionsApi = com.benzn.grandtime.net.SessionsApiClient(com.benzn.grandtime.BuildConfig.ORG_API_BASE_URL)
@@ -244,7 +284,7 @@ class CaptureManager(
     private fun granted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
-    private fun preflight(action: KeyAction): Boolean {
+    private suspend fun preflight(action: KeyAction): Boolean {
         val needsCamera = action == KeyAction.START_STOP_VIDEO || action == KeyAction.TAKE_PHOTO
         val needsMic = action == KeyAction.START_STOP_VIDEO || action == KeyAction.START_STOP_AUDIO
         if (needsCamera && !granted(Manifest.permission.CAMERA)) {
@@ -260,7 +300,9 @@ class CaptureManager(
         }
         val startsCapture = (action == KeyAction.START_STOP_VIDEO || action == KeyAction.START_STOP_AUDIO) &&
             core.state is CaptureState.Idle || action == KeyAction.TAKE_PHOTO
-        if (startsCapture && !storage.hasFreeSpace()) {
+        // Reclaim first, refuse only if that could not make room: rolling overwrite means a full
+        // device keeps recording by giving up its oldest footage, not by refusing the key.
+        if (startsCapture && !ensureRoomToStart()) {
             notify("Storage full"); vibrate(2); return false
         }
         return true
@@ -546,7 +588,9 @@ class CaptureManager(
                         stopWatermarkTimer()
                         gps.stop()
                         pipeline.release()
-                        if (reason == StopReason.END && endingSessionId != null) {
+                        // A storage stop is an end of the session, so it closes it as one. Without this
+                        // the backend only finalized it on its idle timeout.
+                        if ((reason == StopReason.END || reason == StopReason.STORAGE_FULL) && endingSessionId != null) {
                             fireSessionClose(endingSessionId, System.currentTimeMillis(), "end")
                         }
                     } else if (reason == StopReason.PAUSE && core.state is CaptureState.PausedVideo) {
@@ -668,12 +712,30 @@ class CaptureManager(
         segmentTimer?.cancel()
         segmentTimer = scope.launch {
             delay(seconds * 1000L)
+            val canContinue = roomForNextVideoSegment()
             // Under the lock, so a rollover cannot cut into a key press mid-startup and vice versa.
             // The state is re-read here rather than at schedule time: if a pause won the race while
             // this was waiting, onSegmentTimerFired correctly returns nothing.
-            sessionLock.withLock { execute(core.onSegmentTimerFired()) }
+            sessionLock.withLock { execute(core.onSegmentTimerFired(canContinue)) }
         }
     }
+
+    /**
+     * Whether the next video segment fits, reclaiming first if it does not.
+     *
+     * Decided OUTSIDE [sessionLock], before the rollover takes it: a reclaim deletes files, and a
+     * key press must not wait on that. Reading the live file and the state unlocked is safe because
+     * onSegmentTimerFired re-reads the state under the lock -- a pause that wins the race in between
+     * still gets nothing -- and a stale segment size only makes the check more cautious.
+     *
+     * A separate function rather than inline, so startSegmentTimer stays short enough that
+     * CaptureLifecycleSerializationTest still sees its lock: that test reads the first 900
+     * characters of the body, and the guard it provides is worth more than the three lines.
+     */
+    private suspend fun roomForNextVideoSegment(): Boolean = ensureRoomToContinue(
+        lastSegmentBytes = currentVideoFile?.length() ?: 0L,
+        protectSessionId = core.state.sessionIdOrNull(),
+    )
 
     private suspend fun finalizeVideoDbRow(): String? {
         val id = currentVideoRecordId ?: return null
@@ -903,6 +965,12 @@ class CaptureManager(
         uploadEnqueuer.enqueue(id)
         scan(seg.file.absolutePath)
         probe("audio segment ${seg.index} saved: ${seg.file.name} (${seg.file.length()} bytes)")
+        // Audio rolls segments on its own thread with no boundary the core can intercept, so the
+        // check runs as each segment lands. The final segment that EndAudio flushes also arrives
+        // here; by then the core is Idle and onStorageExhausted returns nothing.
+        if (!ensureRoomToContinue(seg.file.length(), protectSessionId = sessionId)) {
+            sessionLock.withLock { execute(core.onStorageExhausted()) }
+        }
     }
 
     /** Pause: stop the recorder — AudioRecorder.stop() finalizes the last (in-flight) segment

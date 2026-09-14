@@ -2,6 +2,7 @@ package com.benzn.grandtime.net
 
 import com.benzn.grandtime.auth.HttpResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -59,5 +60,51 @@ class SitesApiClientTest {
         val result = client.listSites("idtok")
         assertEquals(1, result.size)
         assertEquals("u1", result[0].id)
+    }
+
+    // ------------------------------------------------------------------ failure-aware
+    //
+    // listSites maps a network error, a non-2xx and a malformed body all to an empty list, so
+    // "this account has no sites" and "the device is offline" are indistinguishable. The
+    // single-site auto-select ACTS on that answer, and clearing a selection because the device
+    // happened to be offline would lose a valid one on every cold start without a connection.
+
+    @Test fun `parseSitesOrNull returns the sites on success`() {
+        val b = """{"sites":[{"id":"u1","slug":"north","name":"North Wharf"}]}"""
+        assertEquals(
+            listOf(SitesApiClient.SiteOption("u1", "north", "North Wharf")),
+            SitesApiClient.parseSitesOrNull(HttpResult(200, b)),
+        )
+    }
+
+    @Test fun `parseSitesOrNull keeps an empty sites array as a real answer`() {
+        assertEquals(
+            emptyList<SitesApiClient.SiteOption>(),
+            SitesApiClient.parseSitesOrNull(HttpResult(200, """{"sites":[]}""")),
+        )
+    }
+
+    @Test fun `parseSitesOrNull gives no answer for a non-2xx`() {
+        assertNull(SitesApiClient.parseSitesOrNull(HttpResult(500, "boom")))
+        assertNull(SitesApiClient.parseSitesOrNull(HttpResult(401, "")))
+    }
+
+    @Test fun `parseSitesOrNull gives no answer for malformed JSON or a missing sites key`() {
+        assertNull(SitesApiClient.parseSitesOrNull(HttpResult(200, "not json")))
+        assertNull(SitesApiClient.parseSitesOrNull(HttpResult(200, """{"other":true}""")))
+    }
+
+    @Test fun `fetchSites gives no answer when the network call throws`() {
+        val offline = object : SitesHttpFns {
+            override fun getJson(url: String, authToken: String): HttpResult = throw java.io.IOException("offline")
+        }
+        assertNull(SitesApiClient("https://example.test/api", offline).fetchSites("token"))
+    }
+
+    @Test fun `listSites is unchanged - still an empty list for every failure`() {
+        val offline = object : SitesHttpFns {
+            override fun getJson(url: String, authToken: String): HttpResult = throw java.io.IOException("offline")
+        }
+        assertTrue(SitesApiClient("https://example.test/api", offline).listSites("token").isEmpty())
     }
 }
