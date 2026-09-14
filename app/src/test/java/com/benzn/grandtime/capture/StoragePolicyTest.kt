@@ -1,7 +1,6 @@
 package com.benzn.grandtime.capture
 
 import com.benzn.grandtime.capture.StoragePolicy.Candidate
-import com.benzn.grandtime.capture.StoragePolicy.DiskFile
 import com.benzn.grandtime.capture.StoragePolicy.MB
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -104,36 +103,6 @@ class StoragePolicyTest {
             freeBytes = 0, targetBytes = 10 * MB, protectSessionId = null,
         )
         assertEquals(listOf("real"), plan.map { it.id })
-    }
-
-    // ---------------------------------------------------------------- emergency (no database)
-
-    @Test
-    fun `emergency reclaim takes the oldest files until the floor is met`() {
-        val files = listOf(
-            DiskFile("/r/c", 30 * MB, modifiedAt = 300),
-            DiskFile("/r/a", 30 * MB, modifiedAt = 100),
-            DiskFile("/r/b", 30 * MB, modifiedAt = 200),
-        )
-        val plan = StoragePolicy.planEmergency(files, freeBytes = 10 * MB, floorBytes = 64 * MB)
-        assertEquals(listOf("/r/a", "/r/b"), plan.map { it.path })
-    }
-
-    @Test
-    fun `emergency reclaim does nothing above the floor`() {
-        val plan = StoragePolicy.planEmergency(
-            listOf(DiskFile("/r/a", 30 * MB, 1)), freeBytes = 100 * MB, floorBytes = 64 * MB,
-        )
-        assertTrue(plan.isEmpty())
-    }
-
-    @Test
-    fun `emergency reclaim takes everything it has when that is still not enough`() {
-        // Never enough on the device that prompted this: 4.7 GB of the 5.3 GB was files the app
-        // must not touch. Taking all of our own is still right -- it is the most we may do.
-        val files = listOf(DiskFile("/r/a", 5 * MB, 1), DiskFile("/r/b", 5 * MB, 2))
-        val plan = StoragePolicy.planEmergency(files, freeBytes = 0, floorBytes = 64 * MB)
-        assertEquals(2, plan.size)
     }
 
     // ---------------------------------------------------------------- the floors

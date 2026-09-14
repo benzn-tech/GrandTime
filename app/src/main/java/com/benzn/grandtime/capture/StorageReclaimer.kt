@@ -39,9 +39,18 @@ class StorageReclaimer(
     /**
      * Frees space for the databases WITHOUT reading them. Returns the bytes deleted.
      *
-     * Checks after every deletion that the database volume actually gained space. If it did not,
-     * the recordings are not where the databases are, and continuing would destroy footage for
-     * nothing -- so it stops after that one file and says so.
+     * Keeps deleting the oldest recordings, re-reading the database volume after each one, until
+     * its free space ACTUALLY reaches [floorBytes] or there are no recordings left.
+     *
+     * NOT "delete an estimated number of bytes", and NOT "stop when a deletion gained nothing".
+     * Both are wrong, measured on DQF2S: while that disk sat at 0 bytes, system processes kept
+     * writing into the filesystem's reserved blocks, which apps cannot use. Deleting 369 MB of
+     * recordings raised app-visible free space by only 255 MB -- the first ~114 MB only paid that
+     * reserved band back. A guard that stopped when a deletion gained nothing (this function's
+     * previous version) would have stopped after ONE file and left that device unable to start.
+     *
+     * Whether deleting recordings can help at all is a different question, and [sameVolume]
+     * answers it: recordings on an SD card free nothing on internal storage, so nothing is deleted.
      */
     fun emergency(floorBytes: Long = StoragePolicy.EMERGENCY_FLOOR): Long {
         var free = databaseFreeBytes()
@@ -51,27 +60,20 @@ class StorageReclaimer(
                 "(${free / StoragePolicy.MB} MB free there); deleting them would not help")
             return 0
         }
-        val root = mediaRoot()
-        val files = mediaFiles(root).map { StoragePolicy.DiskFile(it.path, it.length(), it.lastModified()) }
-        val plan = StoragePolicy.planEmergency(files, free, floorBytes)
+        val files = mediaFiles(mediaRoot()).filter { it.length() > 0 }.sortedBy { it.lastModified() }
         var freed = 0L
         var count = 0
-        for (f in plan) {
+        for (file in files) {
             if (free >= floorBytes) break
-            val file = File(f.path)
             val size = file.length()
             if (!file.delete()) continue
             freed += size
             count++
-            val now = databaseFreeBytes()
-            if (size >= PROBE_BYTES && now <= free) {
-                log("emergency reclaim stopped: deleting ${file.name} did not free the database volume")
-                break
-            }
-            free = now
+            free = databaseFreeBytes()
         }
         log("emergency reclaim: deleted $count file(s), ${freed / StoragePolicy.MB} MB; " +
-            "database volume now ${free / StoragePolicy.MB} MB free")
+            "database volume now ${free / StoragePolicy.MB} MB free" +
+            (if (free < floorBytes) " -- STILL BELOW the ${floorBytes / StoragePolicy.MB} MB floor" else ""))
         return freed
     }
 
@@ -123,12 +125,6 @@ class StorageReclaimer(
     companion object {
         /** The literal upload status the upload worker writes on success. */
         const val UPLOADED = "uploaded"
-
-        /**
-         * A deletion smaller than this is not used to judge whether the database volume gained
-         * space -- filesystem block rounding can hide a few kilobytes.
-         */
-        const val PROBE_BYTES = 1L * 1024 * 1024
 
         private val KIND_DIRS = MediaStorage.Kind.values().map { it.dir }.toSet()
 

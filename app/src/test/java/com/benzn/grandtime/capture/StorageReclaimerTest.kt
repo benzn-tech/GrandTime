@@ -48,12 +48,11 @@ class StorageReclaimerTest {
     private fun reclaimer(
         baseFree: Long,
         sameVolume: Boolean = true,
-        databaseGainsSpace: Boolean = true,
         log: MutableList<String> = mutableListOf(),
     ) = StorageReclaimer(
         mediaRoot = { root },
         recordingFreeBytes = { baseFree + deletedBytes() },
-        databaseFreeBytes = { if (databaseGainsSpace) baseFree + deletedBytes() else baseFree },
+        databaseFreeBytes = { baseFree + deletedBytes() },
         sameVolume = { sameVolume },
         log = { log += it },
     )
@@ -104,15 +103,40 @@ class StorageReclaimerTest {
     }
 
     @Test
-    fun `emergency stops after a deletion that did not free the database volume`() {
-        // A same-volume check can be wrong. The cost of trusting it is bounded to one file.
+    fun `emergency keeps deleting through the reserved band until the databases can see space`() {
+        // Measured on DQF2S: while that disk sat at 0, system processes wrote ~114 MB into the
+        // filesystem's reserved blocks, which apps cannot use, so deleting 369 MB raised
+        // app-visible free space by only 255 MB. The previous version stopped as soon as a
+        // deletion gained nothing -- after ONE file -- and left that device unable to start.
         setUp()
-        val big = StorageReclaimer.PROBE_BYTES.toInt()
-        val first = media("video", "first.mp4", big, modifiedAt = 1)
-        val second = media("video", "second.mp4", big, modifiedAt = 2)
-        reclaimer(baseFree = 0, databaseGainsSpace = false).emergency(floorBytes = 10L * big)
-        assertFalse(first.exists())
-        assertTrue("does not keep destroying footage that is not helping", second.exists())
+        val a = media("video", "a.mp4", 40, modifiedAt = 1)
+        val b = media("video", "b.mp4", 40, modifiedAt = 2)
+        val c = media("video", "c.mp4", 40, modifiedAt = 3)
+        val d = media("video", "d.mp4", 40, modifiedAt = 4)
+        val reserved = 60L // the first 60 bytes freed are invisible to apps
+        val visible = { maxOf(0L, deletedBytes() - reserved) }
+        StorageReclaimer(
+            mediaRoot = { root },
+            recordingFreeBytes = visible,
+            databaseFreeBytes = visible,
+            sameVolume = { true },
+        ).emergency(floorBytes = 50)
+        assertFalse("40 deleted, 0 visible", a.exists())
+        assertFalse("80 deleted, 20 visible", b.exists())
+        assertFalse("120 deleted, 60 visible -- floor reached", c.exists())
+        assertTrue("stops once the databases can actually see the floor", d.exists())
+    }
+
+    @Test
+    fun `emergency logs when even every recording is not enough`() {
+        // The device that prompted this had 4.7 GB of somebody's drawings on it. Deleting all of
+        // our own recordings can still leave the databases short, and the log must say so rather
+        // than read like a success.
+        setUp()
+        media("video", "only.mp4", 10, modifiedAt = 1)
+        val log = mutableListOf<String>()
+        reclaimer(baseFree = 0, log = log).emergency(floorBytes = 1_000)
+        assertTrue(log.single(), log.single().contains("STILL BELOW"))
     }
 
     @Test

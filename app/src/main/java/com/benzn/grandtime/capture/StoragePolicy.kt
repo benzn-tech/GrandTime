@@ -114,28 +114,4 @@ object StoragePolicy {
         }
         return out
     }
-
-    /** A recording file found on disk, for the emergency path that cannot read the database. */
-    data class DiskFile(val path: String, val sizeBytes: Long, val modifiedAt: Long)
-
-    /**
-     * Oldest files first until [floorBytes] is free, or everything offered when that is still not
-     * enough.
-     *
-     * Taking all of them when they cannot reach the floor is still correct: the caller only ever
-     * offers the app's own recordings, and on the device that prompted this, 4.7 GB of the 5.3 GB
-     * partition was somebody's drawings -- files this must never touch. Giving back every byte we
-     * are allowed to is the most the app may do.
-     */
-    fun planEmergency(files: List<DiskFile>, freeBytes: Long, floorBytes: Long): List<DiskFile> {
-        var need = floorBytes - freeBytes
-        if (need <= 0) return emptyList()
-        val out = ArrayList<DiskFile>()
-        for (f in files.filter { it.sizeBytes > 0 }.sortedBy { it.modifiedAt }) {
-            if (need <= 0) break
-            out += f
-            need -= f.sizeBytes
-        }
-        return out
-    }
 }
