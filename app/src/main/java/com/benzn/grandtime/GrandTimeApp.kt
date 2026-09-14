@@ -57,9 +57,19 @@ class GrandTimeApp : Application(), ImageLoaderFactory, Configuration.Provider {
      * WorkManager is initialised on demand from here, not by androidx.startup -- see the provider
      * entry in AndroidManifest.xml. Auto-initialisation opened its database before onCreate, which
      * on a full disk crashed the process before anything of ours could give space back.
+     *
+     * Deferring it was not enough. Measured on DQF2S at 0 bytes with nothing of ours left to
+     * delete: WorkManager's ForceStopRunnable still hit SQLITE_FULL on its own executor thread and
+     * threw, which no runCatching around our call can catch -- the process died 2.5 s after launch.
+     * The handler turns that into a log line. Uploads cannot be scheduled on such a disk anyway;
+     * the app must still open so the person can see why.
      */
     override val workManagerConfiguration: Configuration
-        get() = Configuration.Builder().build()
+        get() = Configuration.Builder()
+            .setInitializationExceptionHandler { e ->
+                Log.w(TAG, "WorkManager could not initialise (disk full?); background work is unavailable this launch", e)
+            }
+            .build()
 
     override fun onCreate() {
         super.onCreate()
