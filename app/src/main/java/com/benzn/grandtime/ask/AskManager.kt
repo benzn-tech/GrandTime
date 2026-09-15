@@ -46,6 +46,8 @@ class AskManager(
     private var capTimer: Job? = null
     /** Watchdog for a playback that never calls back. See [AskCore.onPlaybackTimeout]. */
     private var playTimer: Job? = null
+    /** Bumped by each listening cue, so a cue that outlived its own ask cannot open the mic. */
+    private var listeningCueGeneration = 0
 
     private val videoRecording: Boolean
         get() = AppState.captureState.value is CaptureState.RecordingVideo
@@ -76,7 +78,17 @@ class AskManager(
 
     private suspend fun execute(commands: List<AskCommand>) {
         for (cmd in commands) when (cmd) {
-            AskCommand.PlayListeningCue -> { probe("ask: listening"); sounds.listening() }
+            AskCommand.PlayListeningCue -> {
+                probe("ask: listening")
+                // Awaited: the cue is 1.3 s, and played over an open microphone it went to speech
+                // recognition as the start of the question. Re-checked afterwards because this
+                // suspends: a press released during the cue has already moved the ask on (to
+                // Thinking, then to an error with no clip), and a new press may have started
+                // another ask. Either way THIS ask must not go on to open the microphone.
+                val generation = ++listeningCueGeneration
+                sounds.askStartAndAwait()
+                if (generation != listeningCueGeneration || core.state != AskState.Listening) return
+            }
             AskCommand.PlayThinkingCue -> sounds.thinking()
             AskCommand.PlayBusyCue -> { probe("ask: busy (mic busy)"); sounds.error() }
             AskCommand.PlayErrorCue -> { probe("ask: error"); sounds.error() }

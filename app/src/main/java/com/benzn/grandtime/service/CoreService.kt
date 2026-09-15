@@ -479,6 +479,33 @@ class CoreService : LifecycleService() {
         sosKey?.start()
         pttKey?.start()
 
+        // Low-battery sound. The home banner was the only warning, and the device is worn with the
+        // screen off. ACTION_BATTERY_CHANGED is only delivered to receivers registered at runtime,
+        // and it fires on every level and plug change; LowBatteryAlert decides which ones sound.
+        val lowBattery = com.benzn.grandtime.core.LowBatteryAlert()
+        val batterySounds = com.benzn.grandtime.capture.CaptureSounds(this)
+        val batteryReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: Intent) {
+                val level = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                val percent = if (level >= 0 && scale > 0) level * 100 / scale else -1
+                val pluggedIn = i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+                if (lowBattery.onReading(percent, pluggedIn)) {
+                    probe("low battery sound: $percent%")
+                    batterySounds.lowBattery()
+                }
+            }
+        }
+        registerReceiver(batteryReceiver, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        lifecycleScope.launch {
+            try {
+                kotlinx.coroutines.awaitCancellation()
+            } finally {
+                runCatching { unregisterReceiver(batteryReceiver) }
+                batterySounds.release()
+            }
+        }
+
         AppState.serviceRunning.value = true
         probe("service started")
     }
