@@ -83,17 +83,21 @@ class StorageReclaimer(
      *
      * A row whose file is outside the media tree is skipped rather than trusted: rows can still
      * point at pre-migration private paths, and the path in a row is not a licence to delete.
+     *
+     * [uploadedOnly]: never take an unsent recording, even when that leaves [targetBytes]
+     * unreached. Used for the update reserve, which is headroom, not a reason to lose footage.
      */
     suspend fun reclaim(
         rows: List<CaptureRecord>,
         protectSessionId: String?,
         targetBytes: Long,
+        uploadedOnly: Boolean = false,
         markMissing: suspend (List<String>) -> Unit,
     ): List<String> {
         val free = recordingFreeBytes()
         if (free >= targetBytes) return emptyList()
         val root = mediaRoot()
-        val candidates = rows.filter { !it.missing }.mapNotNull { r ->
+        val candidates = rows.filter { !it.missing && (!uploadedOnly || it.uploadStatus == UPLOADED) }.mapNotNull { r ->
             val file = File(r.filePath)
             if (!isMediaFile(root, file) || !file.exists()) return@mapNotNull null
             StoragePolicy.Candidate(

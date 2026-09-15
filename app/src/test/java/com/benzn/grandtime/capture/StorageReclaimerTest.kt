@@ -182,6 +182,22 @@ class StorageReclaimerTest {
     }
 
     @Test
+    fun `an uploaded-only reclaim never takes an unsent recording, even short of its target`() = runTest {
+        // The update reserve is headroom for installing an update. On a device full of files the
+        // app may not touch, reaching it could need every recording, and unsent footage is not an
+        // acceptable price for headroom nobody is using yet.
+        setUp()
+        val up = media("video", "up.mp4", 30, modifiedAt = 1)
+        val pending = media("video", "pending.mp4", 30, modifiedAt = 2)
+        val deleted = reclaimer(baseFree = 0).reclaim(
+            rows = listOf(row(up, "uploaded", 1), row(pending, "pending", 2)),
+            protectSessionId = null, targetBytes = 1_000, uploadedOnly = true, markMissing = {},
+        )
+        assertEquals(listOf("up.mp4"), deleted)
+        assertTrue("unsent footage is never spent on the update reserve", pending.exists())
+    }
+
+    @Test
     fun `reclaim never deletes the session being recorded`() = runTest {
         setUp()
         val live = media("video", "live.mp4", 30, modifiedAt = 1)

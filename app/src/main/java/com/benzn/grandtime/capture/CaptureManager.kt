@@ -99,22 +99,38 @@ class CaptureManager(
     private fun recordingFreeBytes(): Long = MediaStorage.publicRoot(context).usableSpace
 
     /** Never throws: a failed reclaim leaves the space check to say no, which is the safe answer. */
-    private suspend fun reclaimTo(targetBytes: Long, protectSessionId: String?) {
+    private suspend fun reclaimTo(targetBytes: Long, protectSessionId: String?, uploadedOnly: Boolean = false) {
         runCatching {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
-                reclaimer.reclaim(dao.listAll(), protectSessionId, targetBytes) { ids -> dao.markMissing(ids) }
+                reclaimer.reclaim(dao.listAll(), protectSessionId, targetBytes, uploadedOnly = uploadedOnly) { ids ->
+                    dao.markMissing(ids)
+                }
             }
         }.onFailure { probe("rolling reclaim failed: ${it.message}") }
     }
 
+    /**
+     * Keep [StoragePolicy.UPDATE_RESERVE] free so the device can still install an update, using
+     * uploaded recordings only. Runs before the floor checks and never decides whether capture may go
+     * on: when it cannot restore the reserve, the floor checks below still let capture continue.
+     */
+    private suspend fun keepUpdateReserve(protectSessionId: String?) {
+        if (StoragePolicy.belowUpdateReserve(recordingFreeBytes())) {
+            reclaimTo(StoragePolicy.updateReserveTarget(), protectSessionId, uploadedOnly = true)
+        }
+    }
+
     private suspend fun ensureRoomToStart(): Boolean {
+        val protect = core.state.sessionIdOrNull()
+        keepUpdateReserve(protect)
         if (StoragePolicy.canStart(recordingFreeBytes())) return true
-        reclaimTo(StoragePolicy.startTarget(), protectSessionId = core.state.sessionIdOrNull())
+        reclaimTo(StoragePolicy.startTarget(), protectSessionId = protect)
         return StoragePolicy.canStart(recordingFreeBytes())
     }
 
     /** [lastSegmentBytes]: the segment being written or just finished -- the size the next one will be. */
     private suspend fun ensureRoomToContinue(lastSegmentBytes: Long, protectSessionId: String?): Boolean {
+        keepUpdateReserve(protectSessionId)
         if (StoragePolicy.canContinue(recordingFreeBytes(), lastSegmentBytes)) return true
         reclaimTo(StoragePolicy.continueTarget(lastSegmentBytes), protectSessionId)
         return StoragePolicy.canContinue(recordingFreeBytes(), lastSegmentBytes)

@@ -158,4 +158,32 @@ class StoragePolicyTest {
         assertTrue(target - StoragePolicy.RECLAIM_HEADROOM < target)
         assertFalse(StoragePolicy.canContinue(target - StoragePolicy.RECLAIM_HEADROOM - 1, last))
     }
+
+    // ---------------------------------------------------------------- the update reserve
+
+    @Test
+    fun `the update reserve leaves room for Android to install an update`() {
+        // Measured on DQF2S: devicestoragemonitor lowBytes=289175552 and a 26 MB release APK.
+        // A device that rolled over at the old floors sat at 265 MB free and could not be updated.
+        val androidInstallLine = 289_175_552L + 26 * MB
+        assertTrue(StoragePolicy.UPDATE_RESERVE > androidInstallLine)
+        assertTrue(StoragePolicy.belowUpdateReserve(androidInstallLine))
+        assertFalse(StoragePolicy.belowUpdateReserve(StoragePolicy.UPDATE_RESERVE))
+    }
+
+    @Test
+    fun `the update reserve is a reclaim trigger, never a reason to stop recording`() {
+        // Below the reserve with nothing uploaded left to delete, capture must still run down to
+        // the floors. A device that refuses to record with 400 MB free is the worse failure.
+        val belowReserve = StoragePolicy.UPDATE_RESERVE - 1
+        assertTrue(StoragePolicy.belowUpdateReserve(belowReserve))
+        assertTrue(StoragePolicy.canStart(belowReserve))
+        assertTrue(StoragePolicy.canContinue(belowReserve, lastSegmentBytes = 73 * MB))
+    }
+
+    @Test
+    fun `an update reserve reclaim overshoots so the next segment does not reclaim again`() {
+        assertTrue(StoragePolicy.updateReserveTarget() > StoragePolicy.UPDATE_RESERVE)
+        assertFalse(StoragePolicy.belowUpdateReserve(StoragePolicy.updateReserveTarget()))
+    }
 }
