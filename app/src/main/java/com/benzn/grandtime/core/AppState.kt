@@ -28,6 +28,9 @@ object AppState {
     /** 采集状态(Service 写,Home 卡读)。 */
     val captureState = MutableStateFlow<CaptureState>(CaptureState.Idle)
 
+    /** A downloaded, verified update waiting to be installed (AppUpdateWorker writes; Home and Settings read). */
+    val appUpdate = MutableStateFlow<com.benzn.grandtime.update.ReadyUpdate?>(null)
+
     /** UI 屏幕按键 → Service(down/up 原始事件)。 */
     val screenKeyEvents = MutableSharedFlow<Pair<HardKey, RawDirection>>(extraBufferCapacity = 16)
 

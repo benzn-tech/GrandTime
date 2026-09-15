@@ -152,6 +152,7 @@ fun HomeScreen() {
             ResourceWarningBanner(resourceStatus)
             Spacer(Modifier.height(12.dp))
         }
+        AppUpdateBanner(capture)
         FsCard {
             FsCardTitle("Device")
             val (dotColor, statusText) = when (val s = capture) {

@@ -99,22 +99,38 @@ class CaptureManager(
     private fun recordingFreeBytes(): Long = MediaStorage.publicRoot(context).usableSpace
 
     /** Never throws: a failed reclaim leaves the space check to say no, which is the safe answer. */
-    private suspend fun reclaimTo(targetBytes: Long, protectSessionId: String?) {
+    private suspend fun reclaimTo(targetBytes: Long, protectSessionId: String?, uploadedOnly: Boolean = false) {
         runCatching {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
-                reclaimer.reclaim(dao.listAll(), protectSessionId, targetBytes) { ids -> dao.markMissing(ids) }
+                reclaimer.reclaim(dao.listAll(), protectSessionId, targetBytes, uploadedOnly = uploadedOnly) { ids ->
+                    dao.markMissing(ids)
+                }
             }
         }.onFailure { probe("rolling reclaim failed: ${it.message}") }
     }
 
+    /**
+     * Keep [StoragePolicy.UPDATE_RESERVE] free so the device can still install an update, using
+     * uploaded recordings only. Runs before the floor checks and never decides whether capture may go
+     * on: when it cannot restore the reserve, the floor checks below still let capture continue.
+     */
+    private suspend fun keepUpdateReserve(protectSessionId: String?) {
+        if (StoragePolicy.belowUpdateReserve(recordingFreeBytes())) {
+            reclaimTo(StoragePolicy.updateReserveTarget(), protectSessionId, uploadedOnly = true)
+        }
+    }
+
     private suspend fun ensureRoomToStart(): Boolean {
+        val protect = core.state.sessionIdOrNull()
+        keepUpdateReserve(protect)
         if (StoragePolicy.canStart(recordingFreeBytes())) return true
-        reclaimTo(StoragePolicy.startTarget(), protectSessionId = core.state.sessionIdOrNull())
+        reclaimTo(StoragePolicy.startTarget(), protectSessionId = protect)
         return StoragePolicy.canStart(recordingFreeBytes())
     }
 
     /** [lastSegmentBytes]: the segment being written or just finished -- the size the next one will be. */
     private suspend fun ensureRoomToContinue(lastSegmentBytes: Long, protectSessionId: String?): Boolean {
+        keepUpdateReserve(protectSessionId)
         if (StoragePolicy.canContinue(recordingFreeBytes(), lastSegmentBytes)) return true
         reclaimTo(StoragePolicy.continueTarget(lastSegmentBytes), protectSessionId)
         return StoragePolicy.canContinue(recordingFreeBytes(), lastSegmentBytes)
@@ -358,7 +374,7 @@ class CaptureManager(
             }
             stopWatermarkTimer()
             gps.stop()
-            sounds.stopRecording()
+            sounds.stopRecording(CaptureSounds.Media.VIDEO)
             val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
             execute(core.onFailure("Camera lost — recording stopped"))
             if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
@@ -368,7 +384,7 @@ class CaptureManager(
             val endingSessionId = (core.state as? CaptureState.PausedVideo)?.sessionId
             stopWatermarkTimer()
             gps.stop()
-            sounds.stopRecording()
+            sounds.stopRecording(CaptureSounds.Media.VIDEO)
             execute(core.onFailure("Camera lost — recording stopped"))
             if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
         }
@@ -515,7 +531,7 @@ class CaptureManager(
     /** Deliberate End of a PausedVideo session: no live segment to finalize (already stopped by the
      *  preceding PAUSE), so just release resources and close with intent="end" directly. */
     private fun endPausedSession(sessionId: String) {
-        stopWatermarkTimer(); gps.stop(); sounds.stopRecording()
+        stopWatermarkTimer(); gps.stop(); sounds.stopRecording(CaptureSounds.Media.VIDEO)
         scope.launch { pipeline.release() }
         fireSessionClose(sessionId, System.currentTimeMillis(), "end")
     }
@@ -542,7 +558,10 @@ class CaptureManager(
         // gained a speaker who is not a person. Only on segment 1 — a rollover
         // mid-session must not pause the camera to talk.
         if (cmd.segmentIndex == 1) {
-            sounds.startRecordingAndAwait()
+            sounds.startRecordingAndAwait(CaptureSounds.Media.VIDEO)
+        } else if (cameraWasClosed) {
+            // A resume: the pause released the camera. A rollover keeps it open and says nothing.
+            sounds.startRecordingAndAwait(CaptureSounds.Media.VIDEO, resumed = true)
         }
         val result = pipeline.startSegment(
             file = file,
@@ -584,7 +603,7 @@ class CaptureManager(
                     // PausedVideo (not Idle) so it never reaches this branch — pipeline/GPS stay live for
                     // a fast resume.
                     if (reason != StopReason.ROLLOVER && core.state is CaptureState.Idle) {
-                        sounds.stopRecording()
+                        sounds.stopRecording(CaptureSounds.Media.VIDEO)
                         stopWatermarkTimer()
                         gps.stop()
                         pipeline.release()
@@ -594,6 +613,7 @@ class CaptureManager(
                             fireSessionClose(endingSessionId, System.currentTimeMillis(), "end")
                         }
                     } else if (reason == StopReason.PAUSE && core.state is CaptureState.PausedVideo) {
+                        sounds.pauseRecording(CaptureSounds.Media.VIDEO)
                         // #3 power-saving pause: release the camera + GPS + watermark so the device can
                         // deep-sleep while paused (the wakelock is already released for PausedVideo).
                         // Resume cold-opens the camera and restarts GPS/watermark; the session stays open.
@@ -608,7 +628,7 @@ class CaptureManager(
             // 段起动失败也是终态(core.onFailure 一律回 Idle)——不管是不是段 1,都要收尾计时器/GPS。
             stopWatermarkTimer()
             gps.stop()
-            sounds.stopRecording()
+            sounds.stopRecording(CaptureSounds.Media.VIDEO)
             val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
             execute(core.onFailure("Camera unavailable"))
             if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
@@ -888,7 +908,7 @@ class CaptureManager(
         val sessionId = cmd.sessionId
         // Same reason as the video path: the announcement is over before the
         // microphone is live, so it cannot be transcribed as a participant.
-        sounds.startRecordingAndAwait()
+        sounds.startRecordingAndAwait(CaptureSounds.Media.AUDIO)
         val monitor = newSilenceMonitor()
         val started = audio.start(
             file = first,
@@ -985,7 +1005,7 @@ class CaptureManager(
         // 暂停期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
         if (!pipeline.isRecording) pipeline.release()
         // Pause, not stop: the session stays open and a resume continues it.
-        sounds.stopRecording(speak = false)
+        sounds.pauseRecording(CaptureSounds.Media.AUDIO)
     }
 
     /** Resume: restart the recorder continuing the SAME session at the next segment index — no
@@ -999,6 +1019,8 @@ class CaptureManager(
         // The SAME monitor as before the pause — the session did not end, and a fresh one
         // here would forget a fault that already happened.
         val monitor = silenceMonitor ?: newSilenceMonitor()
+        // Before audio.start, like the first start: played after it, the cue was recorded.
+        sounds.startRecordingAndAwait(CaptureSounds.Media.AUDIO, resumed = true)
         val started = audio.start(
             file = first,
             segmentBytes = segBytes,
@@ -1015,7 +1037,6 @@ class CaptureManager(
             fireSessionClose(sessionId, System.currentTimeMillis())
             return false
         }
-        sounds.startRecording()
         probe("audio resumed: ${first.name} (segment $audioResumeIndex)")
         return true
     }
@@ -1026,7 +1047,7 @@ class CaptureManager(
         if (!ok) probe("audio stop reported error")
         // 录音期间若拍过照,相机会话可能残留——收尾释放;录像中不会走到这。
         if (!pipeline.isRecording) pipeline.release()
-        sounds.stopRecording()
+        sounds.stopRecording(CaptureSounds.Media.AUDIO)
         fireSessionClose(cmd.sessionId, System.currentTimeMillis(), "end")
     }
 
@@ -1034,6 +1055,7 @@ class CaptureManager(
      *  just release any leftover camera + close with intent="end" directly. */
     private suspend fun endPausedAudio(cmd: CaptureCommand.EndPausedAudio) {
         if (!pipeline.isRecording) pipeline.release()
+        sounds.stopRecording(CaptureSounds.Media.AUDIO)
         fireSessionClose(cmd.sessionId, System.currentTimeMillis(), "end")
     }
 

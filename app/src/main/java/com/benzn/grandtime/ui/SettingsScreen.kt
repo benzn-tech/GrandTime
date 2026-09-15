@@ -147,6 +147,17 @@ fun SettingsScreen(onOpen: (Screen) -> Unit) {
             }
             RowDivider()
             SettingRow("About", versionName, onClick = null)
+            RowDivider()
+            val readyUpdate by AppState.appUpdate.collectAsStateWithLifecycle()
+            SettingRow("App update", readyUpdate?.let { "${it.versionName} ready" } ?: "Check now") {
+                val update = readyUpdate
+                if (update == null) {
+                    com.benzn.grandtime.update.AppUpdates.checkNow(context)
+                    Toast.makeText(context, "Checking for updates", Toast.LENGTH_SHORT).show()
+                } else {
+                    installWithFeedback(context, update, AppState.captureState.value is com.benzn.grandtime.capture.CaptureState.Idle)
+                }
+            }
         }
         GroupHeader("Account")
         FsCard(contentPadding = 0.dp) {

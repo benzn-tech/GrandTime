@@ -79,6 +79,16 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
             // thaws it.
             if (record.uploadStatus == "frozen") return Result.failure()
 
+            // A video segment has a row from the moment it STARTS, and both sweeps select by status
+            // alone, so a sweep can arrive while the file is still being written. Uploading it then
+            // put an unplayable half-file in S3 that was marked "uploaded" for good -- see
+            // UploadReadiness. Turned away before anything is asked of the server; the status stays
+            // as it was, and the segment's own enqueue when it finalizes (or the next sweep) uploads it.
+            val source = File(record.filePath)
+            if (source.exists() && !UploadReadiness.readyToUpload(record.endedAt, source.lastModified(), now)) {
+                return Result.retry()
+            }
+
             // #1: a fresh/headless worker process (reboot / process-death wakeup) starts with
             // AppState.loginState defaulted to LoggedOut. silentLogin() restores the accurate
             // state from the persisted session BEFORE we read the token, so a transient network
@@ -150,9 +160,22 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
                     // and we retry the PUT on the next attempt.
                     // Return value deliberately ignored — `complete` below is the real
                     // verdict on whether the object made it (see the comment above).
+                    val sizeBeforePut = file.length()
+                    val modifiedBeforePut = file.lastModified()
                     client.putFile(urlResult.uploadUrl, contentType, file)
+                    // Second line of defence behind the readiness check above: if anything wrote to
+                    // the file while it was being sent, S3 holds a snapshot of a file that no longer
+                    // exists. Not completed, not marked uploaded; the next attempt sends it again
+                    // over the same key.
+                    if (!UploadReadiness.unchangedDuringUpload(
+                            sizeBeforePut, modifiedBeforePut, file.length(), file.lastModified())) {
+                        dao.markUploadStatus(recordId, "pending")
+                        return Result.retry()
+                    }
+                    // The size that was SENT. Re-measuring here is what told the server the finished
+                    // size of a file whose half-written snapshot was already in S3.
                     val completed = client.completeStatus(
-                        idToken, urlResult.recordingId, file.length(), gpsTrack = record.gpsTrack)
+                        idToken, urlResult.recordingId, sizeBeforePut, gpsTrack = record.gpsTrack)
                     val status = completed.code
                     // Multi-device merge: the upload response is the only way the
                     // server can reach a device that is not holding a connection

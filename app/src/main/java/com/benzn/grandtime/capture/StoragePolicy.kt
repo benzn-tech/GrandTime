@@ -43,10 +43,36 @@ object StoragePolicy {
      */
     const val UNKNOWN_SEGMENT_ESTIMATE = 40 * MB
 
+    /**
+     * Free space rolling overwrite keeps so the device can still install an update.
+     *
+     * Android refuses any install unless free space exceeds its low-storage line -- 276 MiB on the
+     * F2SP's 5.4 GB partition (devicestoragemonitor lowBytes=289175552) -- plus the APK (~26 MB).
+     * The floors above all sit below that line, and reclaiming only back to them kept a device in
+     * rolling overwrite hovering at 210-310 MB free. Measured on DQF2S 2026-09-15: 265 MB free
+     * after a morning of rolling overwrite, and no update could be installed at all -- by hand, or
+     * by the in-app updater planned for later.
+     *
+     * A reclaim TRIGGER, never a stop line. When nothing deletable is left, capture still runs down
+     * to the floors: a device that refuses to record with 400 MB free is the worse failure.
+     *
+     * Bought with UPLOADED recordings only. On the device that prompted the floors, 4.7 GB of the
+     * partition was somebody else's files; aiming every reclaim at this reserve there would delete
+     * every recording on the device, unsent ones included, for headroom nobody is using yet.
+     * Unsent recordings are still only taken to keep a capture above the floors.
+     */
+    const val UPDATE_RESERVE = 450 * MB
+
     fun canStart(freeBytes: Long): Boolean = freeBytes >= START_FLOOR
 
     /** Free space a reclaim before a new capture aims for. */
     fun startTarget(): Long = START_FLOOR + RECLAIM_HEADROOM
+
+    /** Whether to reclaim uploaded recordings to restore [UPDATE_RESERVE]. */
+    fun belowUpdateReserve(freeBytes: Long): Boolean = freeBytes < UPDATE_RESERVE
+
+    /** Free space an update-reserve reclaim aims for, so the next segment does not reclaim again. */
+    fun updateReserveTarget(): Long = UPDATE_RESERVE + RECLAIM_HEADROOM
 
     /**
      * Whether a running session may begin its next segment.
