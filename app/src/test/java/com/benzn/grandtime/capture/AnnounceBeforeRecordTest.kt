@@ -68,22 +68,27 @@ class AnnounceBeforeRecordTest {
         // A rollover happens mid-meeting. Pausing the camera every segment to play a cue would
         // drop ~1.5s of real conversation, repeatedly. A resume re-opens a camera the pause
         // released; a rollover keeps it open, which is what tells them apart.
+        //
+        // Pinned by the exact branch each call sits in. The previous version of this test looked
+        // back for the nearest "if (" and accepted either guard; with the resume branch turned into
+        // a bare `} else {` it found segment 1's `if` instead and passed, while every rollover
+        // announced. A mutation run caught that.
         val b = body("startVideoSegment").substringBefore("pipeline.startSegment(")
-        var from = 0
-        var calls = 0
-        while (true) {
-            val at = b.indexOf("startRecordingAndAwait", from)
-            if (at < 0) break
-            calls++
-            val line = b.lastIndexOf("if (", at)
-            val guard = b.substring(maxOf(line, 0), at)
-            assertTrue(
-                "every video announcement must be guarded by segment 1 or a closed camera: $guard",
-                guard.contains("segmentIndex == 1") || guard.contains("cameraWasClosed"),
-            )
-            from = at + 1
-        }
-        assertEquals("expected the start and the resume announcements", 2, calls)
+        val first = b.indexOf("startRecordingAndAwait")
+        val second = b.indexOf("startRecordingAndAwait", first + 1)
+        assertTrue("expected the start and the resume announcements", first >= 0 && second > first)
+        assertEquals("no third announcement", -1, b.indexOf("startRecordingAndAwait", second + 1))
+
+        val beforeFirst = b.substring(0, first).removeSuffix("sounds.").trimEnd()
+        assertTrue(
+            "the start announcement must sit directly inside `if (cmd.segmentIndex == 1) {`",
+            beforeFirst.endsWith("if (cmd.segmentIndex == 1) {"),
+        )
+        val between = b.substring(first, second)
+        assertTrue(
+            "the resume announcement must be guarded by `else if (cameraWasClosed)`, never a bare else",
+            Regex("""\}\s*else\s+if\s*\(\s*cameraWasClosed\s*\)\s*\{""").containsMatchIn(between),
+        )
     }
 
     @Test
