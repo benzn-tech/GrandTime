@@ -4,4 +4,7 @@
          配合 SD 优先写盘(MediaStorage.publicRoot)。仅按 URI 授权、provider 不导出,安全。 -->
     <external-path name="external_storage" path="." />
     <root-path name="all_volumes" path="/" />
+    <!-- In-app updates: the verified APK in the app's private files, shared by URI with the
+         system installer only (AppUpdateStore.DIR). -->
+    <files-path name="app_updates" path="updates/" />
 </paths>

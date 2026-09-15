@@ -309,6 +309,9 @@ class CoreService : LifecycleService() {
                 .distinctUntilChanged()
                 .collect { sub ->
                     if (sub == null) return@collect
+                    // An update check at every sign-in, not only every six hours: a device handed to
+                    // a new site hears about a waiting build the moment someone signs in.
+                    com.benzn.grandtime.update.AppUpdates.checkNow(applicationContext)
                     runCatching {
                         val idToken = auth.freshIdToken() ?: return@runCatching
                         // fetchSites, not listSites: a failed request must not read as an account

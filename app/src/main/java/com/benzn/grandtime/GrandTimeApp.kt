@@ -115,6 +115,14 @@ class GrandTimeApp : Application(), ImageLoaderFactory, Configuration.Provider {
                 )
                 .build(),
         ) }.onFailure { Log.w(TAG, "periodic device-status work not scheduled", it) }
+
+        // In-app updates. A verified download from before the last restart is shown again; the
+        // check itself runs every six hours and at sign-in (CoreService). Guarded like the probe
+        // above: an update check must never be the reason the app does not start.
+        runCatching {
+            com.benzn.grandtime.update.AppUpdates.restoreOnStart(this)
+            com.benzn.grandtime.update.AppUpdates.schedulePeriodic(this)
+        }.onFailure { Log.w(TAG, "app update checks not scheduled", it) }
     }
 
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
