@@ -45,6 +45,20 @@ class SitesApiClient(
 ) {
     data class SiteOption(val id: String, val slug: String, val name: String, val address: String? = null)
 
+    /**
+     * The account's sites, or NULL when the request did not produce an answer.
+     *
+     * [listSites] returns an empty list for a network error, a non-2xx response and a malformed
+     * body alike, so a caller cannot tell "this account has no sites" from "the device is offline".
+     * That was harmless while the only caller displayed the list. It is not harmless for a caller
+     * that ACTS on emptiness: clearing a selection because an account has no sites would clear a
+     * perfectly good one every time the device started without a connection.
+     */
+    fun fetchSites(idToken: String): List<SiteOption>? {
+        val result = runCatching { http.getJson("$baseUrl/org/sites", idToken) }.getOrElse { return null }
+        return parseSitesOrNull(result)
+    }
+
     fun listSites(idToken: String): List<SiteOption> {
         val result = runCatching { http.getJson("$baseUrl/org/sites", idToken) }
             .getOrElse { return emptyList() }
@@ -52,6 +66,28 @@ class SitesApiClient(
     }
 
     companion object {
+        /**
+         * Sites from a successful response, or NULL when there is no trustworthy answer: a non-2xx,
+         * a body that is not JSON, or JSON without a `sites` array. An empty `sites` array is a
+         * real answer -- the account has none -- and is returned as an empty list.
+         */
+        fun parseSitesOrNull(r: HttpResult): List<SiteOption>? {
+            if (r.code !in 200..299) return null
+            return runCatching {
+                val arr = JSONObject(r.body).optJSONArray("sites") ?: return null
+                (0 until arr.length()).mapNotNull { i ->
+                    val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                    val id = o.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    SiteOption(
+                        id = id,
+                        slug = o.optString("slug"),
+                        name = o.optString("name"),
+                        address = o.optString("address").takeIf { it.isNotBlank() },
+                    )
+                }
+            }.getOrNull()
+        }
+
         fun parseSites(r: HttpResult): List<SiteOption> {
             if (r.code !in 200..299) return emptyList()
             return runCatching {

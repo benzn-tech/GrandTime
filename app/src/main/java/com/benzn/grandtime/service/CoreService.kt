@@ -182,7 +182,14 @@ class CoreService : LifecycleService() {
         lifecycleScope.launch {
             auth.loginState.collect { AppState.loginState.value = it }
         }
-        lifecycleScope.launch {
+        // The startup sweep opens the capture database. On a disk still too full for SQLite that
+        // throws, and an uncaught exception in this scope kills the process -- the same crash the
+        // emergency reclaim in GrandTimeApp exists to prevent, one step later. The sweep is recovery
+        // work; failing it must not take the service down with it.
+        val startupSweepHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+            Log.w(TAG, "startup sweep failed", e)
+        }
+        lifecycleScope.launch(startupSweepHandler) {
             auth.silentLogin()
             if (AppState.loginState.value is com.benzn.grandtime.core.LoginState.LoggedIn) {
                 // 补扫前先预取工地列表进缓存——补扫会瞬间占满网络,若不先取,
@@ -292,6 +299,47 @@ class CoreService : LifecycleService() {
         }
         lifecycleScope.launch {
             SiteStore(applicationContext.siteDataStore).site.collect { AppState.selectedSite.value = it }
+        }
+        // Single-site auto-select, on EVERY transition into a signed-in account: a restored session
+        // and a fresh or QR sign-in alike. The prefetch in the sweep above runs only for a restored
+        // session, so an interactive sign-in used to fetch nothing and select nothing.
+        lifecycleScope.launch {
+            AppState.loginState
+                .map { (it as? LoginState.LoggedIn)?.authorSub }
+                .distinctUntilChanged()
+                .collect { sub ->
+                    if (sub == null) return@collect
+                    runCatching {
+                        val idToken = auth.freshIdToken() ?: return@runCatching
+                        // fetchSites, not listSites: a failed request must not read as an account
+                        // with no sites, or the selection is cleared every time the device is offline.
+                        val sites = withContext(Dispatchers.IO) {
+                            SitesApiClient(BuildConfig.ORG_API_BASE_URL).fetchSites(idToken)
+                        } ?: return@runCatching
+                        val store = SiteStore(applicationContext.siteDataStore)
+                        AppState.availableSites.value = sites
+                        store.setSiteList(sites)
+                        when (val d = com.benzn.grandtime.core.SiteAutoSelect.decide(sites, store.site.first())) {
+                            is com.benzn.grandtime.core.SiteAutoSelect.Decision.Select -> {
+                                store.set(d.site)
+                                probe("site auto-selected: ${d.site.name} (the only site on this account)")
+                            }
+                            com.benzn.grandtime.core.SiteAutoSelect.Decision.Clear -> {
+                                store.set(null)
+                                probe("site selection cleared: this account cannot access it")
+                            }
+                            com.benzn.grandtime.core.SiteAutoSelect.Decision.Keep -> Unit
+                        }
+                    }.onFailure { Log.w(TAG, "site auto-select failed", it) }
+                }
+        }
+        // Which storage volumes exist and which one recordings use. The SD-card fault cannot be
+        // diagnosed from a device without a card; this line is what a card-bearing device will say.
+        lifecycleScope.launch {
+            val volumes = withContext(Dispatchers.IO) {
+                com.benzn.grandtime.capture.MediaStorage.describeVolumes(applicationContext)
+            }
+            probe(volumes)
         }
         // Drive the system screen-off timeout from the app setting so the display sleeps at the
         // chosen minutes (recording and idle). No-op until WRITE_SETTINGS is granted; re-applied on

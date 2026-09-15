@@ -53,6 +53,26 @@ class MediaStorage(
         }
 
         /** 集中 <root>/FieldSight/<folder>/<kindDir> 拼路径的唯一出处(登出=device,登录=<user>_<sub>)。 */
+        /**
+         * Every storage volume the system reports, and which one recordings go to, as one log line.
+         *
+         * Exists because the SD-card fault cannot be diagnosed from a device without a card. This
+         * ROM (MediaTek mt6768) declares two SD slots in its fstab and supports adoptable storage,
+         * and a card set up as "phone storage" becomes a PRIVATE volume that [publicRoot] skips on
+         * purpose -- while a card set up as "portable" is picked. Those are different faults with
+         * different fixes, and only a device holding a card can say which one it has.
+         */
+        fun describeVolumes(context: Context): String = runCatching {
+            val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
+            val chosen = publicRoot(context).path
+            val lines = sm.storageVolumes.map { v ->
+                "${v.getDescription(context)} uuid=${v.uuid} primary=${v.isPrimary} " +
+                    "removable=${v.isRemovable} emulated=${v.isEmulated} state=${v.state} " +
+                    "dir=${v.directory?.path}"
+            }
+            "storage volumes (${lines.size}); recordings -> $chosen: " + lines.joinToString(" | ")
+        }.getOrElse { "storage volumes: unavailable (${it.message})" }
+
         fun mediaSubdir(root: File, folder: String, kindDir: String): File =
             File(File(File(root, "FieldSight"), folder), kindDir)
 

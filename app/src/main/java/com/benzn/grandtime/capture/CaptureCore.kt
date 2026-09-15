@@ -2,7 +2,16 @@ package com.benzn.grandtime.capture
 
 import com.benzn.grandtime.keymap.KeyAction
 
-enum class StopReason { ROLLOVER, PAUSE, END }
+/**
+ * STORAGE_FULL is an END the operator did not choose. It is its own reason, not END, so the
+ * device can say WHY recording stopped -- a plain END says "Standing by", which reads as
+ * something the operator did -- and so every `when` over this enum is forced to decide what a
+ * storage stop means, instead of one of them silently treating it as a rollover.
+ */
+enum class StopReason { ROLLOVER, PAUSE, END, STORAGE_FULL }
+
+/** What the device says when it had to stop recording for space. */
+const val STORAGE_FULL_TEXT = "Storage full - recording stopped"
 
 sealed interface CaptureCommand {
     data class StartVideoSegment(val sessionId: String, val segmentIndex: Int) : CaptureCommand
@@ -121,8 +130,36 @@ class CaptureCore(
         else -> emptyList()
     }
 
-    fun onSegmentTimerFired(): List<CaptureCommand> = when (state) {
-        is CaptureState.RecordingVideo -> listOf(CaptureCommand.StopVideo(StopReason.ROLLOVER))
+    /**
+     * A segment's time is up. [canContinue] is whether the next segment fits (see
+     * StoragePolicy.canContinue) -- decided by the caller, which can see the disk. When it does not,
+     * the session ends here, at the boundary, instead of rolling into a segment that would write the
+     * disk to zero and take the app's databases with it.
+     */
+    fun onSegmentTimerFired(canContinue: Boolean = true): List<CaptureCommand> = when (state) {
+        is CaptureState.RecordingVideo ->
+            listOf(CaptureCommand.StopVideo(if (canContinue) StopReason.ROLLOVER else StopReason.STORAGE_FULL))
+        else -> emptyList()
+    }
+
+    /**
+     * The disk cannot take the next segment of a session that is running now.
+     *
+     * Audio ends here, synchronously, because its recorder rolls segments on its own thread and
+     * has no boundary the core can intercept. Video asks the pipeline to stop, and the state moves
+     * when that finalizes ([onVideoFinalized] with STORAGE_FULL), exactly as a key-press END does.
+     * A paused session is writing nothing, so it is left alone.
+     */
+    fun onStorageExhausted(): List<CaptureCommand> = when (val s = state) {
+        is CaptureState.RecordingAudio -> {
+            state = CaptureState.Idle
+            listOf(
+                CaptureCommand.EndAudio(s.sessionId),
+                CaptureCommand.Vibrate(2),
+                CaptureCommand.Notify(STORAGE_FULL_TEXT),
+            )
+        }
+        is CaptureState.RecordingVideo -> listOf(CaptureCommand.StopVideo(StopReason.STORAGE_FULL))
         else -> emptyList()
     }
 
@@ -143,6 +180,12 @@ class CaptureCore(
             StopReason.END -> {
                 state = CaptureState.Idle
                 listOf(CaptureCommand.Vibrate(1), CaptureCommand.Notify("Standing by"))
+            }
+            StopReason.STORAGE_FULL -> {
+                state = CaptureState.Idle
+                // Two pulses, the device's existing "refused" pattern, and the reason in words: the
+                // operator did not end this, and a silent stop would look like the key failed.
+                listOf(CaptureCommand.Vibrate(2), CaptureCommand.Notify(STORAGE_FULL_TEXT))
             }
         }
         else -> emptyList()
