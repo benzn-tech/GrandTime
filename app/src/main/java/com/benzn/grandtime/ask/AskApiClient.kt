@@ -12,12 +12,18 @@ import org.json.JSONObject
  * `$baseUrl/ask/voice` = `/api/ask/voice`. NOT the WorkManager upload queue.
  *
  * Request/response shapes are the backend Contract (see the plan's Contract
- * section + backend Task 5): request {audio, format, mode:"voice"};
+ * section + backend Task 5): request {audio, format, mode:"voice", tz?};
  * response {transcript, answerText, audioBase64, audioFormat} or {error, transcript?}.
+ *
+ * `tz` is the device's IANA zone id (e.g. "Pacific/Auckland"). The backend
+ * resolves relative dates like "yesterday" against it (query_slots.resolve_today).
+ * It is best-effort: an unusable value simply omits the key, which the backend
+ * treats as an unfiltered search (today's behaviour without this change).
  */
 class AskApiClient(
     private val baseUrl: String,
     private val http: HttpFns = RealHttp(),
+    private val zoneId: () -> String = { java.time.ZoneId.systemDefault().id },
 ) {
     sealed interface AskResult {
         data class Ok(
@@ -36,6 +42,13 @@ class AskApiClient(
             .put("audio", audioBase64)
             .put("format", format)
             .put("mode", "voice")
+        // The caller's own zone, not a date: the backend resolves "yesterday"
+        // against it (query_slots.resolve_today). Without this every spoken
+        // relative date searches all of time. An unusable value costs nothing --
+        // resolve_today returns None and the search is unfiltered, which is
+        // exactly today's behaviour.
+        runCatching { zoneId() }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?.let { body.put("tz", it) }
         val result = runCatching { http.postJson("$baseUrl/ask/voice", idToken, body.toString()) }
             .getOrElse { return AskResult.Error("network") }
         return parse(result)

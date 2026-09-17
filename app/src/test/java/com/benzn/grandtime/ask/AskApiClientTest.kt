@@ -87,4 +87,26 @@ class AskApiClientTest {
         val http = FakeHttp(HttpResult(200, okBody()), throwOnPost = true)
         assertTrue(AskApiClient("b", http).ask("ID", "QUJD") is AskApiClient.AskResult.Error)
     }
+
+    @Test fun ask_sends_the_device_zone() {
+        val http = FakeHttp(HttpResult(200, okBody()))
+        val client = AskApiClient("https://example/prod/api", http, zoneId = { "Pacific/Auckland" })
+        client.ask("token", "AAAA")
+        assertEquals("Pacific/Auckland", JSONObject(http.lastBody!!).getString("tz"))
+    }
+
+    @Test fun blank_zone_omits_tz() {
+        val http = FakeHttp(HttpResult(200, okBody()))
+        val client = AskApiClient("b", http, zoneId = { "" })
+        client.ask("ID", "QUJD")
+        assertTrue(!JSONObject(http.lastBody!!).has("tz"))
+    }
+
+    @Test fun throwing_zone_provider_still_sends_the_ask() {
+        val http = FakeHttp(HttpResult(200, okBody()))
+        val client = AskApiClient("b", http, zoneId = { throw IllegalStateException("boom") })
+        val r = client.ask("ID", "QUJD")
+        assertTrue(r is AskApiClient.AskResult.Ok)
+        assertTrue(!JSONObject(http.lastBody!!).has("tz"))
+    }
 }
