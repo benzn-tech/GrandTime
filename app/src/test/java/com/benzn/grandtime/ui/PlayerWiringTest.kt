@@ -42,6 +42,19 @@ class PlayerWiringTest {
     }
 
     @Test
+    fun `a recording whose rows carry no length still gets a working bar`() {
+        // Older recordings exist whose rows have no duration (reconciled from disk, or finalized
+        // after a crash with 0). Without this the bar is dead for the whole recording and the total
+        // is short by those segments; the player must not wait for ExoPlayer, which reports a
+        // segment only once it opens it.
+        val fill = player.indexOf("readDurationMillis(it.filePath)")
+        assertTrue("the player must read missing lengths from the files", fill >= 0)
+        assertTrue("off the main thread", player.substring(0, fill).contains("withContext(Dispatchers.IO)"))
+        assertTrue("only when something is missing", player.contains("durations.any { it <= 0L }"))
+        assertTrue("a length the row already has is kept", player.contains("if (known > 0L) known else"))
+    }
+
+    @Test
     fun `an unreadable segment is skipped instead of ending the recording`() {
         val onError = player.substring(player.indexOf("override fun onPlayerError("))
         val skip = onError.indexOf("player.seekToNextMediaItem()")
