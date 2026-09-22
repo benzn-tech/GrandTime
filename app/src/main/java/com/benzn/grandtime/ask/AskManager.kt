@@ -91,7 +91,9 @@ class AskManager(
             }
             AskCommand.PlayThinkingCue -> sounds.thinking()
             AskCommand.PlayBusyCue -> { probe("ask: busy (mic busy)"); sounds.error() }
-            AskCommand.PlayErrorCue -> { probe("ask: error"); sounds.error() }
+            // stopThinking first: the spoken "checking your records" line may still be playing,
+            // and an error cue on top of it says two contradictory things at once.
+            AskCommand.PlayErrorCue -> { probe("ask: error"); sounds.stopThinking(); sounds.error() }
             AskCommand.StartRecording -> if (!recorder.start()) { fail(); return }  // short-circuit: skip stray ArmCapTimer
             AskCommand.StopRecording -> { /* clip read in SendClip */ }
             AskCommand.ArmCapTimer -> armCap()
@@ -137,6 +139,12 @@ class AskManager(
     private suspend fun playAnswer(audioBase64: String) {
         val bytes = runCatching { Base64.decode(audioBase64, Base64.DEFAULT) }.getOrNull()
         if (bytes == null || bytes.isEmpty()) { fail(); return }
+        // The answer wins. `sounds.thinking()` is fire-and-forget on its own player, so an answer
+        // that comes back faster than the spoken line finishes would play across it -- the same
+        // voice talking over itself. Measured reason to expect it: ElevenLabs STT took the clip
+        // stage from 3.7-7.7 s down to 0.9-1.4 s, so a short question can now be answered inside
+        // the ~2 s the line takes to say.
+        sounds.stopThinking()
         probe("ask: playing answer")
         armPlayWatchdog()
         player.play(bytes) { ok ->
