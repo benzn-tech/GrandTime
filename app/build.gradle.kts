@@ -29,8 +29,8 @@ android {
         // the only way to tell them apart was to pull the APK and grep the dex.
         // versionCode is what Android compares on install; versionName is what
         // a person reads in Settings.
-        versionCode = 42
-        versionName = "0.7.16"
+        versionCode = 43
+        versionName = "0.7.17"
         // TODO(A2.5): the vizfield flavours must switch to the NEW Cognito pool in the
         // VizField AWS account once it exists (frozen decision F2 — cross-account reuse is
         // impossible). Until then they share this pool so the app can be exercised on-device;
@@ -143,6 +143,11 @@ dependencies {
     implementation(libs.security.crypto)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.zxing.core)
+    // In-app playback (Files). ExoPlayer plays a recording's segments as ONE playlist -- nothing is
+    // merged on disk -- and decodes through the platform codecs, so there is no native library to
+    // ship and nothing that cares about this device being 32-bit.
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)

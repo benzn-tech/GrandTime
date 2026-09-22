@@ -92,7 +92,7 @@ fun FilesScreen() {
     val scope = rememberCoroutineScope()
     val dao = remember { CaptureDb.get(context.applicationContext).captureRecords() }
     var filter by rememberSaveable { mutableStateOf(MediaFilter.ALL) }
-    var playingAudio by remember { mutableStateOf<CaptureRecord?>(null) }
+    var playing by remember { mutableStateOf<PlaybackRequest?>(null) }
     var detailUnit by remember { mutableStateOf<RecordingUnit?>(null) }
     var menuUnit by remember { mutableStateOf<RecordingUnit?>(null) }
     var deleteUnit by remember { mutableStateOf<RecordingUnit?>(null) }
@@ -181,11 +181,13 @@ fun FilesScreen() {
                         MediaCell(
                             unit = unit,
                             onClick = {
-                                if (unit.isGroup) {
-                                    detailUnit = unit
+                                // One tap plays the whole recording, segments in order. Choosing a
+                                // segment moved to the long-press menu: a recording is what the
+                                // person made, the ~30s parts are how it happens to be stored.
+                                if (unit.representative.kind == "photo") {
+                                    openFile(context, unit.representative)
                                 } else {
-                                    val record = unit.representative
-                                    if (record.kind == "audio") playingAudio = record else openFile(context, record)
+                                    playing = PlaybackRequest(unit)
                                 }
                             },
                             onLongClick = { menuUnit = unit },
@@ -196,14 +198,18 @@ fun FilesScreen() {
         }
     }
 
-    playingAudio?.let { record ->
-        AudioPlayerSheet(record) { playingAudio = null }
+    playing?.let { request ->
+        RecordingPlayerSheet(request.unit, request.startIndex) { playing = null }
     }
 
     detailUnit?.let { unit ->
         RecordingDetailSheet(
             unit = unit,
-            onPlaySegment = { seg -> if (seg.kind == "audio") playingAudio = seg else openFile(context, seg) },
+            // From that segment ON, not that segment alone: the rest of the recording still follows.
+            onPlaySegment = { index ->
+                detailUnit = null
+                playing = PlaybackRequest(unit, index)
+            },
             onDismiss = { detailUnit = null },
         )
     }
@@ -211,6 +217,19 @@ fun FilesScreen() {
     menuUnit?.let { unit ->
         ModalBottomSheet(onDismissRequest = { menuUnit = null }) {
             Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                if (unit.isGroup) {
+                    Text(
+                        "Segments (${unit.segmentCount})",
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                detailUnit = unit
+                                menuUnit = null
+                            }
+                            .padding(horizontal = 24.dp, vertical = 16.dp),
+                    )
+                }
                 Text(
                     "Re-upload",
                     style = MaterialTheme.typography.bodyLarge,
@@ -401,12 +420,12 @@ private fun RecordingUploadStatusBadge(unit: RecordingUnit, modifier: Modifier =
     }
 }
 
-/** Bottom sheet listing a multi-segment recording's parts in order (c0000..), each tappable to
- *  play/open that individual segment file — no merge/playlist, segment-by-segment per the slice's
- *  scope (a true single-file/seamless-playback export is a later slice). */
+/** Bottom sheet listing a multi-segment recording's parts in order (c0000..). Reached from the
+ *  long-press menu; a plain tap on the tile plays the whole recording. Tapping a part here starts
+ *  the same playlist AT that part, so everything after it still plays — nothing is merged on disk. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecordingDetailSheet(unit: RecordingUnit, onPlaySegment: (CaptureRecord) -> Unit, onDismiss: () -> Unit) {
+private fun RecordingDetailSheet(unit: RecordingUnit, onPlaySegment: (Int) -> Unit, onDismiss: () -> Unit) {
     val fs = LocalFsColors.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
         // verticalScroll: at 30s segments a multi-minute recording has many rows; without scroll the
@@ -421,7 +440,7 @@ private fun RecordingDetailSheet(unit: RecordingUnit, onPlaySegment: (CaptureRec
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clickable { onPlaySegment(segment) }
+                        .clickable { onPlaySegment(index) }
                         .padding(vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -443,7 +462,8 @@ private fun RecordingDetailSheet(unit: RecordingUnit, onPlaySegment: (CaptureRec
     }
 }
 
-/** 打开文件用 FileProvider content:// (file:// 在 API24+ 传给外部 app 会崩)。 */
+/** Photos only — video and audio play in the app now (RecordingPlayerSheet). FileProvider
+ *  content:// because file:// crashes the receiving app on API 24+. */
 private fun openFile(context: Context, record: CaptureRecord) {
     val mime = when (record.kind) {
         "video" -> "video/*"
