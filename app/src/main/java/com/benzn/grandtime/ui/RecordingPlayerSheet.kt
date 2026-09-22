@@ -45,7 +45,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.benzn.grandtime.ui.theme.LocalFsColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /** What the Files screen asks the player for: a whole recording, starting at one of its segments. */
@@ -124,6 +126,22 @@ fun RecordingPlayerSheet(unit: RecordingUnit, startIndex: Int = 0, onDismiss: ()
             player.prepare()
             player.playWhenReady = true
         }.onFailure { errorMessage = "Could not play this recording" }
+    }
+
+    // Older recordings can carry no length: a row reconciled from disk whose metadata could not be
+    // read, or one a crash left to be finalized with 0. The bar would then be dead for the whole
+    // recording, and the total would be short by those segments. Read the lengths from the files
+    // themselves -- the same reader the Files screen reconciles with -- rather than waiting for the
+    // player, which only reports a segment once it opens it.
+    LaunchedEffect(unit.representative.id) {
+        if (durations.any { it <= 0L }) {
+            val fromFiles = withContext(Dispatchers.IO) {
+                unit.segments.map { readDurationMillis(it.filePath) ?: 0L }
+            }
+            durations = durations.mapIndexed { index, known ->
+                if (known > 0L) known else fromFiles.getOrElse(index) { 0L }
+            }
+        }
     }
 
     // Ticks the displayed position while playing, and stands aside while the bar is being dragged so
