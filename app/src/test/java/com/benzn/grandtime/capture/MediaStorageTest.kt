@@ -51,4 +51,35 @@ class MediaStorageTest {
         val root = tmp.newFolder("root3")
         assertTrue(MediaStorage({ root }).hasFreeSpace(minBytes = 1L))
     }
+
+    // The F2SP's SD slot sits on an SPI bus that cannot keep up with 1080p video; recording to it
+    // stalled the encoder drain until the low-memory killer took the app (see publicRoot).
+    @Test
+    fun `a mounted SD card is not chosen for new recordings`() {
+        val internal = File("/storage/emulated/0")
+        val card = File("/storage/2D81-13F1")
+        assertEquals(internal, MediaStorage.pickRecordingRoot(internal, listOf(card)))
+        assertEquals(internal, MediaStorage.pickRecordingRoot(internal, emptyList()))
+    }
+
+    @Test
+    fun `a mounted SD card is still scanned, so recordings already on it are not marked missing`() {
+        val internal = File("/storage/emulated/0")
+        val card = File("/storage/2D81-13F1")
+        assertEquals(listOf(internal, card), MediaStorage.scanRoots(internal, listOf(card)))
+        assertEquals("no card, one root", listOf(internal), MediaStorage.scanRoots(internal, emptyList()))
+        assertEquals("never the same root twice", listOf(internal), MediaStorage.scanRoots(internal, listOf(internal)))
+    }
+
+    // Source-level: publicRoot/scanDisk need an Android Context. Pins that the decision tested
+    // above is the one the app actually uses.
+    @Test
+    fun `the app routes recording and scanning through the tested decisions`() {
+        val storage = File("src/main/java/com/benzn/grandtime/capture/MediaStorage.kt").readText()
+        val publicRoot = storage.substring(storage.indexOf("fun publicRoot("), storage.indexOf("fun pickRecordingRoot("))
+        assertTrue(publicRoot.contains("pickRecordingRoot("))
+        val files = File("src/main/java/com/benzn/grandtime/ui/FilesScreen.kt").readText()
+        val scanDisk = files.substring(files.indexOf("internal fun scanDisk("), files.indexOf("internal fun readDurationMillis("))
+        assertTrue("the reconcile must scan the card too", scanDisk.contains("MediaStorage.scanRoots(context)"))
+    }
 }

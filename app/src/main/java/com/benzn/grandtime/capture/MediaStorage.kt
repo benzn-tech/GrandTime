@@ -8,7 +8,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 公共存储:<root>/FieldSight/<folder>/{video,audio,photo}。SD 优先(spec §3)。 */
+/** 公共存储:<root>/FieldSight/<folder>/{video,audio,photo}。Internal storage, not the SD card -- see [publicRoot]. */
 class MediaStorage(
     private val rootProvider: () -> File,
     private val scopeProvider: () -> com.benzn.grandtime.auth.MediaScope =
@@ -42,15 +42,46 @@ class MediaStorage(
     fun hasFreeSpace(minBytes: Long = 200L * 1024 * 1024): Boolean = rootProvider().usableSpace >= minBytes
 
     companion object {
-        /** SD 优先:枚举可移动卷取其目录;无则内置主共享存储。 */
-        fun publicRoot(context: Context): File {
-            val removable = runCatching {
-                val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
-                sm.storageVolumes.firstOrNull { it.isRemovable && it.state == Environment.MEDIA_MOUNTED }
-                    ?.directory
-            }.getOrNull()
-            return removable ?: Environment.getExternalStorageDirectory()
-        }
+        /**
+         * Where new recordings go: internal shared storage, ALWAYS -- even with an SD card mounted.
+         *
+         * WHY. Recordings used to go to the SD card whenever one was mounted. On the F2SP the
+         * card slot hangs off an SPI bus (mmc2 under spi0), and it cannot sustain what 1080p
+         * video needs: 20 Mbps, ~2.4 MB/s, every second of the recording. Measured on a device
+         * with a card (2026-10-12): the muxer's file writes blocked the encoder drain, the
+         * encoder's pending outputs rose by 30 a second (all of them, 4 MB each), the device
+         * ran out of memory within ~15 s of video alone, and the low-memory killer took the
+         * app. A photo during video wrote three more large files to the same card and got
+         * there sooner -- hence "photos are slow, then it crashes". The card then failed its
+         * boot-time filesystem check by timing out. Same device, same build, recording to
+         * internal storage: video + 8 photos, no stall, ~0.9 s per photo.
+         *
+         * Recordings already on a card stay where they are and are still scanned -- see
+         * [scanRoots].
+         */
+        fun publicRoot(context: Context): File =
+            pickRecordingRoot(Environment.getExternalStorageDirectory(), mountedRemovableRoots(context))
+
+        /** The decision itself, apart from the platform lookups so it can be tested. The mounted
+         *  cards are passed in to make the point explicit: they are not chosen. */
+        @Suppress("UNUSED_PARAMETER")
+        fun pickRecordingRoot(internal: File, mountedCards: List<File>): File = internal
+
+        /** Every root that can hold recordings: the one new recordings go to, then any mounted
+         *  card holding recordings from before [publicRoot] stopped choosing cards. The Files
+         *  reconcile marks a row missing when its file is not under a scanned root, so scanning
+         *  the recording root alone would quietly stop the upload of every unsent recording
+         *  still on a card. */
+        fun scanRoots(recordingRoot: File, mountedCards: List<File>): List<File> =
+            (listOf(recordingRoot) + mountedCards).distinctBy { it.absolutePath }
+
+        fun scanRoots(context: Context): List<File> = scanRoots(publicRoot(context), mountedRemovableRoots(context))
+
+        private fun mountedRemovableRoots(context: Context): List<File> = runCatching {
+            val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
+            sm.storageVolumes.filter { it.isRemovable && it.state == Environment.MEDIA_MOUNTED }
+                .mapNotNull { it.directory }
+        }.getOrDefault(emptyList())
 
         /** 集中 <root>/FieldSight/<folder>/<kindDir> 拼路径的唯一出处(登出=device,登录=<user>_<sub>)。 */
         /**
@@ -58,9 +89,9 @@ class MediaStorage(
          *
          * Exists because the SD-card fault cannot be diagnosed from a device without a card. This
          * ROM (MediaTek mt6768) declares two SD slots in its fstab and supports adoptable storage,
-         * and a card set up as "phone storage" becomes a PRIVATE volume that [publicRoot] skips on
-         * purpose -- while a card set up as "portable" is picked. Those are different faults with
-         * different fixes, and only a device holding a card can say which one it has.
+         * and a card set up as "phone storage" becomes a PRIVATE volume. Since 2026-10-12 no card
+         * is chosen for recording (see [publicRoot]); the line still shows which volumes a device
+         * has and in what state, e.g. a card the system could not mount.
          */
         fun describeVolumes(context: Context): String = runCatching {
             val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
