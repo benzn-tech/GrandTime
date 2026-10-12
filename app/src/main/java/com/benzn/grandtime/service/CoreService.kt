@@ -82,7 +82,9 @@ class CoreService : LifecycleService() {
     private lateinit var probeLog: ProbeLog
     private lateinit var overlayGuard: OverlayGuard
     private lateinit var captureWakeLock: CaptureWakeLock
-    private val led = com.benzn.grandtime.hardware.LedController()
+    // Lazy: the police_system channel needs a Context, which a Service does not have while its
+    // fields are being initialised.
+    private val led by lazy { com.benzn.grandtime.hardware.LedController(applicationContext) }
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     override fun onCreate() {
@@ -360,7 +362,8 @@ class CoreService : LifecycleService() {
                 if (recording) captureWakeLock.acquire() else captureWakeLock.release()
             }
         }
-        // SP3b 物理灯(2 号灯,sysfs)1Hz 闪:录像红 > 录音黄 > 待机蓝。节点不可写则不启。
+        // SP3b 物理灯(2 号灯)1Hz 闪:录像红 > 录音黄 > 待机蓝。sysfs 或 police_system,都不可用则不启。
+        probe("indicator light channel: " + led.channel)
         if (led.available) {
             lifecycleScope.launch {
                 try {
