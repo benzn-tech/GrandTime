@@ -215,9 +215,8 @@ class CoreService : LifecycleService() {
                 // into its .wav. Must run before the rescan loop below so the now-present file
                 // passes the File(rec.filePath).exists() check and gets enqueued.
                 val recovered = withContext(Dispatchers.IO) {
-                    com.benzn.grandtime.capture.AudioRecoverer.recover(
-                        com.benzn.grandtime.capture.MediaStorage.publicRoot(applicationContext),
-                    )
+                    com.benzn.grandtime.capture.MediaStorage.scanRoots(applicationContext)
+                        .sumOf { com.benzn.grandtime.capture.AudioRecoverer.recover(it) }
                 }
                 if (recovered > 0) probe("recovered $recovered interrupted audio recording(s)")
                 val dao = CaptureDb.get(applicationContext).captureRecords()
