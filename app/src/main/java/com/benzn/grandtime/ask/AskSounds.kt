@@ -34,14 +34,51 @@ class AskSounds(context: Context) {
         .build()
 
     private val listening = pool.load(context, R.raw.ask_listening, 1)
-    private val thinking = pool.load(context, R.raw.ask_thinking, 1)
+    private val thinkingTone = pool.load(context, R.raw.ask_thinking, 1)
     private val error = pool.load(context, R.raw.ask_error, 1)
     private val received = pool.load(context, R.raw.voice_received, 1)
 
     private var askStart: MediaPlayer? = null
+    private var searching: MediaPlayer? = null
 
     fun listening() { pool.play(listening, 1f, 1f, 1, 0, 1f) }
-    fun thinking() { pool.play(thinking, 1f, 1f, 1, 0, 1f) }
+
+    /**
+     * Says out loud that the question landed, over the seconds the backend needs.
+     *
+     * A tone already said "heard you"; it could not say what was happening. The wait after the key
+     * is released is 8-10 s of silence today (STT, then retrieval, then the model, then speech),
+     * and silence is indistinguishable from the device having missed the press -- which is the
+     * moment an operator asks it again and doubles their own wait.
+     *
+     * `ask_searching` is James at speed 1.10 through eleven_v3_conversational: the SAME voice,
+     * model and speed the answer itself arrives in, so this reads as the product starting to
+     * answer rather than as a second person interrupting.
+     *
+     * NOT awaited, unlike [askStartAndAwait] -- nothing downstream waits on it, the microphone is
+     * already closed, and awaiting would add its own 2 s to the wait it exists to cover. The tone
+     * remains the fallback: a missing or unplayable asset must still tell the operator something.
+     */
+    fun thinking() {
+        val spoke = runCatching {
+            releaseSearching()
+            val p = MediaPlayer.create(appContext, R.raw.ask_searching) ?: return@runCatching false
+            p.setOnCompletionListener { releaseSearching() }
+            p.setOnErrorListener { _, _, _ -> releaseSearching(); true }
+            searching = p
+            p.start()
+            true
+        }.getOrDefault(false)
+        if (!spoke) pool.play(thinkingTone, 1f, 1f, 1, 0, 1f)
+    }
+
+    /**
+     * Cut the line short. The answer plays through [AskPlayer], a different player on a different
+     * stream, so an answer that arrives while this is still speaking would play OVER it -- one
+     * voice talking across itself. Every path that produces sound after [thinking] calls this
+     * first, and calling it when nothing is playing is a no-op.
+     */
+    fun stopThinking() { releaseSearching() }
     fun error() { pool.play(error, 1f, 1f, 1, 0, 1f) }
     fun received() { pool.play(received, 1f, 1f, 1, 0, 1f) }
 
@@ -80,8 +117,15 @@ class AskSounds(context: Context) {
         askStart = null
     }
 
+    private fun releaseSearching() {
+        searching?.runCatching { stop() }
+        searching?.release()
+        searching = null
+    }
+
     fun release() {
         releaseAskStart()
+        releaseSearching()
         pool.release()
     }
 

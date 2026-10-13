@@ -48,6 +48,17 @@ class AskManager(
     private var playTimer: Job? = null
     /** Bumped by each listening cue, so a cue that outlived its own ask cannot open the mic. */
     private var listeningCueGeneration = 0
+    /** "Got it. Checking your records now." -- see [PendingCue] for why it is not a bare play. */
+    private val filler = PendingCue(scope, FILLER_DELAY_MS) { sounds.thinking() }
+
+    /**
+     * Silence the filler whether it is still pending or already speaking. Every sound that follows
+     * the release -- the answer, an error cue -- goes through here first.
+     */
+    private fun stopFiller() {
+        filler.cancel()
+        sounds.stopThinking()
+    }
 
     private val videoRecording: Boolean
         get() = AppState.captureState.value is CaptureState.RecordingVideo
@@ -85,13 +96,25 @@ class AskManager(
                 // suspends: a press released during the cue has already moved the ask on (to
                 // Thinking, then to an error with no clip), and a new press may have started
                 // another ask. Either way THIS ask must not go on to open the microphone.
+                //
+                // The pause before the cue is the owner's call (2026-10-13): "Ready. Go ahead."
+                // landing the instant the key went down felt rushed. It sits BEFORE the cue and
+                // OUTSIDE askStartAndAwait, so the cue's own 3 s stuck-player guard keeps meaning
+                // what it says. A press released during the pause bails here, before the cue is
+                // spoken -- otherwise the device would say "go ahead" to someone who already let go.
                 val generation = ++listeningCueGeneration
+                delay(LISTENING_CUE_DELAY_MS)
+                if (generation != listeningCueGeneration || core.state != AskState.Listening) return
                 sounds.askStartAndAwait()
                 if (generation != listeningCueGeneration || core.state != AskState.Listening) return
             }
-            AskCommand.PlayThinkingCue -> sounds.thinking()
+            // Scheduled, never awaited: SendClip is the next command in this same list, and
+            // waiting here would add the pause to the wait the line exists to cover.
+            AskCommand.PlayThinkingCue -> filler.schedule()
             AskCommand.PlayBusyCue -> { probe("ask: busy (mic busy)"); sounds.error() }
-            AskCommand.PlayErrorCue -> { probe("ask: error"); sounds.error() }
+            // stopFiller first: the spoken "checking your records" line may be pending or playing,
+            // and an error cue on top of it says two contradictory things at once.
+            AskCommand.PlayErrorCue -> { probe("ask: error"); stopFiller(); sounds.error() }
             AskCommand.StartRecording -> if (!recorder.start()) { fail(); return }  // short-circuit: skip stray ArmCapTimer
             AskCommand.StopRecording -> { /* clip read in SendClip */ }
             AskCommand.ArmCapTimer -> armCap()
@@ -137,6 +160,12 @@ class AskManager(
     private suspend fun playAnswer(audioBase64: String) {
         val bytes = runCatching { Base64.decode(audioBase64, Base64.DEFAULT) }.getOrNull()
         if (bytes == null || bytes.isEmpty()) { fail(); return }
+        // The answer wins. The filler plays on its own player, so an answer that comes back faster
+        // than the spoken line finishes would play across it -- the same voice talking over itself.
+        // And since the line now waits half a second before starting, an answer inside that window
+        // would otherwise be FOLLOWED by "checking your records now". Measured reason to expect a
+        // fast answer: ElevenLabs STT took the clip stage from 3.7-7.7 s down to 0.9-1.4 s.
+        stopFiller()
         probe("ask: playing answer")
         armPlayWatchdog()
         player.play(bytes) { ok ->
@@ -190,6 +219,7 @@ class AskManager(
     fun shutdown() {
         capTimer?.cancel()
         playTimer?.cancel()
+        filler.cancel()
         // The ONLY release on this path: player.release() below drops the pending onDone, so no
         // command list is ever produced to carry a ReleaseMicToCapture.
         micHandover.end()
@@ -202,5 +232,9 @@ class AskManager(
         const val CAP_MILLIS = 15_000L  // recording cap (spec §9)
         /** Playback watchdog. Not a latency budget — see [armPlayWatchdog]. */
         const val PLAY_CAP_MILLIS = 120_000L
+        /** Pause between the key going down and "Ready. Go ahead." Owner, 2026-10-13: too rushed. */
+        const val LISTENING_CUE_DELAY_MS = 500L
+        /** Pause between the key coming up and "Got it. Checking…". Owner, 2026-10-13: same reason. */
+        const val FILLER_DELAY_MS = 500L
     }
 }
