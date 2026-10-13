@@ -40,6 +40,43 @@ class AskCueBeforeMicTest {
     }
 
     @Test
+    fun `the pause comes before the cue, and a release during it bails before the cue is spoken`() {
+        val branch = cueBranch()
+        val pause = branch.indexOf("delay(LISTENING_CUE_DELAY_MS)")
+        val cue = branch.indexOf("askStartAndAwait()")
+        assertTrue("the half-second pause is gone", pause >= 0)
+        assertTrue("the pause must come BEFORE the cue, not after it", pause < cue)
+        val between = branch.substring(pause, cue)
+        assertTrue(
+            "a press released during the pause must not then hear 'go ahead'",
+            between.contains("core.state != AskState.Listening"),
+        )
+    }
+
+    @Test
+    fun `the filler is scheduled, never played inline or awaited`() {
+        val start = manager.indexOf("AskCommand.PlayThinkingCue ->")
+        val branch = manager.substring(start, manager.indexOf("\n", start))
+        assertTrue("SendClip follows in the same list; waiting here delays the question", branch.contains("filler.schedule()"))
+        assertTrue("an inline play would skip the pause", !branch.contains("sounds.thinking()"))
+    }
+
+    @Test
+    fun `everything that sounds after the release silences a pending filler first`() {
+        val error = manager.substring(manager.indexOf("AskCommand.PlayErrorCue ->"))
+        assertTrue("error cue", error.substring(0, error.indexOf("\n")).contains("stopFiller()"))
+
+        val answer = manager.substring(manager.indexOf("private suspend fun playAnswer"))
+        assertTrue("answer", answer.substring(0, answer.indexOf("player.play(")).contains("stopFiller()"))
+
+        // stopFiller must reach BOTH halves: the start that has not happened, and the player.
+        val stop = manager.substring(manager.indexOf("private fun stopFiller()"))
+        val body = stop.substring(0, stop.indexOf("}"))
+        assertTrue("the pending start", body.contains("filler.cancel()"))
+        assertTrue("the line already speaking", body.contains("sounds.stopThinking()"))
+    }
+
+    @Test
     fun `the wait can always give up`() {
         // A stuck player must not hold the ask in Listening with no microphone open.
         assertTrue(sounds.contains("withTimeoutOrNull"))
