@@ -14,7 +14,13 @@ import java.io.File
  */
 class AskCueBeforeMicTest {
 
-    private val manager = File("src/main/java/com/benzn/grandtime/ask/AskManager.kt").readText()
+    // Comments stripped before any check: these assertions look for code by its text, and a call
+    // that has been commented out still contains that text. Measured, not hypothetical -- with
+    // `stopFiller()` commented out of playAnswer, the unstripped check stayed green (2026-10-14).
+    private val manager = stripComments(File("src/main/java/com/benzn/grandtime/ask/AskManager.kt").readText())
+
+    private fun stripComments(src: String): String =
+        src.replace(Regex("/\\*[\\s\\S]*?\\*/"), "").replace(Regex("//[^\\n]*"), "")
     private val sounds = File("src/main/java/com/benzn/grandtime/ask/AskSounds.kt").readText()
 
     private fun cueBranch(): String {
