@@ -41,7 +41,6 @@ private class FakeTurnAudio(private val scope: TestScope) : TurnAudio {
     var stopped = 0
     var cueMs = 2_000L
     private fun t() = scope.currentTime
-    override fun earcon() { log += "earcon@${t()}" }
     private suspend fun cue(name: String) {
         log += "$name@${t()}"; delay(cueMs); log += "$name-end@${t()}"
     }
@@ -62,13 +61,62 @@ class AskTurnRunnerTest {
 
     private fun done() = AskApiClient.TurnStatus.Done("q", "a", answer)
 
-    private fun runner(api: TurnApi, audio: TurnAudio, onId: (String) -> Unit = {}) =
-        AskTurnRunner(api, audio, onId)
+    private fun TestScope.runner(api: TurnApi, audio: TurnAudio, onId: (String) -> Unit = {}) =
+        TestRunner(AskTurnRunner(api, audio, onId, now = { currentTime }), this)
 
-    @Test fun earcon_plays_first_and_immediately() = runTest {
+    /** Releases "now" unless the test says otherwise. */
+    private class TestRunner(val r: AskTurnRunner, val scope: TestScope) {
+        suspend fun run(clip: ByteArray, releasedAtMs: Long = scope.currentTime) = r.run(clip, releasedAtMs)
+    }
+
+    @Test fun the_window_runs_from_the_release_not_from_the_call() = runTest {
         val audio = FakeTurnAudio(this)
-        runner(FakeTurnApi(startResult = started(), results = listOf(0L to done())), audio).run(clip)
-        assertEquals("earcon@0", audio.log.first())
+        // Released 1000 ms ago (token refresh etc.): only 3500 ms of the window are left.
+        val api = FakeTurnApi(startDelayMs = 4_000, startResult = started(), results = listOf(0L to done()))
+        runner(api, audio).run(clip, releasedAtMs = currentTime - 1_000)
+        assertTrue(audio.log.contains("filler@3500"))
+        assertTrue(audio.log.none { it.startsWith("restatement") })
+    }
+
+    @Test fun three_consecutive_poll_errors_fail_the_turn() = runTest {
+        val api = FakeTurnApi(startResult = started(), results = listOf(0L to AskApiClient.TurnStatus.NetworkError))
+        val out = runner(api, FakeTurnAudio(this)).run(clip, currentTime)
+        assertEquals(TurnOutcome.Failed("network"), out)
+        assertEquals(3, api.resultCalls)
+        assertEquals("1 s between retries", 2_000L, currentTime)
+    }
+
+    @Test fun a_network_error_then_done_still_answers() = runTest {
+        val api = FakeTurnApi(
+            startResult = started(),
+            results = listOf(0L to AskApiClient.TurnStatus.NetworkError, 0L to done()),
+        )
+        val out = runner(api, FakeTurnAudio(this)).run(clip, currentTime)
+        assertTrue(out is TurnOutcome.Answer)
+        assertEquals(2, api.resultCalls)
+    }
+
+    @Test fun errors_must_be_consecutive_to_count() = runTest {
+        val e = AskApiClient.TurnStatus.NetworkError
+        val api = FakeTurnApi(
+            startResult = started(),
+            results = listOf(0L to e, 0L to e, 0L to AskApiClient.TurnStatus.Pending, 0L to e, 0L to e, 0L to done()),
+        )
+        assertTrue(runner(api, FakeTurnAudio(this)).run(clip, currentTime) is TurnOutcome.Answer)
+    }
+
+    @Test fun not_found_auth_and_cancelled_are_never_retried() = runTest {
+        for (s in listOf(AskApiClient.TurnStatus.NotFound, AskApiClient.TurnStatus.AuthExpired, AskApiClient.TurnStatus.Cancelled)) {
+            val api = FakeTurnApi(startResult = started(), results = listOf(0L to s))
+            assertTrue(runner(api, FakeTurnAudio(this)).run(clip, currentTime) is TurnOutcome.Failed)
+            assertEquals(1, api.resultCalls)
+        }
+    }
+
+    @Test fun no_route_after_the_filler_played_says_so() = runTest {
+        val api = FakeTurnApi(startDelayMs = 6_000, startResult = AskApiClient.StartResult.NoRoute, results = listOf())
+        val out = runner(api, FakeTurnAudio(this)).run(clip, currentTime) as TurnOutcome.NoRoute
+        assertTrue(out.fillerPlayed)
     }
 
     @Test fun restatement_inside_the_window_plays_and_the_filler_never_does() = runTest {
@@ -147,7 +195,8 @@ class AskTurnRunnerTest {
     @Test fun no_route_is_reported_for_the_old_path() = runTest {
         val audio = FakeTurnAudio(this)
         val out = runner(FakeTurnApi(startResult = AskApiClient.StartResult.NoRoute, results = listOf()), audio).run(clip)
-        assertEquals(TurnOutcome.NoRoute, out)
+        assertTrue(out is TurnOutcome.NoRoute)
+        assertTrue("no filler was played", !(out as TurnOutcome.NoRoute).fillerPlayed)
         assertEquals(1, audio.stopped)
     }
 

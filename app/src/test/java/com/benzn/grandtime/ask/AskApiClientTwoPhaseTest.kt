@@ -219,7 +219,7 @@ class AskApiClientTwoPhaseTest {
         assertTrue(r(404, """{"error":"not found"}""") is AskApiClient.TurnStatus.NotFound)
         assertTrue(r(401, "") is AskApiClient.TurnStatus.AuthExpired)
         assertTrue(r(400, """{"error":"bad turn"}""") is AskApiClient.TurnStatus.Failed)
-        assertTrue(r(502, "") is AskApiClient.TurnStatus.Failed)
+        assertTrue(r(502, "") is AskApiClient.TurnStatus.NetworkError)
         assertTrue(r(200, "garbage") is AskApiClient.TurnStatus.Failed)
         assertTrue(r(200, """{"status":"weird"}""") is AskApiClient.TurnStatus.Failed)
     }
@@ -239,9 +239,9 @@ class AskApiClientTwoPhaseTest {
         assertTrue(client(FakeAsyncHttp(HttpResult(200, body))).result("ID", turn, "pending") is AskApiClient.TurnStatus.Failed)
     }
 
-    @Test fun result_network_exception_is_failed() = runTest {
+    @Test fun result_network_exception_is_a_network_error() = runTest {
         val down = FakeAsyncHttp().apply { throwOnCall = true }
-        assertTrue(client(down).result("ID", turn, "pending") is AskApiClient.TurnStatus.Failed)
+        assertTrue(client(down).result("ID", turn, "pending") is AskApiClient.TurnStatus.NetworkError)
     }
 
     // ---- cancel ----

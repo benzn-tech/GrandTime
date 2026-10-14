@@ -37,4 +37,18 @@ class AskManagerStaleGuardTest {
         assertTrue(b.indexOf("generation != core.generation") < b.indexOf("core.onAnswer("))
         assertTrue(b.contains("core.onAnswer(") && b.substringAfter("core.onAnswer(").substringBefore(")").contains("generation"))
     }
+
+    @Test fun the_turn_result_is_dropped_when_stale_before_any_outcome_is_acted_on() {
+        val b = body("private suspend fun sendClip")
+        val run = b.indexOf("runner.run(")
+        val guard = b.indexOf("generation != core.generation", run)
+        assertTrue(run >= 0 && guard > run)
+        assertTrue(guard < b.indexOf("when (outcome)"))
+    }
+
+    @Test fun an_old_turns_cleanup_only_silences_audio_it_still_owns() {
+        val b = body("private fun turnAudio")
+        val stop = b.substring(b.indexOf("override fun stopAll()"))
+        assertTrue(stop.indexOf("generation != core.generation") in 0 until stop.indexOf("stopFiller()"))
+    }
 }

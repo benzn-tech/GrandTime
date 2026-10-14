@@ -64,6 +64,8 @@ class AskApiClient(
         data class Failed(val message: String) : TurnStatus
         data object NotFound : TurnStatus
         data object AuthExpired : TurnStatus
+        /** IO failure or HTTP 5xx: the poll itself broke, the turn may be fine. Worth retrying. */
+        data object NetworkError : TurnStatus
         class Done(val transcript: String, val answerText: String, val wav: ByteArray) : TurnStatus
     }
 
@@ -101,7 +103,7 @@ class AskApiClient(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            return TurnStatus.Failed("network")
+            return TurnStatus.NetworkError
         }
         return withContext(Dispatchers.Default) { parseResult(r) }
     }
@@ -173,6 +175,7 @@ class AskApiClient(
         fun parseResult(r: HttpResult): TurnStatus {
             if (r.code == 401) return TurnStatus.AuthExpired
             if (r.code == 404) return TurnStatus.NotFound
+            if (r.code >= 500) return TurnStatus.NetworkError
             if (r.code !in 200..299) return TurnStatus.Failed("HTTP ${r.code}")
             val json = jsonOrNull(r.body) ?: return TurnStatus.Failed("malformed response")
             return when (json.optString("status")) {

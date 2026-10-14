@@ -1,6 +1,7 @@
 package com.benzn.grandtime.ask
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Base64
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureState
@@ -51,6 +52,8 @@ class AskManager(
     private var playTimer: Job? = null
     /** The in-flight send. Tracked so an interrupt ([AskCommand.CancelTurn]) can abandon it. */
     private var turnJob: Job? = null
+    /** When the key came up (elapsedRealtime). The restatement window and the cap run from here. */
+    private var releasedAt = 0L
     /** Bumped by each listening cue, so a cue that outlived its own ask cannot open the mic. */
     private var listeningCueGeneration = 0
     /** "Got it. Checking your records now." -- see [PendingCue] for why it is not a bare play. */
@@ -113,9 +116,10 @@ class AskManager(
                 sounds.askStartAndAwait()
                 if (generation != listeningCueGeneration || core.state != AskState.Listening) return
             }
-            // Scheduled, never awaited: SendClip is the next command in this same list, and
-            // waiting here would add the pause to the wait the line exists to cover.
-            AskCommand.PlayThinkingCue -> filler.schedule()
+            // The earcon says "heard you" at the moment of release. Never awaited: SendClip is the
+            // next command in this same list, and waiting here would delay the question. The spoken
+            // filler belongs to the turn (restatement window) or to the NoRoute fallback.
+            AskCommand.PlayThinkingCue -> { releasedAt = SystemClock.elapsedRealtime(); sounds.earcon() }
             AskCommand.PlayBusyCue -> { probe("ask: busy (mic busy)"); sounds.error() }
             // stopFiller first: the spoken "checking your records" line may be pending or playing,
             // and an error cue on top of it says two contradictory things at once.
@@ -174,12 +178,15 @@ class AskManager(
         }
     }
 
-    private val turnAudio = object : TurnAudio {
-        override fun earcon() = sounds.earcon()
+    /** [generation]: only the ask that owns the audio may silence it; an old turn's cleanup must not. */
+    private fun turnAudio(generation: Int) = object : TurnAudio {
         override suspend fun playFiller() = sounds.fillerAndAwait()
         override suspend fun playRestatement(wav: ByteArray) = playWavAndAwait(wav)
         override suspend fun playOnlineCue() = sounds.searchingOnlineAndAwait()
-        override fun stopAll() { stopFiller(); player.release() }
+        override fun stopAll() {
+            if (generation != core.generation) return
+            stopFiller(); player.release()
+        }
     }
 
     /** Plays a clip on [player] and returns when it ends. Gives up after [RESTATEMENT_PLAY_CAP_MS]. */
@@ -196,9 +203,6 @@ class AskManager(
         // The ask this send belongs to. Everything below that suspends re-checks it: an interrupt
         // in the meantime has started a new ask, and this one must neither answer nor fail it.
         val generation = core.generation
-        // The two-phase turn replaces the half-second-delayed filler with an immediate earcon and
-        // a restatement window; only the old path (NoRoute) wants the delayed filler back.
-        filler.cancel()
         val clip = recorder.stop()
         if (clip == null) { fail(); return }
         val bytes = runCatching { clip.readBytes() }.getOrNull()
@@ -207,8 +211,8 @@ class AskManager(
         val token = auth.freshIdToken()
         if (generation != core.generation) return
         if (token == null) { fail(); return }
-        val runner = AskTurnRunner(turnApi, turnAudio, onTurnId = { probe("ask: turn $it") })
-        val outcome = runner.run(bytes)
+        val runner = AskTurnRunner(turnApi, turnAudio(generation), onTurnId = { probe("ask: turn $it") })
+        val outcome = runner.run(bytes, releasedAt)
         if (generation != core.generation) return  // interrupted while the turn was running
         when (outcome) {
             is TurnOutcome.Answer -> {
@@ -216,10 +220,10 @@ class AskManager(
                 if (generation != core.generation) return
                 execute(core.onAnswer(b64, generation))
             }
-            TurnOutcome.NoRoute -> {
+            is TurnOutcome.NoRoute -> {
                 // Backend without the new routes: today's single call, with today's filler.
                 probe("ask: no two-phase route, using /ask/voice")
-                filler.schedule()
+                if (!outcome.fillerPlayed) filler.schedule()
                 legacyAsk(token, bytes, generation)
             }
             is TurnOutcome.Failed -> { probe("ask: turn failed (${outcome.reason})"); fail() }
