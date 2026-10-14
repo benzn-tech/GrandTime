@@ -71,10 +71,10 @@ class AskTurnRunnerTest {
 
     @Test fun the_window_runs_from_the_release_not_from_the_call() = runTest {
         val audio = FakeTurnAudio(this)
-        // Released 1000 ms ago (token refresh etc.): only 3500 ms of the window are left.
-        val api = FakeTurnApi(startDelayMs = 4_000, startResult = started(), results = listOf(0L to done()))
+        // Released 1000 ms ago (token refresh etc.): only 4000 ms of the window are left.
+        val api = FakeTurnApi(startDelayMs = 4_500, startResult = started(), results = listOf(0L to done()))
         runner(api, audio).run(clip, releasedAtMs = currentTime - 1_000)
-        assertTrue(audio.log.contains("filler@3500"))
+        assertTrue(audio.log.contains("filler@4000"))
         assertTrue(audio.log.none { it.startsWith("restatement") })
     }
 
@@ -131,7 +131,7 @@ class AskTurnRunnerTest {
         val audio = FakeTurnAudio(this)
         val api = FakeTurnApi(startDelayMs = 6_000, startResult = started(), results = listOf(0L to done()))
         runner(api, audio).run(clip)
-        assertTrue(audio.log.contains("filler@4500"))
+        assertTrue(audio.log.contains("filler@5000"))
         assertTrue("late restatement dropped", audio.log.none { it.startsWith("restatement") })
     }
 

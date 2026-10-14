@@ -160,8 +160,8 @@ internal class AskTurnRunner(
     }
 
     companion object {
-        /** To be tuned on TEST from the server's start_total (spec section 9). */
-        const val RESTATE_WINDOW_MS = 4_500L
+        /** Tuned on TEST 2026-10-15: warm start round trip 3.4-4.3 s (server start_total 2.3-3.2 s). */
+        const val RESTATE_WINDOW_MS = 5_000L
         /** From release; at the cap the turn is cancelled and the error cue plays. */
         const val TURN_CAP_MS = 60_000L
         /** Retries after a broken poll: three consecutive errors fail the turn. */
