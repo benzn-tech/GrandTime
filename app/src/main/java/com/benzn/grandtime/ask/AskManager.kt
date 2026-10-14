@@ -46,6 +46,8 @@ class AskManager(
     private var capTimer: Job? = null
     /** Watchdog for a playback that never calls back. See [AskCore.onPlaybackTimeout]. */
     private var playTimer: Job? = null
+    /** The in-flight send. Tracked so an interrupt ([AskCommand.CancelTurn]) can abandon it. */
+    private var turnJob: Job? = null
     /** Bumped by each listening cue, so a cue that outlived its own ask cannot open the mic. */
     private var listeningCueGeneration = 0
     /** "Got it. Checking your records now." -- see [PendingCue] for why it is not a bare play. */
@@ -119,7 +121,16 @@ class AskManager(
             AskCommand.StopRecording -> { /* clip read in SendClip */ }
             AskCommand.ArmCapTimer -> armCap()
             AskCommand.CancelCapTimer -> { capTimer?.cancel(); capTimer = null }
-            AskCommand.SendClip -> sendClip()
+            // Own job, so an interrupt can cancel it; SendClip is always last in its list.
+            AskCommand.SendClip -> turnJob = scope.launch { sendClip() }
+            AskCommand.CancelTurn -> { probe("ask: interrupt"); turnJob?.cancel(); turnJob = null }
+            AskCommand.StopAllAudio -> {
+                playTimer?.cancel(); playTimer = null
+                stopFiller()
+                // Drops the pending completion callback, so the abandoned answer cannot report
+                // "done" into the new ask.
+                player.release()
+            }
             AskCommand.AcquireMicFromCapture -> { probe("ask: borrow mic"); micHandover.begin() }
             AskCommand.ReleaseMicToCapture -> { probe("ask: return mic"); micHandover.end() }
             is AskCommand.PlayAnswer -> playAnswer(cmd.audioBase64)
@@ -142,17 +153,22 @@ class AskManager(
     }
 
     private suspend fun sendClip() {
+        // The ask this send belongs to. Everything below that suspends re-checks it: an interrupt
+        // in the meantime has started a new ask, and this one must neither answer nor fail it.
+        val generation = core.generation
         val clip = recorder.stop()
         if (clip == null) { fail(); return }
         val bytes = runCatching { clip.readBytes() }.getOrNull()
         clip.delete()
         if (bytes == null || bytes.isEmpty()) { fail(); return }
         val token = auth.freshIdToken()
+        if (generation != core.generation) return
         if (token == null) { fail(); return }
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         val result = withContext(Dispatchers.IO) { api.ask(token, b64, "wav") }
+        if (generation != core.generation) return  // interrupted while the request was out
         when (result) {
-            is AskApiClient.AskResult.Ok -> execute(core.onAnswer(result.audioBase64))
+            is AskApiClient.AskResult.Ok -> execute(core.onAnswer(result.audioBase64, generation))
             else -> { probe("ask: send failed ($result)"); fail() }
         }
     }
@@ -217,6 +233,7 @@ class AskManager(
     }
 
     fun shutdown() {
+        turnJob?.cancel()
         capTimer?.cancel()
         playTimer?.cancel()
         filler.cancel()
