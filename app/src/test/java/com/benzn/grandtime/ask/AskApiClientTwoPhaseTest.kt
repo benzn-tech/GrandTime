@@ -204,7 +204,7 @@ class AskApiClientTwoPhaseTest {
         client(http).result("ID", turn, "searching_web")
         assertEquals("$base/ask/voice/result?turn=$turn&since=searching_web", http.lastUrl)
         assertEquals("ID", http.lastToken)
-        assertEquals(30_000L, http.lastReadTimeoutMs)
+        assertEquals(35_000L, http.lastReadTimeoutMs)
     }
 
     @Test fun result_parses_every_status() {

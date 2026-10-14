@@ -51,7 +51,7 @@ class AskCoreTest {
     // voice features are dead until the service restarts. These pin the escape hatch.
     @Test fun playback_timeout_from_playing_ends_the_ask() {
         val c = core()
-        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         assertEquals(AskState.Playing, c.state)
         val cmds = c.onPlaybackTimeout()
         assertEquals(AskState.Idle, c.state)
@@ -62,7 +62,7 @@ class AskCoreTest {
      *  microphone back" — using it here would report success for an answer nobody heard. */
     @Test fun playback_timeout_buzzes_refusal_not_completion() {
         val c = core()
-        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         val cmds = c.onPlaybackTimeout()
         assertFalse(cmds.contains(AskCommand.Vibrate(VibePattern.LONG)))
     }
@@ -73,7 +73,7 @@ class AskCoreTest {
      *  it would release a microphone borrow belonging to the NEXT exchange. */
     @Test fun a_timeout_arriving_after_a_normal_finish_does_nothing() {
         val c = core()
-        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         c.onPlaybackDone()
         assertEquals(AskState.Idle, c.state)
         assertEquals(emptyList<AskCommand>(), c.onPlaybackTimeout())
@@ -97,7 +97,7 @@ class AskCoreTest {
      *  feature is not dead until the service restarts. */
     @Test fun a_new_ask_works_after_a_playback_timeout() {
         val c = core()
-        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = false); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         c.onPlaybackTimeout()
         assertTrue(c.onPttDown(videoRecording = false).contains(AskCommand.StartRecording))
         assertEquals(AskState.Listening, c.state)
@@ -165,7 +165,7 @@ class AskCoreTest {
      *  something that is not true yet. */
     @Test fun playback_done_releases_before_the_long_buzz() {
         val c = core()
-        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         val cmds = c.onPlaybackDone()
         assertTrue(cmds.contains(AskCommand.ReleaseMicToCapture))
         assertTrue(cmds.indexOf(AskCommand.ReleaseMicToCapture)
@@ -181,7 +181,7 @@ class AskCoreTest {
 
     @Test fun playback_timeout_releases_the_borrow() {
         val c = core()
-        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         assertTrue(c.onPlaybackTimeout().contains(AskCommand.ReleaseMicToCapture))
     }
 
@@ -194,7 +194,7 @@ class AskCoreTest {
 
     @Test fun a_borrow_is_released_exactly_once() {
         val c = core()
-        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         assertTrue(c.onPlaybackDone().contains(AskCommand.ReleaseMicToCapture))
         assertFalse("the borrow already ended", c.onError().contains(AskCommand.ReleaseMicToCapture))
     }
@@ -202,14 +202,14 @@ class AskCoreTest {
     /** A second exchange that borrows nothing must not inherit the first one's release. */
     @Test fun a_later_ask_without_video_does_not_release() {
         val c = core()
-        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ=="); c.onPlaybackDone()
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==", c.generation); c.onPlaybackDone()
         c.onPttDown(videoRecording = false)
         assertFalse(c.onError().contains(AskCommand.ReleaseMicToCapture))
     }
 
     @Test fun a_press_while_playing_is_an_interrupt_that_does_not_acquire_again() {
         val c = core()
-        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==")
+        c.onPttDown(videoRecording = true); c.onPttUp(); c.onAnswer("QQ==", c.generation)
         assertFalse(c.onPttDown(videoRecording = true).contains(AskCommand.AcquireMicFromCapture))
     }
 
@@ -255,7 +255,7 @@ class AskCoreTest {
 
     @Test fun answer_while_thinking_plays_and_goes_playing() {
         val c = core().apply { onPttDown(false); onPttUp() }
-        val cmds = c.onAnswer("UklGRg==")
+        val cmds = c.onAnswer("UklGRg==", c.generation)
         assertEquals(AskState.Playing, c.state)
         assertEquals(listOf(AskCommand.PlayAnswer("UklGRg==")), cmds)
     }
@@ -269,7 +269,7 @@ class AskCoreTest {
     }
 
     @Test fun playback_done_returns_to_idle() {
-        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("x") }
+        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("x", generation) }
         val cmds = c.onPlaybackDone()
         assertEquals(AskState.Idle, c.state)
         assertTrue(cmds.contains(AskCommand.Vibrate(VibePattern.LONG)))
@@ -281,7 +281,7 @@ class AskCoreTest {
     // ok=false coverage exercises; this pins what onError() emits while Playing so the two
     // outcomes stay distinguishable at the core level too.
     @Test fun playback_error_routes_to_onError_not_the_long_buzz() {
-        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("x") } // now Playing
+        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("x", generation) } // now Playing
         val cmds = c.onError()
         assertEquals(AskState.Idle, c.state)
         assertEquals(
@@ -340,7 +340,7 @@ class AskCoreTest {
         val core = AskCore()
         core.onPttDown(videoRecording = false, siteVoiceActive = false)
         core.onPttUp()
-        core.onAnswer("aGk=")
+        core.onAnswer("aGk=", core.generation)
         val cmds = core.onPlaybackDone()
         assertEquals(listOf(AskCommand.Vibrate(VibePattern.LONG)), cmds)
     }
@@ -391,7 +391,7 @@ class AskCoreTest {
     }
 
     @Test fun interrupt_in_playing_cancels_stops_audio_and_relistens() {
-        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("QQ==") }
+        val c = core().apply { onPttDown(false); onPttUp(); onAnswer("QQ==", generation) }
         assertEquals(AskState.Playing, c.state)
         val cmds = c.onPttDown(videoRecording = false)
         assertEquals(AskState.Listening, c.state)
@@ -406,7 +406,7 @@ class AskCoreTest {
         assertEquals(AskCommand.CancelTurn, thinking.onDiscreteAsk(false).first())
         assertEquals(AskState.Listening, thinking.state)
 
-        val playing = core().apply { onPttDown(false); onPttUp(); onAnswer("QQ==") }
+        val playing = core().apply { onPttDown(false); onPttUp(); onAnswer("QQ==", generation) }
         assertEquals(AskCommand.CancelTurn, playing.onDiscreteAsk(false).first())
         assertEquals(AskState.Listening, playing.state)
     }
@@ -414,7 +414,7 @@ class AskCoreTest {
     @Test fun interrupt_with_a_borrowed_mic_neither_releases_nor_reacquires() {
         for (inPlaying in listOf(false, true)) {
             val c = core().apply { onPttDown(videoRecording = true); onPttUp() }
-            if (inPlaying) c.onAnswer("QQ==")
+            if (inPlaying) c.onAnswer("QQ==", c.generation)
             // The video is still running, so a naive "Idle path" would emit Acquire again.
             val cmds = c.onPttDown(videoRecording = true)
             assertFalse(cmds.contains(AskCommand.ReleaseMicToCapture))
@@ -493,9 +493,24 @@ class AskCoreTest {
     }
 
     @Test fun playback_done_after_an_interrupt_is_a_noop() {
-        val c = core().apply { onPttDown(true); onPttUp(); onAnswer("QQ==") }
+        val c = core().apply { onPttDown(true); onPttUp(); onAnswer("QQ==", generation) }
         c.onPttDown(true) // interrupt during playback
         assertEquals(emptyList<AskCommand>(), c.onPlaybackDone())
         assertEquals(AskState.Listening, c.state)
+    }
+
+    /** The whole borrow, across an interrupt: exactly one Release, at the end of the NEW ask. */
+    @Test fun full_borrowed_mic_cycle_across_an_interrupt_releases_exactly_once() {
+        val c = core()
+        val all = mutableListOf<AskCommand>()
+        all += c.onPttDown(videoRecording = true)       // borrow
+        all += c.onPttUp()                              // Thinking
+        all += c.onPttDown(videoRecording = true)       // interrupt
+        all += c.onPttUp()                              // new turn Thinking
+        all += c.onAnswer("QQ==", c.generation)         // current generation
+        all += c.onPlaybackDone()
+        assertEquals(1, all.count { it == AskCommand.AcquireMicFromCapture })
+        assertEquals(1, all.count { it == AskCommand.ReleaseMicToCapture })
+        assertEquals(AskState.Idle, c.state)
     }
 }

@@ -3,6 +3,8 @@ package com.benzn.grandtime.ask
 import com.benzn.grandtime.auth.HttpResult
 import com.benzn.grandtime.net.HttpFns
 import com.benzn.grandtime.net.RealHttp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
@@ -24,7 +26,7 @@ class AskApiClient(
     private val baseUrl: String,
     private val http: HttpFns = RealHttp(),
     private val zoneId: () -> String = { java.time.ZoneId.systemDefault().id },
-    private val now: () -> Long = System::currentTimeMillis,
+    private val now: () -> Long = android.os.SystemClock::elapsedRealtime,
 ) {
     /** Epoch millis until which `/ask/voice/start` is known not to exist. 0 = unknown/exists. */
     @Volatile private var noRouteUntil = 0L
@@ -73,7 +75,8 @@ class AskApiClient(
     suspend fun start(idToken: String, clip: ByteArray, tz: String? = null): StartResult {
         if (now() < noRouteUntil) return StartResult.NoRoute
         val body = JSONObject()
-            .put("audio", java.util.Base64.getEncoder().encodeToString(clip))
+            // Off the caller's thread: the caller is Main, and a 15 s clip is a few hundred KB.
+            .put("audio", withContext(Dispatchers.Default) { java.util.Base64.getEncoder().encodeToString(clip) })
             .put("format", "wav")
         (tz ?: runCatching { zoneId() }.getOrNull())?.takeIf { it.isNotBlank() }
             ?.let { body.put("tz", it) }
@@ -84,7 +87,7 @@ class AskApiClient(
         } catch (e: Exception) {
             return StartResult.Error("network")
         }
-        val parsed = parseStart(r)
+        val parsed = withContext(Dispatchers.Default) { parseStart(r) }
         if (parsed is StartResult.NoRoute) noRouteUntil = now() + NO_ROUTE_TTL_MS else noRouteUntil = 0L
         return parsed
     }
@@ -100,7 +103,7 @@ class AskApiClient(
         } catch (e: Exception) {
             return TurnStatus.Failed("network")
         }
-        return parseResult(r)
+        return withContext(Dispatchers.Default) { parseResult(r) }
     }
 
     /** Best-effort, fire-and-forget. Never throws and nothing waits for it. */
@@ -131,7 +134,8 @@ class AskApiClient(
 
     companion object {
         const val NO_ROUTE_TTL_MS = 10 * 60_000L
-        const val RESULT_READ_TIMEOUT_MS = 30_000L
+        /** Not below the shared client's own 35 s read timeout; the server holds a poll for 20 s. */
+        const val RESULT_READ_TIMEOUT_MS = 35_000L
 
         private fun jsonOrNull(body: String): JSONObject? = runCatching { JSONObject(body) }.getOrNull()
 

@@ -183,9 +183,12 @@ class AskManager(
         // fast answer: ElevenLabs STT took the clip stage from 3.7-7.7 s down to 0.9-1.4 s.
         stopFiller()
         probe("ask: playing answer")
-        armPlayWatchdog()
+        val generation = core.generation
+        armPlayWatchdog(generation)
         player.play(bytes) { ok ->
             scope.launch {
+                // A callback from an interrupted ask's player must not end the NEW ask.
+                if (generation != core.generation) return@launch
                 playTimer?.cancel(); playTimer = null
                 execute(if (ok) core.onPlaybackDone() else core.onError())
             }
@@ -202,10 +205,11 @@ class AskManager(
      * the pending callback, so the player is released first and the FSM is moved by the timeout
      * itself. Mirrors [armCap]; [core] is only ever mutated from this single-threaded scope.
      */
-    private fun armPlayWatchdog() {
+    private fun armPlayWatchdog(generation: Int) {
         playTimer?.cancel()
         playTimer = scope.launch {
             delay(PLAY_CAP_MILLIS)
+            if (generation != core.generation) return@launch
             probe("ask: playback watchdog fired — the player never called back")
             player.release()
             execute(core.onPlaybackTimeout())

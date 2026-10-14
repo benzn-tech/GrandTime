@@ -142,10 +142,9 @@ class AskCore {
 
     /**
      * [generation] is the value read when the request that produced this answer was started.
-     * It defaults to the current one only so callers that cannot be interrupted keep working;
-     * anything asynchronous must pass the captured value.
+     * Required: a caller that cannot say which ask it belongs to cannot be trusted not to be stale.
      */
-    fun onAnswer(audioBase64: String, generation: Int = this.generation): List<AskCommand> = when {
+    fun onAnswer(audioBase64: String, generation: Int): List<AskCommand> = when {
         generation != this.generation -> emptyList()  // an older turn's answer: the user moved on
         state == AskState.Thinking -> {
             state = AskState.Playing
