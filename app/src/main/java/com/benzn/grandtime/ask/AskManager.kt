@@ -13,6 +13,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -152,10 +155,50 @@ class AskManager(
         }
     }
 
+    /** Server calls for the two-phase turn; each fetches a fresh token (cheap when cached). */
+    private val turnApi = object : TurnApi {
+        override suspend fun start(clip: ByteArray): AskApiClient.StartResult {
+            val token = auth.freshIdToken() ?: return AskApiClient.StartResult.AuthExpired
+            return api.start(token, clip)
+        }
+        override suspend fun result(turnId: String, since: String): AskApiClient.TurnStatus {
+            val token = auth.freshIdToken() ?: return AskApiClient.TurnStatus.AuthExpired
+            return api.result(token, turnId, since)
+        }
+        override fun cancel(turnId: String) {
+            // Not tied to the turn job: it is being cancelled when this runs.
+            scope.launch {
+                val token = auth.freshIdToken() ?: return@launch
+                api.cancel(token, turnId)
+            }
+        }
+    }
+
+    private val turnAudio = object : TurnAudio {
+        override fun earcon() = sounds.earcon()
+        override suspend fun playFiller() = sounds.fillerAndAwait()
+        override suspend fun playRestatement(wav: ByteArray) = playWavAndAwait(wav)
+        override suspend fun playOnlineCue() = sounds.searchingOnlineAndAwait()
+        override fun stopAll() { stopFiller(); player.release() }
+    }
+
+    /** Plays a clip on [player] and returns when it ends. Gives up after [RESTATEMENT_PLAY_CAP_MS]. */
+    private suspend fun playWavAndAwait(bytes: ByteArray) {
+        withTimeoutOrNull(RESTATEMENT_PLAY_CAP_MS) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                cont.invokeOnCancellation { player.release() }
+                player.play(bytes) { if (cont.isActive) cont.resume(Unit) }
+            }
+        }
+    }
+
     private suspend fun sendClip() {
         // The ask this send belongs to. Everything below that suspends re-checks it: an interrupt
         // in the meantime has started a new ask, and this one must neither answer nor fail it.
         val generation = core.generation
+        // The two-phase turn replaces the half-second-delayed filler with an immediate earcon and
+        // a restatement window; only the old path (NoRoute) wants the delayed filler back.
+        filler.cancel()
         val clip = recorder.stop()
         if (clip == null) { fail(); return }
         val bytes = runCatching { clip.readBytes() }.getOrNull()
@@ -164,7 +207,28 @@ class AskManager(
         val token = auth.freshIdToken()
         if (generation != core.generation) return
         if (token == null) { fail(); return }
-        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        val runner = AskTurnRunner(turnApi, turnAudio, onTurnId = { probe("ask: turn $it") })
+        val outcome = runner.run(bytes)
+        if (generation != core.generation) return  // interrupted while the turn was running
+        when (outcome) {
+            is TurnOutcome.Answer -> {
+                val b64 = withContext(Dispatchers.Default) { Base64.encodeToString(outcome.wav, Base64.NO_WRAP) }
+                if (generation != core.generation) return
+                execute(core.onAnswer(b64, generation))
+            }
+            TurnOutcome.NoRoute -> {
+                // Backend without the new routes: today's single call, with today's filler.
+                probe("ask: no two-phase route, using /ask/voice")
+                filler.schedule()
+                legacyAsk(token, bytes, generation)
+            }
+            is TurnOutcome.Failed -> { probe("ask: turn failed (${outcome.reason})"); fail() }
+            TurnOutcome.TimedOut -> { probe("ask: turn timed out"); fail() }
+        }
+    }
+
+    private suspend fun legacyAsk(token: String, bytes: ByteArray, generation: Int) {
+        val b64 = withContext(Dispatchers.Default) { Base64.encodeToString(bytes, Base64.NO_WRAP) }
         val result = withContext(Dispatchers.IO) { api.ask(token, b64, "wav") }
         if (generation != core.generation) return  // interrupted while the request was out
         when (result) {
@@ -257,5 +321,7 @@ class AskManager(
         const val LISTENING_CUE_DELAY_MS = 500L
         /** Pause between the key coming up and "Got it. Checking…". Owner, 2026-10-13: same reason. */
         const val FILLER_DELAY_MS = 500L
+        /** A restatement is a sentence; this only guards a player that never calls back. */
+        const val RESTATEMENT_PLAY_CAP_MS = 20_000L
     }
 }
