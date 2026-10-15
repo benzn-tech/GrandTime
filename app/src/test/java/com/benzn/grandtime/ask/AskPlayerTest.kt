@@ -34,6 +34,13 @@ class AskPlayerTest {
             if (throwOnPrepare) throw IllegalStateException("prepare failed")
         }
         override fun start() { started = true }
+        var speed: Float? = null
+        var throwOnSetSpeed = false
+        override fun setSpeed(speed: Float) {
+            if (throwOnSetSpeed) throw IllegalStateException("rate refused")
+            check(started) { "speed set before start" }
+            this.speed = speed
+        }
         override fun release() { released = true }
     }
 
@@ -149,5 +156,26 @@ class AskPlayerTest {
 
         assertTrue("active player released on explicit release", fake.released)
         assertFalse("temp file deleted on explicit release", tempFile(cache).exists())
+    }
+
+    @Test fun speed_is_applied_after_start() {
+        val fake = FakePlayer()
+        AskPlayer(freshCache(), factoryFor(fake), speed = 1.17f).play(byteArrayOf(1, 2))
+        assertEquals(1.17f, fake.speed)
+    }
+
+    @Test fun default_speed_never_touches_the_rate() {
+        val fake = FakePlayer()
+        AskPlayer(freshCache(), factoryFor(fake)).play(byteArrayOf(1, 2))
+        assertEquals(null, fake.speed)
+    }
+
+    @Test fun a_refused_rate_still_plays() {
+        val fake = FakePlayer().apply { throwOnSetSpeed = true }
+        var done: Boolean? = null
+        AskPlayer(freshCache(), factoryFor(fake), speed = 1.17f).play(byteArrayOf(1, 2)) { done = it }
+        assertTrue(fake.started)
+        assertFalse("a refused rate must not tear the clip down", fake.released)
+        assertEquals("no onDone until the clip finishes", null, done)
     }
 }

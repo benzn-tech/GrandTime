@@ -45,7 +45,7 @@ class AskManager(
     private val recorder = AskRecorder(appContext, File(appContext.cacheDir, "ask"))
     private val api = AskApiClient(apiBaseUrl)
     private val sounds = AskSounds(appContext)
-    private val player = AskPlayer(File(appContext.cacheDir, "ask"))
+    private val player = AskPlayer(File(appContext.cacheDir, "ask"), ANSWER_PLAYBACK_SPEED)
     private val haptics = Haptics(appContext)
     private var capTimer: Job? = null
     /** Watchdog for a playback that never calls back. See [AskCore.onPlaybackTimeout]. */
@@ -321,6 +321,12 @@ class AskManager(
         const val CAP_MILLIS = 15_000L  // recording cap (spec §9)
         /** Playback watchdog. Not a latency budget — see [armPlayWatchdog]. */
         const val PLAY_CAP_MILLIS = 120_000L
+        /**
+         * Restatement and answer playback rate. Owner, 2026-10-15: "0.2 faster" than the TTS's
+         * 1.2, i.e. 1.4 / 1.2. The bundled cues (ask_searching*.mp3) play through their own
+         * players at normal rate.
+         */
+        const val ANSWER_PLAYBACK_SPEED = 1.17f
         /** Pause between the key going down and "Ready. Go ahead." Owner, 2026-10-13: too rushed. */
         const val LISTENING_CUE_DELAY_MS = 500L
         /** Pause between the key coming up and "Got it. Checking…". Owner, 2026-10-13: same reason. */
