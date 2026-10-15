@@ -16,8 +16,14 @@ import java.io.File
 class AskPlayer internal constructor(
     private val cacheDir: File,
     private val playerFactory: PlayerFactory,
+    private val speed: Float = 1f,
 ) {
-    constructor(cacheDir: File) : this(cacheDir, RealPlayerFactory)
+    /**
+     * [speed] is a pitch-preserving playback rate on top of whatever rate the clip was
+     * synthesised at. The backend TTS is already at ElevenLabs' ceiling (1.2), so a faster
+     * answer can only come from here.
+     */
+    constructor(cacheDir: File, speed: Float = 1f) : this(cacheDir, RealPlayerFactory, speed)
 
     private var player: Player? = null
     private var currentFile: File? = null
@@ -44,6 +50,9 @@ class AskPlayer internal constructor(
             p.setOnError { onDone(false); teardown(p, file) }
             p.prepare()
             p.start()
+            // After start(): on a prepared player, a non-zero speed would start playback itself.
+            // A device that refuses the rate still plays at normal speed rather than not at all.
+            if (speed != 1f) runCatching { p.setSpeed(speed) }
             player = p
             currentFile = file
         } catch (t: Throwable) {
@@ -69,6 +78,7 @@ class AskPlayer internal constructor(
         fun setOnError(callback: () -> Unit)
         fun prepare()
         fun start()
+        fun setSpeed(speed: Float)
         fun release()
     }
 
@@ -91,6 +101,9 @@ class AskPlayer internal constructor(
         }
         override fun prepare() = mp.prepare()
         override fun start() = mp.start()
+        override fun setSpeed(speed: Float) {
+            mp.playbackParams = mp.playbackParams.setSpeed(speed)
+        }
         override fun release() = mp.release()
     }
 

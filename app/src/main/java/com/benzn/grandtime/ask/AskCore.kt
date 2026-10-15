@@ -21,6 +21,10 @@ sealed interface AskCommand {
      *  follow a borrow -- NOT at StopRecording, see [borrowedMic]. */
     data object ReleaseMicToCapture : AskCommand
     data class Vibrate(val pattern: VibePattern) : AskCommand
+    /** Abandon the in-flight turn: cancel its job and HTTP call, and tell the server (best effort). */
+    data object CancelTurn : AskCommand
+    /** Silence the filler, the cues and any answer playback. Emitted by an interrupt. */
+    data object StopAllAudio : AskCommand
 }
 
 enum class AskState { Idle, Listening, Thinking, Playing }
@@ -52,6 +56,15 @@ class AskCore {
      */
     private var borrowedMic = false
 
+    /**
+     * Identity of the current ask. Bumped by every new ask and every interrupt, so anything that
+     * was started under an older value is stale. Whoever starts asynchronous work reads this at
+     * that moment and hands it back with the result ([onAnswer]); a mismatch means the user has
+     * moved on, and the result must change nothing.
+     */
+    var generation: Int = 0
+        private set
+
     /** Emit the release exactly once, if this ask is holding a borrow. */
     private fun releaseIfBorrowed(): List<AskCommand> =
         if (borrowedMic) {
@@ -61,30 +74,53 @@ class AskCore {
             emptyList()
         }
 
+    /** What a fresh press does once the mic situation is settled. Order is load-bearing, see below. */
+    private fun listeningCommands(): List<AskCommand> = listOf(
+        AskCommand.PlayListeningCue,
+        // The buzz comes AFTER StartRecording, not before: the executor
+        // short-circuits when the recorder cannot open the mic, so a buzz
+        // ordered first would claim "accepted" for a talk that never began.
+        AskCommand.StartRecording,
+        AskCommand.Vibrate(VibePattern.SHORT),
+        AskCommand.ArmCapTimer,
+    )
+
+    private fun busyRefusal(): List<AskCommand> =
+        // The one refusal left. Site-voice is another voice feature holding the mic for
+        // a person, not a resource to borrow -- taking it would cut someone off
+        // mid-sentence. Refusal was audible-only, which is the one channel a chest-worn
+        // device cannot rely on. Two buzzes is what refusal already means here.
+        listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT))
+
     fun onPttDown(videoRecording: Boolean, siteVoiceActive: Boolean = false): List<AskCommand> = when (state) {
         AskState.Idle ->
             if (siteVoiceActive) {
-                // The one refusal left. Site-voice is another voice feature holding the mic for
-                // a person, not a resource to borrow -- taking it would cut someone off
-                // mid-sentence. Refusal was audible-only, which is the one channel a chest-worn
-                // device cannot rely on. Two buzzes is what refusal already means here.
-                listOf(AskCommand.PlayBusyCue, AskCommand.Vibrate(VibePattern.DOUBLE_SHORT))
+                busyRefusal()
             } else {
                 state = AskState.Listening
+                generation++
                 borrowedMic = videoRecording // borrow only when a video segment is running
                 buildList {
                     // Acquire first: the capture mic must be freed before Ask opens its own.
                     if (videoRecording) add(AskCommand.AcquireMicFromCapture)
-                    add(AskCommand.PlayListeningCue)
-                    // The buzz comes AFTER StartRecording, not before: the executor
-                    // short-circuits when the recorder cannot open the mic, so a buzz
-                    // ordered first would claim "accepted" for a talk that never began.
-                    add(AskCommand.StartRecording)
-                    add(AskCommand.Vibrate(VibePattern.SHORT))
-                    add(AskCommand.ArmCapTimer)
+                    addAll(listeningCommands())
                 }
             }
-        else -> emptyList()  // ignore re-entrant down mid-ask
+        // Interrupt: the key pressed while the agent is working or talking. The turn is abandoned
+        // and a new question starts. A borrowed mic stays borrowed -- no Release/Acquire pair --
+        // because on this single-capture ROM the video segment reopens its mic asynchronously, so
+        // an end() followed at once by begin() can leave the new StartRecording facing a held
+        // mic (the trap fail() in AskManager documents). Listening itself is NOT interruptible:
+        // a second press there is the same talk and stays ignored.
+        AskState.Thinking, AskState.Playing ->
+            if (siteVoiceActive) {
+                busyRefusal()
+            } else {
+                state = AskState.Listening
+                generation++
+                listOf(AskCommand.CancelTurn, AskCommand.StopAllAudio) + listeningCommands()
+            }
+        AskState.Listening -> emptyList()  // ignore re-entrant down mid-talk
     }
 
     fun onPttUp(): List<AskCommand> = when (state) {
@@ -104,8 +140,13 @@ class AskCore {
         else -> emptyList()
     }
 
-    fun onAnswer(audioBase64: String): List<AskCommand> = when (state) {
-        AskState.Thinking -> {
+    /**
+     * [generation] is the value read when the request that produced this answer was started.
+     * Required: a caller that cannot say which ask it belongs to cannot be trusted not to be stale.
+     */
+    fun onAnswer(audioBase64: String, generation: Int): List<AskCommand> = when {
+        generation != this.generation -> emptyList()  // an older turn's answer: the user moved on
+        state == AskState.Thinking -> {
             state = AskState.Playing
             listOf(AskCommand.PlayAnswer(audioBase64))
         }
@@ -149,8 +190,7 @@ class AskCore {
     /** Discrete (tap) trigger for a keymap-routed hard key (Task 13): toggles
      * start-listening / stop-and-send, so a rebound key works without hold. */
     fun onDiscreteAsk(videoRecording: Boolean, siteVoiceActive: Boolean = false): List<AskCommand> = when (state) {
-        AskState.Idle -> onPttDown(videoRecording, siteVoiceActive)
+        AskState.Idle, AskState.Thinking, AskState.Playing -> onPttDown(videoRecording, siteVoiceActive)
         AskState.Listening -> onPttUp()
-        else -> emptyList()
     }
 }
