@@ -164,6 +164,9 @@ class CaptureManager(
     private var silenceMonitor: MicSilenceMonitor? = null
 
     init {
+        // Keep GPS warm for the life of the service: this GNSS takes minutes from cold and the ROM
+        // has no network provider, so starting it at record time left recordings without a fix.
+        warmGps()
         // 相机死亡(被抢占/热降频/HAL 错):录像态收尾落库+停计时器/音效,退出录像态。
         pipeline.onCameraLost = {
             scope.launch { sessionLock.withLock { onCameraLost() } }
@@ -257,7 +260,7 @@ class CaptureManager(
     fun shutdown() {
         segmentTimer?.cancel()
         stopWatermarkTimer()
-        gps.stop()
+        gps.shutdown()
         if (pipeline.isRecording) pipeline.stopSegment()
         if (audio.isRecording) audio.stop()
         sounds.release()
@@ -299,6 +302,11 @@ class CaptureManager(
 
     private fun granted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+    /** Idempotent; also covers a location grant that arrived after the service started. */
+    private fun warmGps() {
+        if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) gps.warm()
+    }
 
     private suspend fun preflight(action: KeyAction): Boolean {
         val needsCamera = action == KeyAction.START_STOP_VIDEO || action == KeyAction.TAKE_PHOTO
@@ -373,7 +381,7 @@ class CaptureManager(
                 uploadEnqueuer.enqueue(it, requireUnmetered = uploadRequiresUnmetered("video", wifiOnly))
             }
             stopWatermarkTimer()
-            gps.stop()
+            gps.endTrack()
             sounds.stopRecording(CaptureSounds.Media.VIDEO)
             val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
             execute(core.onFailure("Camera lost — recording stopped"))
@@ -383,7 +391,7 @@ class CaptureManager(
             // camera on pause): no live segment to finalize — clean up + close the session (idle).
             val endingSessionId = (core.state as? CaptureState.PausedVideo)?.sessionId
             stopWatermarkTimer()
-            gps.stop()
+            gps.endTrack()
             sounds.stopRecording(CaptureSounds.Media.VIDEO)
             execute(core.onFailure("Camera lost — recording stopped"))
             if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
@@ -531,7 +539,7 @@ class CaptureManager(
     /** Deliberate End of a PausedVideo session: no live segment to finalize (already stopped by the
      *  preceding PAUSE), so just release resources and close with intent="end" directly. */
     private fun endPausedSession(sessionId: String) {
-        stopWatermarkTimer(); gps.stop(); sounds.stopRecording(CaptureSounds.Media.VIDEO)
+        stopWatermarkTimer(); gps.endTrack(); sounds.stopRecording(CaptureSounds.Media.VIDEO)
         scope.launch { pipeline.release() }
         fireSessionClose(sessionId, System.currentTimeMillis(), "end")
     }
@@ -543,10 +551,11 @@ class CaptureManager(
         val recordId = UUID.randomUUID().toString()
         // GPS + watermark (re)start on a COLD camera start — segment 1, OR resume after a power-saving
         // pause released the camera. A rollover reuses the live session (hasSession true) and keeps them
-        // running, so don't restart on rollover. (GpsTracker.start() is a no-op without permission.)
+        // running, so don't restart on rollover. beginTrack() also warms GPS if the location grant
+        // came after service start.
         val cameraWasClosed = !pipeline.hasSession
         if (cameraWasClosed) {
-            if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) gps.start()
+            if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) gps.beginTrack()
             startWatermarkTimer(settings)
         }
         // session_open only at the true session start (segment 1) — resume must NOT re-open it.
@@ -583,7 +592,7 @@ class CaptureManager(
                 val finalizedId = finalizeVideoDbRow()
                 if (error) {
                     stopWatermarkTimer()
-                    gps.stop()
+                    gps.endTrack()
                     val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
                     execute(core.onFailure(message ?: "Video error"))
                     if (endingSessionId != null) fireSessionClose(endingSessionId, System.currentTimeMillis())
@@ -605,7 +614,7 @@ class CaptureManager(
                     if (reason != StopReason.ROLLOVER && core.state is CaptureState.Idle) {
                         sounds.stopRecording(CaptureSounds.Media.VIDEO)
                         stopWatermarkTimer()
-                        gps.stop()
+                        gps.endTrack()
                         pipeline.release()
                         // A storage stop is an end of the session, so it closes it as one. Without this
                         // the backend only finalized it on its idle timeout.
@@ -614,11 +623,11 @@ class CaptureManager(
                         }
                     } else if (reason == StopReason.PAUSE && core.state is CaptureState.PausedVideo) {
                         sounds.pauseRecording(CaptureSounds.Media.VIDEO)
-                        // #3 power-saving pause: release the camera + GPS + watermark so the device can
+                        // #3 power-saving pause: release the camera + watermark so the device can
                         // deep-sleep while paused (the wakelock is already released for PausedVideo).
-                        // Resume cold-opens the camera and restarts GPS/watermark; the session stays open.
+                        // Resume cold-opens the camera and restarts the GPS track/watermark (GPS itself stays warm).
                         stopWatermarkTimer()
-                        gps.stop()
+                        gps.endTrack()
                         pipeline.release()
                     }
                 }
@@ -627,7 +636,7 @@ class CaptureManager(
         if (result == null) {
             // 段起动失败也是终态(core.onFailure 一律回 Idle)——不管是不是段 1,都要收尾计时器/GPS。
             stopWatermarkTimer()
-            gps.stop()
+            gps.endTrack()
             sounds.stopRecording(CaptureSounds.Media.VIDEO)
             val endingSessionId = (core.state as? CaptureState.RecordingVideo)?.sessionId
             execute(core.onFailure("Camera unavailable"))
@@ -762,7 +771,7 @@ class CaptureManager(
         val file = currentVideoFile ?: return null
         val ended = System.currentTimeMillis()
         dao.finalize(id, ended, ended - currentVideoStartedAt, file.length())
-        // GPS 轨迹落到这一段视频行;stop() 不清 track,即便本方法在 gps.stop() 之后跑也拿得到。
+        // GPS track goes onto this segment row; endTrack() keeps the track, so this works after it too.
         gps.snapshotTrackJson()?.let { dao.updateGpsTrack(id, it) }
         scan(file.absolutePath)
         probe("video segment saved: ${file.name} (${file.length()} bytes)")
@@ -772,6 +781,7 @@ class CaptureManager(
     }
 
     private suspend fun takePhoto(cmd: CaptureCommand.TakePhoto) {
+        warmGps()
         val settings = settingsStore.settings.first()
         val recordingVideo = core.state is CaptureState.RecordingVideo
         // 非录像态(Idle/录音)先确保会话 + 3A 收敛;录像态直接用现有会话。
