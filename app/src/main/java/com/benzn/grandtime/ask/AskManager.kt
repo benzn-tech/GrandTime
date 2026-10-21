@@ -1,6 +1,7 @@
 package com.benzn.grandtime.ask
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Base64
 import com.benzn.grandtime.auth.AuthManager
 import com.benzn.grandtime.capture.CaptureState
@@ -13,6 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -41,11 +45,15 @@ class AskManager(
     private val recorder = AskRecorder(appContext, File(appContext.cacheDir, "ask"))
     private val api = AskApiClient(apiBaseUrl)
     private val sounds = AskSounds(appContext)
-    private val player = AskPlayer(File(appContext.cacheDir, "ask"))
+    private val player = AskPlayer(File(appContext.cacheDir, "ask"), ANSWER_PLAYBACK_SPEED)
     private val haptics = Haptics(appContext)
     private var capTimer: Job? = null
     /** Watchdog for a playback that never calls back. See [AskCore.onPlaybackTimeout]. */
     private var playTimer: Job? = null
+    /** The in-flight send. Tracked so an interrupt ([AskCommand.CancelTurn]) can abandon it. */
+    private var turnJob: Job? = null
+    /** When the key came up (elapsedRealtime). The restatement window and the cap run from here. */
+    private var releasedAt = 0L
     /** Bumped by each listening cue, so a cue that outlived its own ask cannot open the mic. */
     private var listeningCueGeneration = 0
     /** "Got it. Checking your records now." -- see [PendingCue] for why it is not a bare play. */
@@ -108,9 +116,10 @@ class AskManager(
                 sounds.askStartAndAwait()
                 if (generation != listeningCueGeneration || core.state != AskState.Listening) return
             }
-            // Scheduled, never awaited: SendClip is the next command in this same list, and
-            // waiting here would add the pause to the wait the line exists to cover.
-            AskCommand.PlayThinkingCue -> filler.schedule()
+            // The earcon says "heard you" at the moment of release. Never awaited: SendClip is the
+            // next command in this same list, and waiting here would delay the question. The spoken
+            // filler belongs to the turn (restatement window) or to the NoRoute fallback.
+            AskCommand.PlayThinkingCue -> { releasedAt = SystemClock.elapsedRealtime(); sounds.earcon() }
             AskCommand.PlayBusyCue -> { probe("ask: busy (mic busy)"); sounds.error() }
             // stopFiller first: the spoken "checking your records" line may be pending or playing,
             // and an error cue on top of it says two contradictory things at once.
@@ -119,7 +128,16 @@ class AskManager(
             AskCommand.StopRecording -> { /* clip read in SendClip */ }
             AskCommand.ArmCapTimer -> armCap()
             AskCommand.CancelCapTimer -> { capTimer?.cancel(); capTimer = null }
-            AskCommand.SendClip -> sendClip()
+            // Own job, so an interrupt can cancel it; SendClip is always last in its list.
+            AskCommand.SendClip -> turnJob = scope.launch { sendClip() }
+            AskCommand.CancelTurn -> { probe("ask: interrupt"); turnJob?.cancel(); turnJob = null }
+            AskCommand.StopAllAudio -> {
+                playTimer?.cancel(); playTimer = null
+                stopFiller()
+                // Drops the pending completion callback, so the abandoned answer cannot report
+                // "done" into the new ask.
+                player.release()
+            }
             AskCommand.AcquireMicFromCapture -> { probe("ask: borrow mic"); micHandover.begin() }
             AskCommand.ReleaseMicToCapture -> { probe("ask: return mic"); micHandover.end() }
             is AskCommand.PlayAnswer -> playAnswer(cmd.audioBase64)
@@ -141,18 +159,84 @@ class AskManager(
         }
     }
 
+    /** Server calls for the two-phase turn; each fetches a fresh token (cheap when cached). */
+    private val turnApi = object : TurnApi {
+        override suspend fun start(clip: ByteArray): AskApiClient.StartResult {
+            val token = auth.freshIdToken() ?: return AskApiClient.StartResult.AuthExpired
+            return api.start(token, clip)
+        }
+        override suspend fun result(turnId: String, since: String): AskApiClient.TurnStatus {
+            val token = auth.freshIdToken() ?: return AskApiClient.TurnStatus.AuthExpired
+            return api.result(token, turnId, since)
+        }
+        override fun cancel(turnId: String) {
+            // Not tied to the turn job: it is being cancelled when this runs.
+            scope.launch {
+                val token = auth.freshIdToken() ?: return@launch
+                api.cancel(token, turnId)
+            }
+        }
+    }
+
+    /** [generation]: only the ask that owns the audio may silence it; an old turn's cleanup must not. */
+    private fun turnAudio(generation: Int) = object : TurnAudio {
+        override suspend fun playFiller() = sounds.fillerAndAwait()
+        override suspend fun playRestatement(wav: ByteArray) = playWavAndAwait(wav)
+        override suspend fun playOnlineCue() = sounds.searchingOnlineAndAwait()
+        override fun stopAll() {
+            if (generation != core.generation) return
+            stopFiller(); player.release()
+        }
+    }
+
+    /** Plays a clip on [player] and returns when it ends. Gives up after [RESTATEMENT_PLAY_CAP_MS]. */
+    private suspend fun playWavAndAwait(bytes: ByteArray) {
+        withTimeoutOrNull(RESTATEMENT_PLAY_CAP_MS) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                cont.invokeOnCancellation { player.release() }
+                player.play(bytes) { if (cont.isActive) cont.resume(Unit) }
+            }
+        }
+    }
+
     private suspend fun sendClip() {
+        // The ask this send belongs to. Everything below that suspends re-checks it: an interrupt
+        // in the meantime has started a new ask, and this one must neither answer nor fail it.
+        val generation = core.generation
         val clip = recorder.stop()
         if (clip == null) { fail(); return }
         val bytes = runCatching { clip.readBytes() }.getOrNull()
         clip.delete()
         if (bytes == null || bytes.isEmpty()) { fail(); return }
         val token = auth.freshIdToken()
+        if (generation != core.generation) return
         if (token == null) { fail(); return }
-        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        val runner = AskTurnRunner(turnApi, turnAudio(generation), onTurnId = { probe("ask: turn $it") })
+        val outcome = runner.run(bytes, releasedAt)
+        if (generation != core.generation) return  // interrupted while the turn was running
+        when (outcome) {
+            is TurnOutcome.Answer -> {
+                val b64 = withContext(Dispatchers.Default) { Base64.encodeToString(outcome.wav, Base64.NO_WRAP) }
+                if (generation != core.generation) return
+                execute(core.onAnswer(b64, generation))
+            }
+            is TurnOutcome.NoRoute -> {
+                // Backend without the new routes: today's single call, with today's filler.
+                probe("ask: no two-phase route, using /ask/voice")
+                if (!outcome.fillerPlayed) filler.schedule()
+                legacyAsk(token, bytes, generation)
+            }
+            is TurnOutcome.Failed -> { probe("ask: turn failed (${outcome.reason})"); fail() }
+            TurnOutcome.TimedOut -> { probe("ask: turn timed out"); fail() }
+        }
+    }
+
+    private suspend fun legacyAsk(token: String, bytes: ByteArray, generation: Int) {
+        val b64 = withContext(Dispatchers.Default) { Base64.encodeToString(bytes, Base64.NO_WRAP) }
         val result = withContext(Dispatchers.IO) { api.ask(token, b64, "wav") }
+        if (generation != core.generation) return  // interrupted while the request was out
         when (result) {
-            is AskApiClient.AskResult.Ok -> execute(core.onAnswer(result.audioBase64))
+            is AskApiClient.AskResult.Ok -> execute(core.onAnswer(result.audioBase64, generation))
             else -> { probe("ask: send failed ($result)"); fail() }
         }
     }
@@ -167,9 +251,12 @@ class AskManager(
         // fast answer: ElevenLabs STT took the clip stage from 3.7-7.7 s down to 0.9-1.4 s.
         stopFiller()
         probe("ask: playing answer")
-        armPlayWatchdog()
+        val generation = core.generation
+        armPlayWatchdog(generation)
         player.play(bytes) { ok ->
             scope.launch {
+                // A callback from an interrupted ask's player must not end the NEW ask.
+                if (generation != core.generation) return@launch
                 playTimer?.cancel(); playTimer = null
                 execute(if (ok) core.onPlaybackDone() else core.onError())
             }
@@ -186,10 +273,11 @@ class AskManager(
      * the pending callback, so the player is released first and the FSM is moved by the timeout
      * itself. Mirrors [armCap]; [core] is only ever mutated from this single-threaded scope.
      */
-    private fun armPlayWatchdog() {
+    private fun armPlayWatchdog(generation: Int) {
         playTimer?.cancel()
         playTimer = scope.launch {
             delay(PLAY_CAP_MILLIS)
+            if (generation != core.generation) return@launch
             probe("ask: playback watchdog fired — the player never called back")
             player.release()
             execute(core.onPlaybackTimeout())
@@ -217,6 +305,7 @@ class AskManager(
     }
 
     fun shutdown() {
+        turnJob?.cancel()
         capTimer?.cancel()
         playTimer?.cancel()
         filler.cancel()
@@ -232,9 +321,17 @@ class AskManager(
         const val CAP_MILLIS = 15_000L  // recording cap (spec §9)
         /** Playback watchdog. Not a latency budget — see [armPlayWatchdog]. */
         const val PLAY_CAP_MILLIS = 120_000L
+        /**
+         * Restatement and answer playback rate. Owner, 2026-10-15: "0.2 faster" than the TTS's
+         * 1.2, i.e. 1.4 / 1.2. The bundled cues (ask_searching*.mp3) play through their own
+         * players at normal rate.
+         */
+        const val ANSWER_PLAYBACK_SPEED = 1.17f
         /** Pause between the key going down and "Ready. Go ahead." Owner, 2026-10-13: too rushed. */
         const val LISTENING_CUE_DELAY_MS = 500L
         /** Pause between the key coming up and "Got it. Checking…". Owner, 2026-10-13: same reason. */
         const val FILLER_DELAY_MS = 500L
+        /** A restatement is a sentence; this only guards a player that never calls back. */
+        const val RESTATEMENT_PLAY_CAP_MS = 20_000L
     }
 }

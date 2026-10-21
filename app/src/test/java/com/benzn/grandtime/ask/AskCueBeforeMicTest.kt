@@ -60,11 +60,22 @@ class AskCueBeforeMicTest {
     }
 
     @Test
-    fun `the filler is scheduled, never played inline or awaited`() {
+    fun `the earcon plays at release, never awaited and never delaying the send`() {
         val start = manager.indexOf("AskCommand.PlayThinkingCue ->")
         val branch = manager.substring(start, manager.indexOf("\n", start))
-        assertTrue("SendClip follows in the same list; waiting here delays the question", branch.contains("filler.schedule()"))
-        assertTrue("an inline play would skip the pause", !branch.contains("sounds.thinking()"))
+        assertTrue("the release must be acknowledged at once", branch.contains("sounds.earcon()"))
+        assertTrue("SendClip follows in the same list; waiting here delays the question", !branch.contains("AndAwait"))
+        assertTrue("no delayed start before the earcon", !branch.contains("delay(") && !branch.contains("filler.schedule()"))
+        assertTrue("an inline spoken line would be heard before the restatement window", !branch.contains("sounds.thinking()"))
+    }
+
+    @Test
+    fun `only the no-route fallback ever schedules the delayed filler`() {
+        val calls = Regex("filler\\.schedule\\(\\)").findAll(manager).count()
+        assertTrue("exactly one call site", calls == 1)
+        val at = manager.indexOf("filler.schedule()")
+        assertTrue("and it is behind the NoRoute outcome", manager.lastIndexOf("TurnOutcome.NoRoute", at) in 0 until at)
+        assertTrue("and behind the already-played check", manager.substring(manager.lastIndexOf("\n", at - 1), at).contains("fillerPlayed"))
     }
 
     @Test
