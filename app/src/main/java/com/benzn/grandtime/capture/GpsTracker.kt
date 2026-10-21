@@ -72,6 +72,8 @@ class GpsTracker(private val context: Context) {
     private val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val state = GpsFixState()
     @Volatile private var listening = false
+    /** elapsedRealtime of warm-up until the first live fix lands; 0 after. For the TTFF log line. */
+    @Volatile private var warmedAt = 0L
 
     /** Last known fix WITH its age (indoor fallback): lets the caller show a labelled stale fix
      * instead of a bare "Locating…" placeholder, without hiding how old the coords are. */
@@ -84,6 +86,10 @@ class GpsTracker(private val context: Context) {
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
             state.onFix(loc.latitude, loc.longitude, loc.time, System.currentTimeMillis())
+            if (warmedAt != 0L) {
+                Log.i(TAG, "first fix ${(SystemClock.elapsedRealtime() - warmedAt) / 1000}s after warm-up")
+                warmedAt = 0L
+            }
         }
         @Deprecated("") override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
         override fun onProviderEnabled(p: String) {}
@@ -96,12 +102,17 @@ class GpsTracker(private val context: Context) {
     fun warm() {
         if (listening) return
         runCatching {
-            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let {
-                state.seed(it.latitude, it.longitude, it.elapsedRealtimeNanos,
+            val last = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            if (last != null) {
+                state.seed(last.latitude, last.longitude, last.elapsedRealtimeNanos,
                     SystemClock.elapsedRealtimeNanos(), System.currentTimeMillis())
             }
+            warmedAt = SystemClock.elapsedRealtime()
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, context.mainLooper)
             listening = true
+            Log.i(TAG, "warm-up: last known fix " + (last?.let {
+                "${(SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000_000L}s old"
+            } ?: "none"))
         }.onFailure { Log.w(TAG, "GPS warm-up failed", it) }
     }
 
