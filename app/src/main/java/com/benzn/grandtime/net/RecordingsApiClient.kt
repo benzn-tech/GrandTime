@@ -2,7 +2,16 @@ package com.benzn.grandtime.net
 
 import com.benzn.grandtime.auth.HttpResult
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
@@ -18,6 +27,45 @@ import org.json.JSONObject
 interface HttpFns {
     fun postJson(url: String, authToken: String, jsonBody: String): HttpResult
     fun putFile(url: String, contentType: String, file: File): Int
+
+    // Cancellable seam used by the two-phase Ask calls. Defaults exist so the many existing
+    // fakes keep compiling; RealHttp overrides all three with an OkHttp Call that is cancelled
+    // when the calling coroutine is.
+
+    /** POST JSON; cancelling the calling coroutine cancels the underlying call. */
+    suspend fun postJsonSuspending(url: String, authToken: String, jsonBody: String): HttpResult =
+        withContext(Dispatchers.IO) { postJson(url, authToken, jsonBody) }
+
+    /** GET with its own read timeout (a long-poll outlives the shared client's default). */
+    suspend fun getSuspending(url: String, authToken: String, readTimeoutMs: Long): HttpResult =
+        throw UnsupportedOperationException("getSuspending")
+
+    /** Fire-and-forget POST: nothing waits for it and its outcome is ignored. */
+    fun postJsonDetached(url: String, authToken: String, jsonBody: String) {
+        Thread { runCatching { postJson(url, authToken, jsonBody) } }.start()
+    }
+}
+
+/**
+ * Await an OkHttp [Call] without blocking a thread. Cancelling the coroutine cancels the Call,
+ * which closes the socket -- the whole point: an abandoned long-poll must not keep a connection
+ * (and a server slot) busy until its read timeout.
+ */
+internal suspend fun Call.awaitHttpResult(): HttpResult = suspendCancellableCoroutine { cont ->
+    cont.invokeOnCancellation { runCatching { cancel() } }
+    enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            if (cont.isActive) cont.resumeWithException(e)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            val result = runCatching {
+                response.use { HttpResult(it.code, it.body?.string().orEmpty()) }
+            }
+            if (!cont.isActive) return
+            result.fold({ cont.resume(it) }, { cont.resumeWithException(it) })
+        }
+    })
 }
 
 /** Real OkHttp-backed implementation of [HttpFns]. Not unit-tested (verified on-device). */
@@ -32,6 +80,36 @@ class RealHttp : HttpFns {
         OK_HTTP.newCall(req).execute().use { resp ->
             return HttpResult(resp.code, resp.body?.string().orEmpty())
         }
+    }
+
+    private fun jsonPost(url: String, authToken: String, jsonBody: String) =
+        Request.Builder().url(url)
+            .header("Authorization", authToken)
+            .header("Content-Type", "application/json")
+            .apply { attachDeviceHeaders(this) }
+            .post(jsonBody.toRequestBody("application/json".toMediaType()))
+            .build()
+
+    override suspend fun postJsonSuspending(url: String, authToken: String, jsonBody: String): HttpResult =
+        OK_HTTP.newCall(jsonPost(url, authToken, jsonBody)).awaitHttpResult()
+
+    override suspend fun getSuspending(url: String, authToken: String, readTimeoutMs: Long): HttpResult {
+        val req = Request.Builder().url(url)
+            .header("Authorization", authToken)
+            .apply { attachDeviceHeaders(this) }
+            .get()
+            .build()
+        // The shared client's callTimeout (60 s) already outlives the server's 20 s hold;
+        // only the per-read timeout needs to move.
+        val client = OK_HTTP.newBuilder().readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS).build()
+        return client.newCall(req).awaitHttpResult()
+    }
+
+    override fun postJsonDetached(url: String, authToken: String, jsonBody: String) {
+        OK_HTTP.newCall(jsonPost(url, authToken, jsonBody)).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {}
+            override fun onResponse(call: Call, response: Response) { response.close() }
+        })
     }
 
     override fun putFile(url: String, contentType: String, file: File): Int {

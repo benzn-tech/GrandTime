@@ -79,6 +79,44 @@ class AskSounds(context: Context) {
      * first, and calling it when nothing is playing is a no-op.
      */
     fun stopThinking() { releaseSearching() }
+
+    /** The short tone, immediately. Plays at release in the two-phase ask; not awaited. */
+    fun earcon() { pool.play(thinkingTone, 1f, 1f, 1, 0, 1f) }
+
+    /** [thinking]'s line, but returns when it has finished (two-phase ask queues cues behind it). */
+    suspend fun fillerAndAwait() = cueAndAwait(R.raw.ask_searching, FILLER_TIMEOUT_MS)
+
+    /** "Searching online now, this can take a little longer." Returns when it has finished. */
+    suspend fun searchingOnlineAndAwait() = cueAndAwait(R.raw.ask_searching_online, FILLER_TIMEOUT_MS)
+
+    /**
+     * Shares the [searching] slot with [thinking], so [stopThinking] silences any of the three.
+     * ALWAYS returns: a missing or stuck player gives up after [timeoutMs].
+     */
+    private suspend fun cueAndAwait(res: Int, timeoutMs: Long) {
+        withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val ok = runCatching {
+                    releaseSearching()
+                    val p = MediaPlayer.create(appContext, res) ?: return@runCatching false
+                    p.setOnCompletionListener {
+                        releaseSearching()
+                        if (cont.isActive) cont.resume(Unit)
+                    }
+                    p.setOnErrorListener { _, _, _ ->
+                        releaseSearching()
+                        if (cont.isActive) cont.resume(Unit)
+                        true
+                    }
+                    searching = p
+                    p.start()
+                    true
+                }.getOrDefault(false)
+                if (!ok && cont.isActive) cont.resume(Unit)
+                cont.invokeOnCancellation { releaseSearching() }
+            }
+        }
+    }
     fun error() { pool.play(error, 1f, 1f, 1, 0, 1f) }
     fun received() { pool.play(received, 1f, 1f, 1, 0, 1f) }
 
@@ -132,5 +170,7 @@ class AskSounds(context: Context) {
     companion object {
         /** ask_agent is 1.33 s; this is a stuck-player guard, not a length limit. */
         const val ASK_START_TIMEOUT_MS = 3_000L
+        /** The spoken filler and online cue are 2-4 s; same kind of stuck-player guard. */
+        const val FILLER_TIMEOUT_MS = 10_000L
     }
 }
